@@ -1,0 +1,33 @@
+# ── Virtual environment ──────────────────────────────────────
+.venv/
+.venv_build/
+
+# ── Python cache & compiled files ────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pdb
+
+# ── PyInstaller / build output ───────────────────────────────
+/build/
+/dist/
+*.spec
+
+# ── Data files (keep out of version control) ─────────────────
+*.xlsx
+*.csv
+*.xls
+
+# ── macOS metadata & resource forks ──────────────────────────
+.DS_Store
+._*
+
+# ── IDE / editor ─────────────────────────────────────────────
+.vscode/
+
+# ── Claude Code internal state ───────────────────────────────
+.claude/
+
+# ── Axon graph database ─────────────────────────────────────
+.axon/
