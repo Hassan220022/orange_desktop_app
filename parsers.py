@@ -36,6 +36,8 @@ def discover_alarm_files(directory: str) -> list[dict]:
     results: list[dict] = []
     for root, _dirs, files in os.walk(directory):
         for fname in sorted(files):
+            if fname.startswith("._") or fname.startswith("~$"):
+                continue
             ext = os.path.splitext(fname)[1].lower()
             if ext not in _EXTS:
                 continue
@@ -114,7 +116,9 @@ def classify_by_alarm_id(df: pd.DataFrame, alarm_ids: dict) -> pd.DataFrame:
         return df
     power_set = set(alarm_ids.get("power", []))
     down_set  = set(alarm_ids.get("down", []))
-    aid = df["alarm_id"].fillna("").astype(str).str.strip()
+    # Normalize: floats like 300.0 → "300", strings stay as-is
+    aid = (df["alarm_id"].fillna("").astype(str).str.strip()
+           .str.replace(r'\.0$', '', regex=True))
     df = df.copy()
     df.loc[aid.isin(power_set), "alarm_category"] = "Power"
     df.loc[aid.isin(down_set),  "alarm_category"] = "Down"

@@ -297,10 +297,19 @@ class AlarmViewer(QMainWindow):
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(0)
 
+        # Horizontal splitter: sidebar | content
+        self._main_splitter = QSplitter(Qt.Horizontal)
+        self._main_splitter.setHandleWidth(3)
+        self._main_splitter.setStyleSheet(
+            "QSplitter::handle { background:#1e1e2e; }")
+
         # Left sidebar
-        sidebar = self._make_left_panel()
-        sidebar.setObjectName("sidebar")
-        main.addWidget(sidebar, 0)
+        self._sidebar = self._make_left_panel()
+        self._sidebar.setObjectName("sidebar")
+        self._sidebar.setMinimumWidth(50)
+        self._sidebar.setMaximumWidth(500)
+        self._main_splitter.addWidget(self._sidebar)
+        self._sidebar_width = 260  # remembered width for toggle
 
         # Right content area
         right_wrap = QWidget()
@@ -337,7 +346,12 @@ class AlarmViewer(QMainWindow):
 
         rl.addWidget(self._tabs, 1)
 
-        main.addWidget(right_wrap, 1)
+        self._main_splitter.addWidget(right_wrap)
+        self._main_splitter.setSizes([260, 1420])
+        self._main_splitter.setCollapsible(0, True)
+        self._main_splitter.setCollapsible(1, False)
+
+        main.addWidget(self._main_splitter)
 
         # Status bar
         self._sbar = QStatusBar()
@@ -372,6 +386,11 @@ class AlarmViewer(QMainWindow):
 
         l.addStretch()
 
+        btn_config = QPushButton("Configure Alarm IDs")
+        btn_config.setObjectName("btn_dir")
+        btn_config.clicked.connect(self._show_alarm_id_config)
+        l.addWidget(btn_config)
+
         self._lbl_count = QLabel("")
         self._lbl_count.setObjectName("lbl_green")
         l.addWidget(self._lbl_count)
@@ -386,18 +405,9 @@ class AlarmViewer(QMainWindow):
         lay.setContentsMargins(14, 10, 14, 10)
         lay.setSpacing(8)
 
-        # ── Top bar ──────────────────────────────────────
+        # ── Top bar (uses sidebar directory) ─────────────
         top = QHBoxLayout()
         top.setSpacing(10)
-
-        self._bdt_dir_edit = QLineEdit()
-        self._bdt_dir_edit.setPlaceholderText("BDT files directory…")
-        top.addWidget(self._bdt_dir_edit, 1)
-
-        btn_bdt_browse = QPushButton("Browse")
-        btn_bdt_browse.setObjectName("btn_dir")
-        btn_bdt_browse.clicked.connect(self._browse_bdt)
-        top.addWidget(btn_bdt_browse)
 
         btn_validate = QPushButton("Validate")
         btn_validate.setObjectName("btn_search")
@@ -418,6 +428,7 @@ class AlarmViewer(QMainWindow):
         self._spn_tolerance.setFixedWidth(70)
         top.addWidget(self._spn_tolerance)
 
+        top.addStretch()
         lay.addLayout(top)
 
         # ── Vertical splitter: results table + detail panel ──
@@ -607,7 +618,7 @@ class AlarmViewer(QMainWindow):
 
     # ── left panel ───────────────────────────────────────────────
     def _make_left_panel(self):
-        w = QWidget(); w.setFixedWidth(260)
+        w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(12, 16, 12, 12)
         lay.setSpacing(12)
@@ -626,12 +637,6 @@ class AlarmViewer(QMainWindow):
         lay.addLayout(brand_row)
         lay.addSpacing(4)
 
-        btn_config = QPushButton("Configure Alarm IDs")
-        btn_config.setObjectName("btn_dir")
-        btn_config.clicked.connect(self._show_alarm_id_config)
-        lay.addWidget(btn_config)
-
-        # ── Directory section ─────────────────────────────
         sec1 = QLabel("DIRECTORY")
         sec1.setObjectName("lbl_section")
         lay.addWidget(sec1)
@@ -650,9 +655,7 @@ class AlarmViewer(QMainWindow):
         dir_row.addWidget(b_br); dir_row.addWidget(b_sc)
         lay.addLayout(dir_row)
 
-        lay.addSpacing(8)
-
-        # ── Files section ─────────────────────────────────
+        # ── Files sub-section ─────────────────────────────
         sec2 = QLabel("FILES")
         sec2.setObjectName("lbl_section")
         lay.addWidget(sec2)
@@ -693,58 +696,14 @@ class AlarmViewer(QMainWindow):
             "color:#45475a; font-size:11px; background:transparent;")
         lay.addWidget(self._lbl_loaded)
 
-        lay.addSpacing(8)
-
-        # ── Stats section ─────────────────────────────────
-        sec3 = QLabel("STATISTICS")
-        sec3.setObjectName("lbl_section")
-        lay.addWidget(sec3)
-
-        stats_frame = QFrame()
-        stats_frame.setStyleSheet(
-            "QFrame { background:#0a0a14; border:1px solid #1e1e2e; "
-            "border-radius:8px; }")
-        sf = QVBoxLayout(stats_frame)
-        sf.setContentsMargins(12, 10, 12, 10)
-        sf.setSpacing(7)
-
-        self._stats: dict[str, QLabel] = {}
-        for key, label, color in (
-            ("total",    "Total Records",  "#89b4fa"),
-            ("power",    "Power Alarms",   "#f38ba8"),
-            ("down",     "Down Alarms",    "#fab387"),
-            ("sites",    "Unique Sites",   "#a6e3a1"),
-            ("avg_dur",  "Avg Duration",   "#cba6f7"),
-        ):
-            row_h = QHBoxLayout(); row_h.setSpacing(4)
-            lt = QLabel(label)
-            lt.setStyleSheet(
-                "color:#45475a; font-size:11px; background:transparent;")
-            lv = QLabel("—")
-            lv.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            lv.setFont(QFont("Segoe UI", 13, QFont.Bold))
-            lv.setStyleSheet(
-                f"color:{color}; background:transparent;")
-            self._stats[key] = lv
-            row_h.addWidget(lt); row_h.addWidget(lv)
-            sf.addLayout(row_h)
-
-            if key != "avg_dur":
-                sep = QFrame()
-                sep.setFrameShape(QFrame.HLine)
-                sep.setStyleSheet(
-                    "color:#1e1e2e; background:#1e1e2e; max-height:1px;")
-                sf.addWidget(sep)
-
-        lay.addWidget(stats_frame)
         return w
 
     # ── search panel (top-right) ─────────────────────────────────
     def _make_search_panel(self):
         w = QWidget()
-        outer = QVBoxLayout(w)
+        outer = QHBoxLayout(w)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        outer.setSpacing(8)
 
         grp = QGroupBox("Search & Filter")
         grp.setStyleSheet(
@@ -925,7 +884,54 @@ class AlarmViewer(QMainWindow):
         row2.addWidget(self._btn_both)
 
         gl.addLayout(row2)
-        outer.addWidget(grp)
+        outer.addWidget(grp, 1)
+
+        # ── Stats panel (right of search) ─────────────────
+        stats_frame = QFrame()
+        stats_frame.setFixedWidth(220)
+        stats_frame.setStyleSheet(
+            "QFrame { background:#0a0a14; border:1px solid #1e1e2e; "
+            "border-radius:8px; }")
+        sf = QVBoxLayout(stats_frame)
+        sf.setContentsMargins(12, 10, 12, 10)
+        sf.setSpacing(7)
+
+        sec_lbl = QLabel("STATISTICS")
+        sec_lbl.setObjectName("lbl_section")
+        sec_lbl.setStyleSheet(
+            "color:#45475a; font-size:10px; font-weight:700; "
+            "letter-spacing:2px; background:transparent;")
+        sf.addWidget(sec_lbl)
+
+        self._stats: dict[str, QLabel] = {}
+        for key, label, color in (
+            ("total",    "Total Records",  "#89b4fa"),
+            ("power",    "Power Alarms",   "#f38ba8"),
+            ("down",     "Down Alarms",    "#fab387"),
+            ("sites",    "Unique Sites",   "#a6e3a1"),
+            ("avg_dur",  "Avg Duration",   "#cba6f7"),
+        ):
+            row_h = QHBoxLayout(); row_h.setSpacing(4)
+            lt = QLabel(label)
+            lt.setStyleSheet(
+                "color:#45475a; font-size:11px; background:transparent;")
+            lv = QLabel("—")
+            lv.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            lv.setFont(QFont("Segoe UI", 12, QFont.Bold))
+            lv.setStyleSheet(
+                f"color:{color}; background:transparent;")
+            self._stats[key] = lv
+            row_h.addWidget(lt); row_h.addWidget(lv)
+            sf.addLayout(row_h)
+
+            if key != "avg_dur":
+                sep = QFrame()
+                sep.setFrameShape(QFrame.HLine)
+                sep.setStyleSheet(
+                    "color:#1e1e2e; background:#1e1e2e; max-height:1px;")
+                sf.addWidget(sep)
+
+        outer.addWidget(stats_frame)
         return w
 
     # ── table ────────────────────────────────────────────────────
@@ -1008,30 +1014,28 @@ class AlarmViewer(QMainWindow):
         self._sbar.showMessage("Row copied to clipboard", 2000)
 
     # ── BDT validation slots ─────────────────────────────────
-    def _browse_bdt(self):
-        d = QFileDialog.getExistingDirectory(
-            self, "Select BDT Files Directory",
-            self._bdt_dir_edit.text() or str(Path.home()))
-        if d:
-            self._bdt_dir_edit.setText(d)
-
     def _run_validation(self):
-        directory = self._bdt_dir_edit.text().strip()
+        directory = self._edit_dir.text().strip()
         if not directory or not os.path.isdir(directory):
             QMessageBox.warning(
-                self, "No Directory", "Select a valid BDT files directory.")
+                self, "No Directory",
+                "Set a directory in the sidebar first.")
             return
 
-        # Find xlsx files
+        # Find BDT xlsx files (recursive, name must contain "bdt")
         bdt_files = []
-        for f in os.listdir(directory):
-            if (f.lower().endswith(".xlsx")
-                    and not f.startswith("~$") and not f.startswith("._")):
-                bdt_files.append(os.path.join(directory, f))
+        for root, _dirs, files in os.walk(directory):
+            for f in files:
+                fl = f.lower()
+                if (fl.endswith(".xlsx") and "bdt" in fl
+                        and not f.startswith("~$") and not f.startswith("._")):
+                    bdt_files.append(os.path.join(root, f))
 
         if not bdt_files:
             QMessageBox.information(
-                self, "No Files", "No .xlsx files found in directory.")
+                self, "No BDT Files",
+                "No BDT .xlsx files found in directory.\n"
+                "BDT filenames must contain 'BDT'.")
             return
 
         alarm_df = self._full_df if not self._full_df.empty else None
@@ -1289,9 +1293,11 @@ class AlarmViewer(QMainWindow):
             col_filters_json[col] = sorted(vals) if vals is not None else None
 
         geo = self.geometry()
+        file_paths = [info["path"] for info in self._file_infos]
         d = {
             "directory": self._edit_dir.text(),
-            "file_paths": [info["path"] for info in self._file_infos],
+            "file_paths": file_paths,
+            "file_hashes": state.compute_file_hashes(file_paths),
             "site_filter": self._edit_site.text(),
             "date_enabled": self._chk_date.isChecked(),
             "date_from": self._d_from.date().toString("yyyy-MM-dd"),
@@ -1389,6 +1395,22 @@ class AlarmViewer(QMainWindow):
             state.clear_cache()
             return
 
+        # Check if source files changed since cache was saved
+        saved_state = state.load_state() or {}
+        saved_hashes = saved_state.get("file_hashes", {})
+        file_paths = getattr(self, "_restored_file_paths", [])
+        if state.files_changed(saved_hashes, file_paths):
+            self._sbar.showMessage(
+                "Source files changed — reloading from disk…")
+            state.clear_cache()
+            # Populate file list and auto-load
+            directory = self._edit_dir.text().strip()
+            if directory and os.path.isdir(directory):
+                self._scan()
+                self._file_list.selectAll()
+                self._load()
+            return
+
         # Ensure datetime columns are proper dtype
         for col in ("occurred_on", "cleared_on"):
             if col in df.columns:
@@ -1402,7 +1424,7 @@ class AlarmViewer(QMainWindow):
         # Rebuild file_infos from restored paths so close-save works
         self._file_infos = [
             {"path": p, "filename": os.path.basename(p)}
-            for p in getattr(self, "_restored_file_paths", [])
+            for p in file_paths
         ]
 
         self._lbl_loaded.setText(f"✓  {len(df):,} records (restored)")
@@ -1551,7 +1573,11 @@ class AlarmViewer(QMainWindow):
         event.accept()
 
     def keyPressEvent(self, event):
-        """Ctrl+C copies selected cells to clipboard."""
+        """Keyboard shortcuts: Ctrl+B toggle sidebar, Ctrl+C copy."""
+        if (event.modifiers() == Qt.ControlModifier
+                and event.key() == Qt.Key_B):
+            self._toggle_sidebar()
+            return
         if (event.modifiers() == Qt.ControlModifier
                 and event.key() == Qt.Key_C):
             indexes = self._table.selectionModel().selectedIndexes()
@@ -1675,6 +1701,16 @@ class AlarmViewer(QMainWindow):
             today = QDate.currentDate()
             self._d_from.setDate(today.addDays(-days))
             self._d_to.setDate(today)
+
+    # ── sidebar toggle (Cmd+B) ──────────────────────────────────
+    def _toggle_sidebar(self):
+        sizes = self._main_splitter.sizes()
+        if sizes[0] > 0:
+            self._sidebar_width = sizes[0]
+            self._main_splitter.setSizes([0, sizes[0] + sizes[1]])
+        else:
+            self._main_splitter.setSizes(
+                [self._sidebar_width, sizes[1] - self._sidebar_width])
 
     # ── slots ────────────────────────────────────────────────────
     def _browse(self):

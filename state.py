@@ -6,7 +6,9 @@ Uses ~/.alarm_viewer/ with:
   data_cache.parquet — full DataFrame for fast restore (~1s vs 10-30s)
 """
 
+import hashlib
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -80,3 +82,31 @@ def save_alarm_ids(ids: dict):
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     ALARM_IDS_FILE.write_text(
         json.dumps(ids, indent=2), encoding="utf-8")
+
+
+# ── File hash change detection ───────────────────────────
+def compute_file_hashes(file_paths: list[str]) -> dict[str, str]:
+    """Return {path: md5_hex} for each file that exists."""
+    hashes = {}
+    for fp in file_paths:
+        try:
+            if os.path.isfile(fp):
+                h = hashlib.md5()
+                with open(fp, "rb") as f:
+                    for chunk in iter(lambda: f.read(8192), b""):
+                        h.update(chunk)
+                hashes[fp] = h.hexdigest()
+        except Exception:
+            pass
+    return hashes
+
+
+def files_changed(saved_hashes: dict[str, str],
+                  file_paths: list[str]) -> bool:
+    """Return True if any source file was added, removed, or modified."""
+    if not saved_hashes:
+        return True
+    if set(saved_hashes.keys()) != set(file_paths):
+        return True
+    current = compute_file_hashes(file_paths)
+    return current != saved_hashes
