@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 
 from .bdt_parser import BDTData
-from .constants import BDT_DEFAULT_TOLERANCE
+from .constants import BDT_DEFAULT_TOLERANCE, BDT_DEFAULT_HEALTH_PCT
 
 
 @dataclass
@@ -37,7 +37,8 @@ class ValidationResult:
 
 
 def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
-                 tolerance: float = BDT_DEFAULT_TOLERANCE) -> ValidationResult:
+                 tolerance: float = BDT_DEFAULT_TOLERANCE,
+                 health_pct: float = BDT_DEFAULT_HEALTH_PCT) -> ValidationResult:
     """Validate a parsed BDT file against alarm data.
 
     Args:
@@ -65,6 +66,7 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
     result.rules.append(_rule_5_start_ampere(bdt))
     result.rules.append(_rule_6_end_voltage(bdt))
     result.rules.append(_rule_7_inverse_relationship(bdt))
+    result.rules.append(_rule_8_backup_time(bdt, health_pct))
 
     # Overall verdict
     failed = [r for r in result.rules if r.verdict == "Rejected"]
@@ -361,4 +363,85 @@ def _rule_7_inverse_relationship(bdt: BDTData) -> RuleResult:
         verdict="Accepted" if passed else "Rejected",
         detail=(f"V/A correlation: {corr:.3f} "
                 f"({'inverse' if corr < 0 else 'direct'} relationship)"),
+    )
+
+
+def _is_lithium(brand: str) -> bool:
+    """Check if battery brand indicates lithium chemistry."""
+    return "lith" in brand.lower()
+
+
+def _theoretical_backup_minutes(bdt: BDTData, health_pct: float) -> float | None:
+    """Calculate theoretical backup time in minutes from battery specs.
+
+    Formula: BT(hrs) = (Battery_AH × Battery_V × Num_Strings × Efficiency) / Load_W
+    Where Load_W = Bus_Bar_V × Bus_Bar_A from "Before disconnecting Rectifier".
+    Returns minutes (×60).
+    """
+    if (bdt.battery_ah is None or bdt.battery_voltage is None
+            or bdt.num_strings is None):
+        return None
+
+    # Load = bus bar readings at "Before disconnecting Rectifier"
+    load_v = bdt.start_voltage
+    load_a = bdt.start_ampere
+    if load_v is None or load_a is None or load_v <= 0 or load_a <= 0:
+        return None
+    load_w = load_v * load_a
+
+    efficiency = 1.0 if _is_lithium(bdt.battery_brand) else health_pct
+    capacity_wh = bdt.battery_ah * bdt.battery_voltage * bdt.num_strings * efficiency
+    return (capacity_wh / load_w) * 60  # convert hours to minutes
+
+
+def _rule_8_backup_time(bdt: BDTData, health_pct: float) -> RuleResult:
+    """R8: Reported discharge time vs theoretical backup time from battery specs."""
+    missing = []
+    if bdt.battery_ah is None:
+        missing.append("AH")
+    if bdt.battery_voltage is None:
+        missing.append("voltage")
+    if bdt.num_strings is None:
+        missing.append("strings")
+    if missing:
+        return RuleResult(
+            rule_id="R8", rule_name="Theoretical BT",
+            passed=None, verdict="N/A",
+            detail=f"Battery {', '.join(missing)} not found in file",
+        )
+
+    theoretical_mins = _theoretical_backup_minutes(bdt, health_pct)
+    if theoretical_mins is None:
+        return RuleResult(
+            rule_id="R8", rule_name="Theoretical BT",
+            passed=None, verdict="N/A",
+            detail="Cannot compute theoretical BT (no load data before disconnect)",
+        )
+
+    reported = bdt.discharge_minutes
+
+    # 3-hour cutoff detection: theoretical > 180 min but reported ~180 min
+    if theoretical_mins > 180 and abs(reported - 180) < 1.0:
+        return RuleResult(
+            rule_id="R8", rule_name="Theoretical BT",
+            passed=False, verdict="Rejected",
+            detail=(f"Suspected 3hr cutoff — theoretical: {theoretical_mins:.0f} min, "
+                    f"reported: {reported:.0f} min"),
+        )
+
+    # Check if reported exceeds theoretical by more than 15%
+    if reported > theoretical_mins * 1.15:
+        return RuleResult(
+            rule_id="R8", rule_name="Theoretical BT",
+            passed=False, verdict="Rejected",
+            detail=(f"Reported ({reported:.0f} min) exceeds theoretical "
+                    f"({theoretical_mins:.0f} min) by "
+                    f">{((reported / theoretical_mins) - 1) * 100:.0f}%"),
+        )
+
+    return RuleResult(
+        rule_id="R8", rule_name="Theoretical BT",
+        passed=True, verdict="Accepted",
+        detail=(f"Theoretical: {theoretical_mins:.0f} min, "
+                f"reported: {reported:.0f} min"),
     )

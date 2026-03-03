@@ -428,6 +428,20 @@ class AlarmViewer(QMainWindow):
         self._spn_tolerance.setFixedWidth(70)
         top.addWidget(self._spn_tolerance)
 
+        top.addWidget(self._vline())
+
+        lbl_health = QLabel("Health %")
+        lbl_health.setStyleSheet(
+            "color:#7f849c; font-size:12px; background:transparent;")
+        top.addWidget(lbl_health)
+
+        self._spn_health = QSpinBox()
+        self._spn_health.setRange(50, 100)
+        self._spn_health.setValue(80)
+        self._spn_health.setSuffix("%")
+        self._spn_health.setFixedWidth(70)
+        top.addWidget(self._spn_health)
+
         top.addStretch()
         lay.addLayout(top)
 
@@ -514,6 +528,10 @@ class AlarmViewer(QMainWindow):
             ("Time Out",          "time_out"),
             ("Discharge Duration","discharge_minutes"),
             ("Ibat Before Test",  "ibat_before_test"),
+            ("Battery Brand",     "battery_brand"),
+            ("Battery AH",        "battery_ah"),
+            ("Battery Voltage",   "battery_voltage"),
+            ("Strings",           "num_strings"),
             ("Photo Count",       "photo_count"),
         ]
         for row_idx, (display, key) in enumerate(info_fields):
@@ -1040,6 +1058,7 @@ class AlarmViewer(QMainWindow):
 
         alarm_df = self._full_df if not self._full_df.empty else None
         tolerance = self._spn_tolerance.value() / 100.0
+        health_pct = self._spn_health.value() / 100.0
 
         self._sbar.showMessage(f"Validating {len(bdt_files)} BDT file(s)…")
         self._bdt_results = []
@@ -1047,7 +1066,7 @@ class AlarmViewer(QMainWindow):
 
         for fp in sorted(bdt_files):
             bdt_data = parse_bdt_file(fp)
-            result = validate_bdt(bdt_data, alarm_df, tolerance)
+            result = validate_bdt(bdt_data, alarm_df, tolerance, health_pct)
             self._bdt_results.append(result)
 
         self._populate_bdt_table()
@@ -1127,6 +1146,13 @@ class AlarmViewer(QMainWindow):
                 "ibat_before_test":  (f"{bdt.ibat_before_test} A"
                                       if bdt.ibat_before_test is not None
                                       else "--"),
+                "battery_brand":     bdt.battery_brand or "--",
+                "battery_ah":        (f"{bdt.battery_ah} AH"
+                                      if bdt.battery_ah else "--"),
+                "battery_voltage":   (f"{bdt.battery_voltage}V"
+                                      if bdt.battery_voltage else "--"),
+                "num_strings":       (str(bdt.num_strings)
+                                      if bdt.num_strings else "--"),
                 "photo_count":       str(bdt.photo_count),
             }
         else:

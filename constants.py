@@ -87,6 +87,7 @@ BT_WIDTHS = {
 
 # ── BDT validation constants ──────────────────────────────
 BDT_DEFAULT_TOLERANCE = 0.15   # 15%
+BDT_DEFAULT_HEALTH_PCT = 0.80  # 80% default battery health
 
 BDT_RULES = [
     ("R1", "Photos"),
@@ -96,15 +97,16 @@ BDT_RULES = [
     ("R5", "Start Ampere = 0"),
     ("R6", "End Voltage Range"),
     ("R7", "V/A Inverse"),
+    ("R8", "Theoretical BT"),
 ]
 
 BDT_RESULT_HEADERS = [
     "File", "Site Code", "Test Date", "Verdict",
-    "R1", "R2", "R3", "R4", "R5", "R6", "R7",
+    "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8",
 ]
 
 BDT_RESULT_WIDTHS = {
     "File": 200, "Site Code": 90, "Test Date": 100, "Verdict": 90,
     "R1": 65, "R2": 65, "R3": 65, "R4": 65,
-    "R5": 65, "R6": 65, "R7": 65,
+    "R5": 65, "R6": 65, "R7": 65, "R8": 65,
 }

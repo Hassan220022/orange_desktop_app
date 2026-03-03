@@ -45,6 +45,10 @@ class BDTData:
 
     # Battery info
     ibat_before_test: float | None = None
+    battery_brand: str = ""
+    battery_ah: float | None = None
+    battery_voltage: float | None = None
+    num_strings: int | None = None
 
     # Photos
     photo_count: int = 0
@@ -75,6 +79,102 @@ def _safe_str(val) -> str:
         return ""
     s = str(val).strip()
     return "" if s.lower() == "nan" else s
+
+
+_BRAND_KEYWORDS = (
+    "lithium", "lith", "huawei", "zte", "narada", "shoto",
+    "sacred sun", "ritar", "vision", "coslight", "byd",
+    "pylontech", "gel", "agm", "vrla", "opzv", "opzs",
+)
+
+
+def _parse_battery_info(ws, cell_fn, data: BDTData):
+    """Extract battery specs from the BDT sheet.
+
+    Standard BDT template layout (col 1 = label, col 9 = value):
+        row 41: Battery brand
+        row 43: Number of batteries connected to the rectifier
+        row 45: Battery nominal voltage
+        row 47: Battery ampere hour
+        row 49: Number of strings
+
+    Falls back to keyword scanning rows 35-65 if fixed positions don't match.
+    """
+    brand_raw = ""
+    ah_raw = None
+    voltage_raw = None
+    strings_raw = None
+
+    # ── Fixed-position extraction — standard BDT template ──
+    candidate = _safe_str(cell_fn(41, 9))
+    if candidate:
+        brand_raw = candidate
+
+    parsed = _safe_float(cell_fn(45, 9))
+    if parsed is not None and parsed > 0:
+        voltage_raw = parsed
+
+    parsed = _safe_float(cell_fn(47, 9))
+    if parsed is not None and parsed > 0:
+        ah_raw = parsed
+
+    parsed = _safe_float(cell_fn(49, 9))
+    if parsed is not None and parsed > 0:
+        strings_raw = int(parsed)
+
+    # ── Keyword-based scan (rows 35-65) as fallback ──
+    max_col = min(ws.max_column + 1, 12)  # labels are in cols 1-2, values in col 9
+    for r in range(35, 66):
+        val = _safe_str(cell_fn(r, 1)).lower()
+        if not val:
+            val = _safe_str(cell_fn(r, 2)).lower()
+        if not val:
+            continue
+
+        # Battery brand
+        if not brand_raw and "battery brand" in val:
+            candidate = _safe_str(cell_fn(r, 9))
+            if candidate:
+                brand_raw = candidate
+
+        # Nominal voltage
+        if voltage_raw is None and "nominal voltage" in val:
+            parsed = _safe_float(cell_fn(r, 9))
+            if parsed is not None and parsed > 0:
+                voltage_raw = parsed
+
+        # AH
+        if ah_raw is None and "ampere hour" in val:
+            parsed = _safe_float(cell_fn(r, 9))
+            if parsed is not None and parsed > 0:
+                ah_raw = parsed
+
+        # Number of strings
+        if strings_raw is None and "number of string" in val:
+            parsed = _safe_float(cell_fn(r, 9))
+            if parsed is not None and parsed > 0:
+                strings_raw = int(parsed)
+
+    # ── Brand detection from known manufacturer keywords ──
+    if brand_raw:
+        data.battery_brand = brand_raw
+    else:
+        # Try to find brand by scanning battery section for known names
+        for r in range(35, 66):
+            for c in (1, 2, 9):
+                val = _safe_str(cell_fn(r, c)).lower()
+                for kw in _BRAND_KEYWORDS:
+                    if kw in val:
+                        data.battery_brand = _safe_str(cell_fn(r, c))
+                        break
+                if data.battery_brand:
+                    break
+            if data.battery_brand:
+                break
+
+    data.battery_ah = ah_raw
+    data.battery_voltage = voltage_raw
+    data.num_strings = strings_raw
 
 
 def parse_bdt_file(file_path: str) -> BDTData:
@@ -187,6 +287,8 @@ def parse_bdt_file(file_path: str) -> BDTData:
         # Connecting Rectifier" which is the recovery/recharge reading)
         data.end_voltage = last_filled_voltage
         data.end_ampere  = last_filled_ampere
+
+    _parse_battery_info(ws, cell, data)
 
     wb.close()
 
