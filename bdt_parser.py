@@ -39,6 +39,8 @@ class BDTData:
     start_ampere: float | None = None
     end_voltage: float | None = None
     end_ampere: float | None = None
+    after_reconnect_voltage: float | None = None
+    after_reconnect_ampere: float | None = None
     discharge_minutes: float = 0.0
 
     # Battery info
@@ -152,13 +154,15 @@ def parse_bdt_file(file_path: str) -> BDTData:
         # Discharge time-series — scan dynamically until "After Connecting"
         last_filled_mins = 0.0
         last_filled_voltage = None
+        last_filled_ampere = None
         r = data_row + 1
         while r <= data_row + 30:  # safety limit
             lbl = _safe_str(cell(r, 1))
             if "after connecting" in lbl.lower():
-                # End readings from "After Connecting" row if present
-                data.end_voltage = _safe_float(cell(r, 4))
-                data.end_ampere  = _safe_float(cell(r, 5))
+                # "After Connecting Rectifier" = recovery reading, NOT end
+                # of discharge. Store separately for display only.
+                data.after_reconnect_voltage = _safe_float(cell(r, 4))
+                data.after_reconnect_ampere  = _safe_float(cell(r, 5))
                 break
             if not lbl:
                 r += 1
@@ -168,6 +172,8 @@ def parse_bdt_file(file_path: str) -> BDTData:
             data.discharge_readings.append((lbl, v, a))
             if v is not None:
                 last_filled_voltage = v
+            if a is not None:
+                last_filled_ampere = a
             if v is not None or a is not None:
                 try:
                     last_filled_mins = float(lbl.split()[0])
@@ -177,10 +183,10 @@ def parse_bdt_file(file_path: str) -> BDTData:
 
         data.discharge_minutes = last_filled_mins
 
-        # Fallback: if "After Connecting" row had no voltage, use last
-        # filled Rec Bus Bar V from the discharge readings
-        if data.end_voltage is None and last_filled_voltage is not None:
-            data.end_voltage = last_filled_voltage
+        # End voltage/ampere = last actual discharge reading (not "After
+        # Connecting Rectifier" which is the recovery/recharge reading)
+        data.end_voltage = last_filled_voltage
+        data.end_ampere  = last_filled_ampere
 
     wb.close()
 

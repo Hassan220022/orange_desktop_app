@@ -1143,9 +1143,11 @@ class AlarmViewer(QMainWindow):
                 readings.append(("Before disconnect",
                                  bdt.start_voltage, bdt.start_ampere))
             readings.extend(bdt.discharge_readings)
-            if bdt.end_voltage is not None or bdt.end_ampere is not None:
+            if (bdt.after_reconnect_voltage is not None
+                    or bdt.after_reconnect_ampere is not None):
                 readings.append(("After reconnect",
-                                 bdt.end_voltage, bdt.end_ampere))
+                                 bdt.after_reconnect_voltage,
+                                 bdt.after_reconnect_ampere))
 
             self._bdt_discharge_table.setRowCount(len(readings))
             start_bg = QColor("#1a2744")
