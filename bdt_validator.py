@@ -64,7 +64,7 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
     result.rules.append(_rule_3_duration_match(bdt, alarm_df, tolerance))
     result.rules.append(_rule_4_discharge_table(bdt, tolerance))
     result.rules.append(_rule_5_start_ampere(bdt))
-    result.rules.append(_rule_6_end_voltage(bdt))
+    result.rules.append(_rule_6_end_voltage(bdt, health_pct))
     result.rules.append(_rule_7_inverse_relationship(bdt))
     result.rules.append(_rule_8_backup_time(bdt, health_pct))
 
@@ -86,6 +86,13 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
 
 def _rule_1_photos(bdt: BDTData) -> RuleResult:
     """R1: Photos exist in placeholders (per-slot reporting)."""
+    if bdt.photos_deferred:
+        return RuleResult(
+            rule_id="R1", rule_name="Photos",
+            passed=None, verdict="N/A",
+            detail="Photo validation deferred; photos not loaded yet",
+        )
+
     # Use per-slot data when available
     if bdt.photo_slots:
         filled = [s for s in bdt.photo_slots if s.image_data]
@@ -126,6 +133,12 @@ def _rule_1_photos(bdt: BDTData) -> RuleResult:
 
 def _find_power_alarms(alarm_df: pd.DataFrame, site_code: str) -> pd.DataFrame:
     """Find Power alarms for a site, with file_source fallback if unconfigured."""
+    # Ensure occurred_on is datetime
+    if not pd.api.types.is_datetime64_any_dtype(alarm_df["occurred_on"]):
+        alarm_df = alarm_df.copy()
+        alarm_df["occurred_on"] = pd.to_datetime(
+            alarm_df["occurred_on"], errors="coerce", format="mixed")
+
     site_mask = (
         alarm_df["site_id"].astype(str).str.strip().str.upper()
         == site_code.strip().upper()
@@ -163,7 +176,14 @@ def _rule_2_power_alarm_match(bdt: BDTData,
             detail="No test date found in BDT file",
         )
 
-    test_date = pd.Timestamp(bdt.test_date).normalize()
+    try:
+        test_date = pd.Timestamp(bdt.test_date).normalize()
+    except Exception:
+        return RuleResult(
+            rule_id="R2", rule_name="Power Alarm Match",
+            passed=False, verdict="Rejected",
+            detail=f"Invalid test date: {bdt.test_date!r}",
+        )
     power = _find_power_alarms(alarm_df, bdt.site_code)
 
     if power.empty:
@@ -208,7 +228,14 @@ def _rule_3_duration_match(bdt: BDTData, alarm_df: pd.DataFrame | None,
             detail="No test date in BDT file",
         )
 
-    test_date = pd.Timestamp(bdt.test_date).normalize()
+    try:
+        test_date = pd.Timestamp(bdt.test_date).normalize()
+    except Exception:
+        return RuleResult(
+            rule_id="R3", rule_name="Duration Match",
+            passed=False, verdict="Rejected",
+            detail=f"Invalid test date: {bdt.test_date!r}",
+        )
     all_power = _find_power_alarms(alarm_df, bdt.site_code)
     power = all_power[all_power["occurred_on"].dt.normalize() == test_date]
 
@@ -294,25 +321,26 @@ def _rule_4_discharge_table(bdt: BDTData,
 
 
 def _rule_5_start_ampere(bdt: BDTData) -> RuleResult:
-    """R5: Ampere before test in 0.0–0.4 A range (rounds to 0)."""
+    """R5: I Battery — battery current before test in 0.0–0.4 A range (rounds to 0)."""
     if bdt.ibat_before_test is None:
         return RuleResult(
-            rule_id="R5", rule_name="Start Ampere = 0",
+            rule_id="R5", rule_name="I Battery",
             passed=None, verdict="N/A",
             detail="Ibat before test not found in file",
         )
 
     passed = abs(bdt.ibat_before_test) < 0.5
     return RuleResult(
-        rule_id="R5", rule_name="Start Ampere = 0",
+        rule_id="R5", rule_name="I Battery",
         passed=passed,
         verdict="Accepted" if passed else "Rejected",
         detail=f"Ibat before test: {bdt.ibat_before_test} A (range: 0.0–0.4)",
     )
 
 
-def _rule_6_end_voltage(bdt: BDTData) -> RuleResult:
-    """R6: End voltage in 40.5-45V range."""
+def _rule_6_end_voltage(bdt: BDTData, health_pct: float) -> RuleResult:
+    """R6: End voltage — auto-accept if test cutoff at ≥180 min with
+    remaining capacity, otherwise require 45–47 V range."""
     if bdt.end_voltage is None:
         return RuleResult(
             rule_id="R6", rule_name="End Voltage Range",
@@ -320,12 +348,26 @@ def _rule_6_end_voltage(bdt: BDTData) -> RuleResult:
             detail="End voltage not found in file",
         )
 
-    passed = 40.5 <= bdt.end_voltage <= 45.0
+    # Auto-accept when test was cut off early (≥180 min) and battery
+    # still had theoretical capacity remaining.
+    reported = bdt.discharge_minutes
+    if reported >= 180:
+        theoretical = _theoretical_backup_minutes(bdt, health_pct)
+        if theoretical is not None and theoretical > reported:
+            return RuleResult(
+                rule_id="R6", rule_name="End Voltage Range",
+                passed=True, verdict="Accepted",
+                detail=(f"End voltage: {bdt.end_voltage}V — test cutoff at "
+                        f"{reported:.0f} min (theoretical: {theoretical:.0f} min); "
+                        f"battery had remaining capacity"),
+            )
+
+    passed = 45.0 <= bdt.end_voltage <= 47.0
     return RuleResult(
         rule_id="R6", rule_name="End Voltage Range",
         passed=passed,
         verdict="Accepted" if passed else "Rejected",
-        detail=f"End voltage: {bdt.end_voltage}V (range: 40.5-45.0V)",
+        detail=f"End voltage: {bdt.end_voltage}V (range: 45.0-47.0V)",
     )
 
 
@@ -421,7 +463,7 @@ def _rule_8_backup_time(bdt: BDTData, health_pct: float) -> RuleResult:
     reported = bdt.discharge_minutes
 
     # 3-hour cutoff detection: theoretical > 180 min but reported ~180 min
-    if theoretical_mins > 180 and abs(reported - 180) < 1.0:
+    if theoretical_mins > 180 and abs(reported - 180) <= 5.0:
         return RuleResult(
             rule_id="R8", rule_name="Theoretical BT",
             passed=False, verdict="Rejected",

@@ -26,9 +26,9 @@ from .constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
                         COL_WIDTHS, DISPLAY_COLUMNS)
 from .styles import STYLE
 from .models import AlarmTableModel
-from .parsers import discover_alarm_files, LoaderThread, ExportThread, classify_by_alarm_id, compute_site_down_flag
+from .parsers import discover_alarm_files, LoaderThread, ExportThread, classify_by_alarm_id, compute_site_down_flag, BDTValidationThread
 from .backup_time import BackupTimeDialog, BackupTimeThread
-from .bdt_parser import parse_bdt_file, BDTData
+from .bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
 from .bdt_validator import validate_bdt, ValidationResult
 from . import state
 
@@ -499,10 +499,10 @@ class AlarmViewer(QMainWindow):
         bot.addWidget(self._bdt_summary)
         bot.addStretch()
 
-        btn_export = QPushButton("Export Results XLSX")
-        btn_export.setObjectName("btn_export")
-        btn_export.clicked.connect(self._export_bdt_results)
-        bot.addWidget(btn_export)
+        self._btn_bdt_export = QPushButton("Export Results XLSX")
+        self._btn_bdt_export.setObjectName("btn_export")
+        self._btn_bdt_export.clicked.connect(self._export_bdt_results)
+        bot.addWidget(self._btn_bdt_export)
 
         lay.addLayout(bot)
 
@@ -1142,29 +1142,35 @@ class AlarmViewer(QMainWindow):
         tolerance = self._spn_tolerance.value() / 100.0
         health_pct = self._spn_health.value() / 100.0
 
-        self._sbar.showMessage(f"Validating {len(bdt_files)} BDT file(s)…")
+        self._sbar.showMessage(
+            f"Validating {len(bdt_files)} BDT file(s)…")
         self._bdt_results = []
         self._bdt_by_site = {}
         self._bdt_detail_panel.setVisible(False)
+        self._prog.setVisible(True)
+        self._prog.setValue(0)
 
-        for fp in sorted(bdt_files):
-            bdt_data = parse_bdt_file(fp)
-            result = validate_bdt(bdt_data, alarm_df, tolerance, health_pct)
-            self._bdt_results.append(result)
+        self._bdt_thread = BDTValidationThread(
+            bdt_files, alarm_df, tolerance, health_pct)
+        self._bdt_thread.progress.connect(
+            lambda v, m: (self._prog.setValue(v),
+                          self._sbar.showMessage(m)))
+        self._bdt_thread.finished.connect(self._on_validation_done)
+        self._bdt_thread.error.connect(self._on_validation_error)
+        self._bdt_thread.start()
 
-            # Group parsed BDT data by site code for multi-year comparison
-            if bdt_data.site_code:
-                key = bdt_data.site_code.strip().upper()
-                self._bdt_by_site.setdefault(key, []).append(bdt_data)
-
-        # Sort each site's tests by date (newest first)
-        for key in self._bdt_by_site:
-            self._bdt_by_site[key].sort(
-                key=lambda b: b.test_date or datetime.min, reverse=True)
-
+    def _on_validation_done(self, results, by_site):
+        self._bdt_results = results
+        self._bdt_by_site = by_site
+        self._prog.setVisible(False)
         self._populate_bdt_table()
         self._sbar.showMessage(
             f"Validated {len(self._bdt_results)} BDT file(s)")
+
+    def _on_validation_error(self, msg):
+        self._prog.setVisible(False)
+        QMessageBox.critical(self, "Validation Error", msg)
+        self._sbar.showMessage("Validation failed")
 
     def _populate_bdt_table(self):
         from .constants import BDT_RESULT_HEADERS
@@ -1352,7 +1358,9 @@ class AlarmViewer(QMainWindow):
         else:
             self._bdt_parse_errors_lbl.setVisible(False)
 
-        # ── Photos ──
+        # ── Photos (lazy-load if skipped during batch validation) ──
+        if bdt:
+            load_bdt_photos(bdt)
         self._populate_bdt_photos(bdt)
 
         # ── Photo comparison setup ──
@@ -1468,7 +1476,16 @@ class AlarmViewer(QMainWindow):
             return
 
         other = self._cmb_compare_year.currentData()
-        if not other or not other.photo_slots:
+        if not other:
+            lbl = QLabel("No comparison data available")
+            lbl.setObjectName("bdt_photo_label")
+            lbl.setAlignment(Qt.AlignCenter)
+            self._bdt_compare_grid.addWidget(lbl, 0, 0, 1, 3)
+            return
+
+        # Lazy-load photos for comparison target
+        load_bdt_photos(other)
+        if not other.photo_slots:
             lbl = QLabel("No comparison data available")
             lbl.setObjectName("bdt_photo_label")
             lbl.setAlignment(Qt.AlignCenter)
@@ -1574,9 +1591,25 @@ class AlarmViewer(QMainWindow):
                 row[rule.rule_id] = rule.verdict
                 row[f"{rule.rule_id} Detail"] = rule.detail
             rows.append(row)
-        pd.DataFrame(rows).to_excel(fp, index=False, engine="openpyxl")
+        self._btn_bdt_export.setEnabled(False)
+        self._sbar.showMessage("Exporting BDT results …")
+        self._bdt_export_thread = ExportThread(pd.DataFrame(rows), fp)
+        self._bdt_export_thread.progress.connect(
+            lambda v, m: self._sbar.showMessage(m))
+        self._bdt_export_thread.finished.connect(self._on_bdt_export_done)
+        self._bdt_export_thread.error.connect(self._on_bdt_export_error)
+        self._bdt_export_thread.start()
+
+    def _on_bdt_export_done(self, fp: str):
+        self._btn_bdt_export.setEnabled(True)
         QMessageBox.information(
             self, "Export OK", f"Saved to:\n{fp}")
+        self._sbar.showMessage(f"BDT export → {fp}")
+
+    def _on_bdt_export_error(self, msg: str):
+        self._btn_bdt_export.setEnabled(True)
+        QMessageBox.critical(self, "Export Failed", msg)
+        self._sbar.showMessage("BDT export failed")
 
     # ── State persistence ────────────────────────────────────────
     def _save_ui_state(self):
@@ -2206,7 +2239,7 @@ class AlarmViewer(QMainWindow):
         self._refresh_stats(df)
         n = len(df)
         self._lbl_count.setText(
-            f"Showing  {n:,} record{'s' if n != 1 else ''}")
+            f"Showing  {n:,}  of  {len(self._full_df):,} records")
 
         raw = self._edit_site.text().strip()
         if raw:

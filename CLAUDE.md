@@ -11,8 +11,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## How to Run
 
 ```bash
-cd "/Volumes/nvme 500/Alarms"
-source .venv/bin/activate
+cd "/Volumes/nvme 500/Alarms/codebase/alarm_app"
+source ../../.venv/bin/activate
 python -m alarm_app.main          # runs the app
 pip install -r requirements.txt   # install deps (includes pyarrow for state caching)
 ```
