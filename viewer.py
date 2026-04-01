@@ -24,7 +24,8 @@ from PyQt5.QtGui import QColor, QFont, QKeySequence, QPixmap, QTextCharFormat
 
 try:
     from .constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
-                            COL_WIDTHS, DISPLAY_COLUMNS)
+                            COL_WIDTHS, DISPLAY_COLUMNS,
+                            BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
     from .styles import STYLE
     from .models import AlarmTableModel
     from .parsers import discover_alarm_files, LoaderThread, ExportThread, classify_by_alarm_id, compute_site_down_flag, BDTValidationThread
@@ -34,7 +35,8 @@ try:
     from . import state
 except ImportError:
     from constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
-                           COL_WIDTHS, DISPLAY_COLUMNS)
+                           COL_WIDTHS, DISPLAY_COLUMNS,
+                           BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
     from styles import STYLE
     from models import AlarmTableModel
     from parsers import discover_alarm_files, LoaderThread, ExportThread, classify_by_alarm_id, compute_site_down_flag, BDTValidationThread
@@ -410,7 +412,6 @@ class AlarmViewer(QMainWindow):
 
     # ── validation tab ────────────────────────────────────────────
     def _make_validation_tab(self):
-        from .constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(14, 10, 14, 10)
@@ -1184,7 +1185,6 @@ class AlarmViewer(QMainWindow):
         self._sbar.showMessage("Validation failed")
 
     def _populate_bdt_table(self):
-        from .constants import BDT_RESULT_HEADERS
         results = self._bdt_results
         self._bdt_table.setRowCount(len(results))
 
