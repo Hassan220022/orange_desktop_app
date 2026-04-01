@@ -37,15 +37,16 @@ pyinstaller \
   --noconfirm \
   --windowed \
   --name "AlarmViewer" \
-  --paths ".." \
-  --collect-submodules alarm_app \
+  --paths "." \
   --distpath "dist" \
   --workpath "build" \
   --specpath "." \
   --hidden-import pandas \
   --hidden-import openpyxl \
   --hidden-import xlrd \
-  scripts/pyinstaller_entry.py
+  --hidden-import pyarrow \
+  --hidden-import python_calamine \
+  main.py
 
 echo
 echo "[4/5] Cleaning up build artifacts..."

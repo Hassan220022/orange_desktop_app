@@ -39,7 +39,6 @@ pyinstaller ^
     --windowed ^
     --name "AlarmViewer" ^
     --paths alarm_app ^
-    --collect-submodules alarm_app ^
     --distpath alarm_app\dist ^
     --workpath alarm_app\build ^
     --specpath alarm_app ^
@@ -48,7 +47,7 @@ pyinstaller ^
     --hidden-import xlrd ^
     --hidden-import pyarrow ^
     --hidden-import python_calamine ^
-    alarm_app\scripts\pyinstaller_entry.py
+    alarm_app\main.py
 
 echo.
 echo [4/5] Cleaning up build artefacts...

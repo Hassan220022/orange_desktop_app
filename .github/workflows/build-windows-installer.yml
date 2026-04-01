@@ -35,8 +35,7 @@ jobs:
             --onefile `
             --windowed `
             --name AlarmViewer `
-            --paths .. `
-            --collect-submodules alarm_app `
+            --paths . `
             --distpath dist `
             --workpath build `
             --specpath . `
@@ -45,7 +44,7 @@ jobs:
             --hidden-import xlrd `
             --hidden-import pyarrow `
             --hidden-import python_calamine `
-            scripts/pyinstaller_entry.py
+            main.py
 
       - name: Install Inno Setup
         shell: pwsh
