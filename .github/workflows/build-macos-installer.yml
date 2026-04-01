@@ -1,7 +1,12 @@
 name: Build macOS Installer
 
+permissions:
+  contents: write
+
 on:
   workflow_dispatch:
+  release:
+    types: [published]
   push:
     branches: [main]
     paths:
@@ -49,3 +54,11 @@ jobs:
           name: AlarmViewer-macos-installer
           path: dist/AlarmViewer-macOS.dmg
           if-no-files-found: error
+
+      - name: Attach macOS DMG to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist/AlarmViewer-macOS.dmg
+          fail_on_unmatched_files: true
