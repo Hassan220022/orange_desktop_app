@@ -7,16 +7,6 @@ on:
   workflow_dispatch:
   release:
     types: [published]
-  push:
-    branches: [main]
-    paths:
-      - "**/*.py"
-      - "requirements.txt"
-      - "scripts/build_windows.bat"
-      - "scripts/build_windows_installer.bat"
-      - "scripts/pyinstaller_entry.py"
-      - "installer/windows/AlarmViewer.iss"
-      - ".github/workflows/build-windows-installer.yml"
 
 jobs:
   build-installer:
@@ -80,7 +70,6 @@ jobs:
           if-no-files-found: error
 
       - name: Attach Windows installer to GitHub Release
-        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name }}
