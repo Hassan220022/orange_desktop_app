@@ -53,6 +53,7 @@ class BDTData:
     # Photos
     photo_count: int = 0
     photo_slots: list[PhotoSlot] = field(default_factory=list)
+    photos_deferred: bool = False
 
     # Parse errors
     errors: list[str] = field(default_factory=list)
@@ -88,15 +89,15 @@ _BRAND_KEYWORDS = (
 )
 
 
-def _parse_battery_info(ws, cell_fn, data: BDTData):
+def _parse_battery_info(max_column, cell_fn, data: BDTData):
     """Extract battery specs from the BDT sheet.
 
     Standard BDT template layout (col 1 = label, col 9 = value):
-        row 41: Battery brand
-        row 43: Number of batteries connected to the rectifier
-        row 45: Battery nominal voltage
-        row 47: Battery ampere hour
-        row 49: Number of strings
+        row 40: Battery brand
+        row 42: Number of batteries connected to the rectifier
+        row 44: Battery nominal voltage
+        row 46: Battery ampere hour
+        row 48: Number of strings
 
     Falls back to keyword scanning rows 35-65 if fixed positions don't match.
     """
@@ -106,24 +107,23 @@ def _parse_battery_info(ws, cell_fn, data: BDTData):
     strings_raw = None
 
     # ── Fixed-position extraction — standard BDT template ──
-    candidate = _safe_str(cell_fn(41, 9))
+    candidate = _safe_str(cell_fn(40, 9))
     if candidate:
         brand_raw = candidate
 
-    parsed = _safe_float(cell_fn(45, 9))
+    parsed = _safe_float(cell_fn(44, 9))
     if parsed is not None and parsed > 0:
         voltage_raw = parsed
 
-    parsed = _safe_float(cell_fn(47, 9))
+    parsed = _safe_float(cell_fn(46, 9))
     if parsed is not None and parsed > 0:
         ah_raw = parsed
 
-    parsed = _safe_float(cell_fn(49, 9))
+    parsed = _safe_float(cell_fn(48, 9))
     if parsed is not None and parsed > 0:
         strings_raw = int(parsed)
 
     # ── Keyword-based scan (rows 35-65) as fallback ──
-    max_col = min(ws.max_column + 1, 12)  # labels are in cols 1-2, values in col 9
     for r in range(35, 66):
         val = _safe_str(cell_fn(r, 1)).lower()
         if not val:
@@ -177,49 +177,119 @@ def _parse_battery_info(ws, cell_fn, data: BDTData):
     data.num_strings = strings_raw
 
 
-def parse_bdt_file(file_path: str) -> BDTData:
+import re as _re
+
+_DATE_IN_FILENAME = _re.compile(r"(\d{1,2})-(\d{1,2})-(\d{4})")
+
+
+def _parse_test_date(cell_val, filename: str) -> datetime | None:
+    """Coerce a cell value to a date, falling back to filename extraction.
+
+    Calamine may return datetime.date, datetime.datetime, datetime.time,
+    or garbage strings.
+    """
+    import datetime as _dt
+
+    # datetime.date (calamine returns this for date-only cells)
+    if isinstance(cell_val, _dt.date) and not isinstance(cell_val, datetime):
+        if cell_val.year > 1900:
+            return datetime(cell_val.year, cell_val.month, cell_val.day)
+
+    # Already a proper datetime with a real year
+    if isinstance(cell_val, datetime) and cell_val.year > 1900:
+        return cell_val
+
+    # String — try common formats
+    if isinstance(cell_val, str):
+        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return datetime.strptime(cell_val.strip(), fmt)
+            except ValueError:
+                continue
+
+    # Fallback: extract date from filename (e.g. "14-1-2026")
+    m = _DATE_IN_FILENAME.search(filename)
+    if m:
+        try:
+            return datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+        except ValueError:
+            pass
+
+    return None
+
+
+def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
     """Parse a single BDT Excel file and return structured data.
 
-    Uses openpyxl directly (not pandas) because the file layout is
-    non-tabular — data is scattered across specific cell positions.
+    Uses python-calamine (Rust-based reader, ~100x faster than openpyxl)
+    for cell data extraction.  Falls back to openpyxl if calamine fails.
+
+    Args:
+        skip_photos: If True, skip photo extraction for faster batch
+            processing.  Photos can be loaded later via
+            ``load_bdt_photos()``.
     """
     import os
     data = BDTData(file_path=file_path, filename=os.path.basename(file_path))
 
+    # ── Read sheet data with calamine (fast path) ────────
+    rows = None
     try:
-        wb = load_workbook(file_path, data_only=True)
-    except Exception as e:
-        data.errors.append(f"Cannot open file: {e}")
+        import python_calamine
+        wb = python_calamine.CalamineWorkbook.from_path(file_path)
+        if "BDT sheet" not in wb.sheet_names:
+            data.errors.append("Missing 'BDT sheet'")
+            return data
+        rows = wb.get_sheet_by_name("BDT sheet").to_python()
+    except Exception:
+        pass
+
+    # ── Fallback to openpyxl whenever calamine didn't yield rows ──
+    if rows is None:
+        try:
+            owb = load_workbook(file_path, data_only=True)
+        except Exception as e:
+            data.errors.append(f"Cannot open file: {e}")
+            return data
+        if "BDT sheet" not in owb.sheetnames:
+            data.errors.append("Missing 'BDT sheet'")
+            owb.close()
+            return data
+        ows = owb["BDT sheet"]
+        rows = []
+        for row_cells in ows.iter_rows(min_row=1, max_row=ows.max_row,
+                                        max_col=ows.max_column):
+            rows.append([c.value for c in row_cells])
+        owb.close()
+
+    if rows is None:
+        if not data.errors:
+            data.errors.append("Failed to read BDT sheet")
         return data
 
-    # ── BDT sheet ─────────────────────────────────────────
-    if "BDT sheet" not in wb.sheetnames:
-        data.errors.append("Missing 'BDT sheet'")
-        return data
-
-    ws = wb["BDT sheet"]
+    max_row = len(rows)
+    max_col = max((len(r) for r in rows), default=0)
 
     def cell(row, col):
         """1-indexed cell access (matches Excel row/col numbers)."""
-        return ws.cell(row=row, column=col).value
+        r, c = row - 1, col - 1
+        if r < 0 or r >= max_row:
+            return None
+        row_data = rows[r]
+        if c < 0 or c >= len(row_data):
+            return None
+        return row_data[c]
 
-    # Site info (rows 4-6 in 1-indexed = rows 3-5 in 0-indexed pandas)
-    data.site_name = _safe_str(cell(5, 3))    # row 5, col C
-    data.site_code = _safe_str(cell(5, 9))    # row 5, col I
-    data.test_date = cell(4, 15)              # row 4, col O
-    if isinstance(data.test_date, str):
-        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%Y-%m-%d %H:%M:%S"):
-            try:
-                data.test_date = datetime.strptime(data.test_date.strip(), fmt)
-                break
-            except ValueError:
-                continue
-    data.time_in  = _safe_str(cell(5, 15))    # row 5, col O
-    data.time_out = _safe_str(cell(6, 15))    # row 6, col O
+    # Site info
+    data.site_name = _safe_str(cell(4, 3))
+    data.site_code = _safe_str(cell(4, 9))
+    data.test_date = _parse_test_date(cell(3, 15), data.filename)
+    data.time_in  = _safe_str(cell(4, 15))
+    data.time_out = _safe_str(cell(5, 15))
 
-    # Discharge test table — find it by scanning for "Batteries discharge test"
+    # Discharge test table — find by scanning for "Batteries discharge test"
     discharge_start_row = None
-    for r in range(1, ws.max_row + 1):
+    for r in range(1, max_row + 1):
         v = _safe_str(cell(r, 2))
         if "batteries discharge test" in v.lower():
             discharge_start_row = r
@@ -234,33 +304,27 @@ def parse_bdt_file(file_path: str) -> BDTData:
                 data_row = r
                 break
         if data_row is None:
-            data_row = discharge_start_row + 3  # fallback
+            data_row = discharge_start_row + 3
 
-        # Start readings (Before disconnecting)
-        # Rec Bus Bar V/A are cols 4-5; String A values are cols 7,9,11,...
         data.start_voltage = _safe_float(cell(data_row, 4))
         data.start_ampere  = _safe_float(cell(data_row, 5))
 
-        # Ibat before test = max of String A columns at "Before disconnecting"
-        # String #1 A=col7, #2 A=col9, #3 A=col11, ... up to #8 A=col21
         string_amps = []
-        for sc in range(7, 22, 2):  # cols 7, 9, 11, 13, 15, 17, 19, 21
+        for sc in range(7, 22, 2):
             sa = _safe_float(cell(data_row, sc))
             if sa is not None:
                 string_amps.append(sa)
         if string_amps:
             data.ibat_before_test = max(string_amps)
 
-        # Discharge time-series — scan dynamically until "After Connecting"
+        # Discharge time-series
         last_filled_mins = 0.0
         last_filled_voltage = None
         last_filled_ampere = None
         r = data_row + 1
-        while r <= data_row + 30:  # safety limit
+        while r <= data_row + 30:
             lbl = _safe_str(cell(r, 1))
             if "after connecting" in lbl.lower():
-                # "After Connecting Rectifier" = recovery reading, NOT end
-                # of discharge. Store separately for display only.
                 data.after_reconnect_voltage = _safe_float(cell(r, 4))
                 data.after_reconnect_ampere  = _safe_float(cell(r, 5))
                 break
@@ -282,20 +346,28 @@ def parse_bdt_file(file_path: str) -> BDTData:
             r += 1
 
         data.discharge_minutes = last_filled_mins
-
-        # End voltage/ampere = last actual discharge reading (not "After
-        # Connecting Rectifier" which is the recovery/recharge reading)
         data.end_voltage = last_filled_voltage
         data.end_ampere  = last_filled_ampere
 
-    _parse_battery_info(ws, cell, data)
+    _parse_battery_info(max_col, cell, data)
 
-    wb.close()
-
-    # Photo slots — extract labelled photos from drawing XML
-    data.photo_slots, data.photo_count = _extract_photo_slots(file_path)
+    # Photo slots
+    if not skip_photos:
+        data.photo_slots, data.photo_count = _extract_photo_slots(file_path)
+        data.photos_deferred = False
+    else:
+        data.photos_deferred = True
 
     return data
+
+
+def load_bdt_photos(bdt: BDTData) -> None:
+    """Lazy-load photo slots for a BDTData that was parsed with skip_photos."""
+    if bdt.photo_slots:
+        bdt.photos_deferred = False
+        return  # already loaded
+    bdt.photo_slots, bdt.photo_count = _extract_photo_slots(bdt.file_path)
+    bdt.photos_deferred = False
 
 
 # ── Photo slot definitions ────────────────────────────────────
@@ -365,50 +437,58 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int]:
         media_files = [n for n in zf.namelist() if n.startswith("xl/media/")]
         total_media = len(media_files)
 
-        # Find drawing rels path — look for drawing1.xml.rels
-        drawing_rels_path = "xl/drawings/_rels/drawing1.xml.rels"
-        drawing_path = "xl/drawings/drawing1.xml"
-        if drawing_path not in zf.namelist():
+        # Find all drawing XML files in the zip (not just drawing1.xml)
+        all_names = zf.namelist()
+        drawing_paths = sorted(
+            n for n in all_names
+            if n.startswith("xl/drawings/") and n.endswith(".xml")
+            and "/_rels/" not in n
+        )
+        if not drawing_paths:
             return [], total_media
 
-        # Build rId → media zip path map from drawing rels
+        # Build rId → media zip path map from all drawing rels
         rid_to_path: dict[str, str] = {}
-        if drawing_rels_path in zf.namelist():
-            rels_xml = ET.fromstring(zf.read(drawing_rels_path))
-            for rel in rels_xml:
-                rid = rel.get("Id", "")
-                target = rel.get("Target", "")
-                if target.startswith("../media/"):
-                    rid_to_path[rid] = "xl/media/" + target.split("/")[-1]
+        for dp in drawing_paths:
+            dp_basename = dp.rsplit("/", 1)[-1]
+            rels_path = f"xl/drawings/_rels/{dp_basename}.rels"
+            if rels_path in all_names:
+                rels_xml = ET.fromstring(zf.read(rels_path))
+                for rel in rels_xml:
+                    rid = rel.get("Id", "")
+                    target = rel.get("Target", "")
+                    if target.startswith("../media/"):
+                        rid_to_path[rid] = "xl/media/" + target.split("/")[-1]
 
-        # Parse drawing XML — extract twoCellAnchor positions + rIds
-        drawing_xml = ET.fromstring(zf.read(drawing_path))
+        # Parse all drawing XMLs — extract twoCellAnchor positions + rIds
         # slot_index → (rId, media_path)
         slot_images: dict[int, tuple[str, str]] = {}
 
-        for anchor in drawing_xml.findall(f"{{{ns_xdr}}}twoCellAnchor"):
-            frm = anchor.find(f"{{{ns_xdr}}}from")
-            if frm is None:
-                continue
-            from_col = int(frm.find(f"{{{ns_xdr}}}col").text)
-            from_row = int(frm.find(f"{{{ns_xdr}}}row").text)
+        for dp in drawing_paths:
+            drawing_xml = ET.fromstring(zf.read(dp))
+            for anchor in drawing_xml.findall(f"{{{ns_xdr}}}twoCellAnchor"):
+                frm = anchor.find(f"{{{ns_xdr}}}from")
+                if frm is None:
+                    continue
+                from_col = int(frm.find(f"{{{ns_xdr}}}col").text)
+                from_row = int(frm.find(f"{{{ns_xdr}}}row").text)
 
-            # Skip non-photo anchors (logo at col 0, etc.)
-            if from_col < 12:
-                continue
+                # Skip non-photo anchors (logo at col 0, etc.)
+                if from_col < 12:
+                    continue
 
-            slot_idx = _anchor_to_slot(from_row, from_col)
-            if slot_idx is None or slot_idx in slot_images:
-                continue
+                slot_idx = _anchor_to_slot(from_row, from_col)
+                if slot_idx is None or slot_idx in slot_images:
+                    continue
 
-            # Find embedded image rId
-            blip = anchor.find(f".//{{{ns_a}}}blip")
-            if blip is None:
-                continue
-            rid = blip.get(f"{{{ns_r}}}embed", "")
-            if not rid or rid not in rid_to_path:
-                continue
-            slot_images[slot_idx] = (rid, rid_to_path[rid])
+                # Find embedded image rId
+                blip = anchor.find(f".//{{{ns_a}}}blip")
+                if blip is None:
+                    continue
+                rid = blip.get(f"{{{ns_r}}}embed", "")
+                if not rid or rid not in rid_to_path:
+                    continue
+                slot_images[slot_idx] = (rid, rid_to_path[rid])
 
         # Read labels from the worksheet and build PhotoSlot list
         # Re-open with openpyxl just for label reading

@@ -18,6 +18,21 @@ __pycache__/
 *.xlsx
 *.csv
 *.xls
+*.db
+
+# ── Local runtime/generated app data ──────────────────────────
+bdt_storage/
+dist_ci/
+alarm_web.db
+
+# ── Separate web app workspace (not part of desktop repo) ────
+web/
+
+# ── Web stack runtime secrets/config ──────────────────────────
+web/deploy/env/backend.env
+web/frontend/.env
+web/frontend/.env.local
+web/frontend/.env.production
 
 # ── macOS metadata & resource forks ──────────────────────────
 .DS_Store
@@ -28,6 +43,12 @@ __pycache__/
 
 # ── Claude Code internal state ───────────────────────────────
 .claude/
+.mcp.json
 
 # ── Axon graph database ─────────────────────────────────────
 .axon/
+# ── Repo-local CI/build helper files not for upstream ─────────
+.github/*
+!.github/workflows/
+!.github/workflows/*.yml
+scripts/pyinstaller_entry.py

@@ -1,0 +1,51 @@
+name: Build macOS Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "**/*.py"
+      - "requirements.txt"
+      - "scripts/build_macos.sh"
+      - "scripts/build_macos_installer.sh"
+      - "scripts/pyinstaller_entry.py"
+      - ".github/workflows/build-macos-installer.yml"
+
+jobs:
+  build-installer:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Make scripts executable
+        run: chmod +x scripts/build_macos.sh scripts/build_macos_installer.sh
+
+      - name: Build app bundle and DMG
+        env:
+          APPLE_DEVELOPER_ID_APPLICATION: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: ./scripts/build_macos_installer.sh
+
+      - name: Upload macOS app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlarmViewer-macos-app
+          path: dist/AlarmViewer.app
+          if-no-files-found: error
+
+      - name: Upload macOS DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlarmViewer-macos-installer
+          path: dist/AlarmViewer-macOS.dmg
+          if-no-files-found: error

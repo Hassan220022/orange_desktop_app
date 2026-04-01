@@ -94,7 +94,7 @@ BDT_RULES = [
     ("R2", "Power Alarm Match"),
     ("R3", "Duration Match"),
     ("R4", "Discharge Table Match"),
-    ("R5", "Start Ampere = 0"),
+    ("R5", "I Battery"),
     ("R6", "End Voltage Range"),
     ("R7", "V/A Inverse"),
     ("R8", "Theoretical BT"),

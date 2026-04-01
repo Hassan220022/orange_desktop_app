@@ -1,26 +1,20 @@
-name: Build Windows EXE
+name: Build Windows Installer
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - "main.py"
-      - "viewer.py"
-      - "parsers.py"
-      - "models.py"
-      - "backup_time.py"
-      - "bdt_parser.py"
-      - "bdt_validator.py"
-      - "constants.py"
-      - "styles.py"
-      - "state.py"
+      - "**/*.py"
       - "requirements.txt"
+      - "scripts/build_windows.bat"
+      - "scripts/build_windows_installer.bat"
       - "scripts/pyinstaller_entry.py"
-      - ".github/workflows/build-windows-exe.yml"
+      - "installer/windows/AlarmViewer.iss"
+      - ".github/workflows/build-windows-installer.yml"
 
 jobs:
-  build:
+  build-installer:
     runs-on: windows-latest
 
     steps:
@@ -58,7 +52,22 @@ jobs:
             --hidden-import python_calamine `
             scripts/pyinstaller_entry.py
 
-      - name: Upload EXE artifact
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: iscc installer/windows/AlarmViewer.iss
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlarmViewer-windows-installer
+          path: dist/AlarmViewer-Setup.exe
+          if-no-files-found: error
+
+      - name: Upload Windows executable artifact
         uses: actions/upload-artifact@v4
         with:
           name: AlarmViewer-windows-exe
