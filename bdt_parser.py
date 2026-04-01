@@ -19,6 +19,7 @@ class PhotoSlot:
     label: str                       # e.g. "Battery current", "PLVD set point"
     image_data: bytes | None = None  # raw JPEG/PNG bytes, None if empty
     image_ext: str = ""              # "jpeg" or "png"
+    category: str = "other"
 
 
 @dataclass
@@ -45,10 +46,12 @@ class BDTData:
 
     # Battery info
     ibat_before_test: float | None = None
+    starting_ibattery_ampere: float | None = None
     battery_brand: str = ""
     battery_ah: float | None = None
     battery_voltage: float | None = None
     num_strings: int | None = None
+    door_alarm_condition: bool | None = None
 
     # Photos
     photo_count: int = 0
@@ -316,6 +319,7 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
                 string_amps.append(sa)
         if string_amps:
             data.ibat_before_test = max(string_amps)
+            data.starting_ibattery_ampere = data.ibat_before_test
 
         # Discharge time-series
         last_filled_mins = 0.0
@@ -387,6 +391,14 @@ _SLOT_DEFS: list[tuple[int, int]] = [
     # Band 4 — Charging / Disconnect / Reconnect
     (58, 13), (58, 18), (58, 23),
 ]
+
+_BAND_CATEGORIES = {
+    0: "rectifier",
+    1: "batteries",
+    2: "modules",
+    3: "load",
+    4: "charging",
+}
 
 # Map (band_index, col_group_index) → slot index in _SLOT_DEFS
 _BAND_RANGES = [(9, 19), (21, 32), (34, 44), (46, 56), (58, 68)]
@@ -516,7 +528,11 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int]:
                     pass
 
             slots.append(PhotoSlot(
-                label=label, image_data=img_data, image_ext=img_ext))
+                label=label,
+                image_data=img_data,
+                image_ext=img_ext,
+                category=_BAND_CATEGORIES.get(idx // 3, "other"),
+            ))
 
         wb.close()
         return slots, total_media

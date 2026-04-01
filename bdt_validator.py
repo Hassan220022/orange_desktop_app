@@ -6,6 +6,7 @@ data to detect fraudulent or incorrect test submissions.
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime, time
 
 import pandas as pd
 import numpy as np
@@ -71,6 +72,8 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
     result.rules.append(_rule_6_end_voltage(bdt, health_pct))
     result.rules.append(_rule_7_inverse_relationship(bdt))
     result.rules.append(_rule_8_backup_time(bdt, health_pct))
+    result.rules.append(_rule_9_discharge_current_tolerance(bdt))
+    result.rules.append(_rule_10_door_alarm_match(bdt, alarm_df))
 
     # Overall verdict
     failed = [r for r in result.rules if r.verdict == "Rejected"]
@@ -88,8 +91,26 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
 
 # ── Rule implementations ──────────────────────────────────
 
+_REQUIRED_PHOTO_CATEGORIES = ("rectifier", "batteries")
+
+
+def _slot_category(slot) -> str:
+    """Return normalized slot category from parser metadata."""
+    category = getattr(slot, "category", "")
+    if category:
+        return str(category).strip().lower()
+
+    # Compatibility fallback for older parsed objects without slot.category
+    label = str(getattr(slot, "label", "")).strip().lower()
+    if "rectifier" in label:
+        return "rectifier"
+    if "batter" in label:
+        return "batteries"
+    return ""
+
+
 def _rule_1_photos(bdt: BDTData) -> RuleResult:
-    """R1: Photos exist in placeholders (per-slot reporting)."""
+    """R1: Required photo categories must have at least one filled image."""
     if bdt.photos_deferred:
         return RuleResult(
             rule_id="R1", rule_name="Photos",
@@ -97,34 +118,35 @@ def _rule_1_photos(bdt: BDTData) -> RuleResult:
             detail="Photo validation deferred; photos not loaded yet",
         )
 
-    # Use per-slot data when available
     if bdt.photo_slots:
-        filled = [s for s in bdt.photo_slots if s.image_data]
-        missing = [s for s in bdt.photo_slots if not s.image_data]
-        total = len(bdt.photo_slots)
-        n_filled = len(filled)
+        counts = {cat: 0 for cat in _REQUIRED_PHOTO_CATEGORIES}
+        any_filled = False
 
-        if n_filled == total:
+        for slot in bdt.photo_slots:
+            has_image = bool(getattr(slot, "image_data", None))
+            if has_image:
+                any_filled = True
+            category = _slot_category(slot)
+            if category in counts and has_image:
+                counts[category] += 1
+
+        missing = [cat.title() for cat, n in counts.items() if n == 0]
+        if not missing:
             return RuleResult(
                 rule_id="R1", rule_name="Photos",
                 passed=True, verdict="Accepted",
-                detail=f"All {total} photo slots filled",
+                detail=(f"Required categories present: Rectifier ({counts['rectifier']}), "
+                        f"Batteries ({counts['batteries']})"),
             )
-        if n_filled == 0:
-            return RuleResult(
-                rule_id="R1", rule_name="Photos",
-                passed=False, verdict="Rejected",
-                detail="No photos embedded in file",
-            )
-        missing_names = ", ".join(s.label for s in missing)
+
+        verdict = "Rejected" if not any_filled else "Revise"
         return RuleResult(
             rule_id="R1", rule_name="Photos",
-            passed=False, verdict="Revise",
-            detail=(f"{n_filled}/{total} slots filled. "
-                    f"Missing: {missing_names}"),
+            passed=False, verdict=verdict,
+            detail=f"Missing required photo categories: {', '.join(missing)}",
         )
 
-    # Fallback to simple media count
+    # Fallback to simple media count when per-slot metadata is unavailable
     has = bdt.photo_count > 0
     return RuleResult(
         rule_id="R1", rule_name="Photos",
@@ -135,24 +157,37 @@ def _rule_1_photos(bdt: BDTData) -> RuleResult:
     )
 
 
+def _normalize_alarm_datetimes(alarm_df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure occurred_on/cleared_on columns are datetime when present."""
+    normalized = alarm_df
+    for col in ("occurred_on", "cleared_on"):
+        if col in normalized.columns and not pd.api.types.is_datetime64_any_dtype(normalized[col]):
+            if normalized is alarm_df:
+                normalized = normalized.copy()
+            normalized[col] = pd.to_datetime(normalized[col], errors="coerce", format="mixed")
+    return normalized
+
+
 def _find_power_alarms(alarm_df: pd.DataFrame, site_code: str) -> pd.DataFrame:
     """Find Power alarms for a site, with file_source fallback if unconfigured."""
-    # Ensure occurred_on is datetime
-    if not pd.api.types.is_datetime64_any_dtype(alarm_df["occurred_on"]):
-        alarm_df = alarm_df.copy()
-        alarm_df["occurred_on"] = pd.to_datetime(
-            alarm_df["occurred_on"], errors="coerce", format="mixed")
+    required_cols = {"site_id", "occurred_on"}
+    if not required_cols.issubset(alarm_df.columns):
+        return alarm_df.iloc[0:0]
 
+    alarm_df = _normalize_alarm_datetimes(alarm_df)
     site_mask = (
         alarm_df["site_id"].astype(str).str.strip().str.upper()
         == site_code.strip().upper()
     ) & (alarm_df["occurred_on"].notna())
 
-    # Try alarm_category first
-    cat_mask = site_mask & (alarm_df["alarm_category"] == "Power")
-    power = alarm_df[cat_mask]
-    if not power.empty:
-        return power
+    power = alarm_df.iloc[0:0]
+    if "alarm_category" in alarm_df.columns:
+        cat_mask = site_mask & (
+            alarm_df["alarm_category"].astype(str).str.strip().str.lower() == "power"
+        )
+        power = alarm_df[cat_mask]
+        if not power.empty:
+            return power
 
     # Fallback: if no alarms classified as Power, use file_source keyword
     if "file_source" in alarm_df.columns:
@@ -161,12 +196,44 @@ def _find_power_alarms(alarm_df: pd.DataFrame, site_code: str) -> pd.DataFrame:
                 "power", case=False, na=False))
         return alarm_df[src_mask]
 
-    return power  # empty
+    return power
+
+
+def _parse_test_time(raw_time) -> time | None:
+    """Parse BDT test time from HH:MM or HH:MM:SS formats."""
+    if raw_time is None:
+        return None
+    try:
+        if pd.isna(raw_time):
+            return None
+    except Exception:
+        pass
+    if isinstance(raw_time, datetime):
+        return raw_time.time().replace(microsecond=0)
+    if hasattr(raw_time, "hour") and hasattr(raw_time, "minute"):
+        # datetime.time or pandas Timestamp-like
+        try:
+            return raw_time.replace(microsecond=0)
+        except TypeError:
+            return datetime(
+                2000, 1, 1, raw_time.hour, raw_time.minute,
+                getattr(raw_time, "second", 0)
+            ).time()
+
+    text = str(raw_time).strip()
+    if not text or text.lower() == "nan":
+        return None
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(text, fmt).time()
+        except ValueError:
+            continue
+    return None
 
 
 def _rule_2_power_alarm_match(bdt: BDTData,
                                alarm_df: pd.DataFrame | None) -> RuleResult:
-    """R2: Power alarm exists on test date for the same site."""
+    """R2: Same-site/date Power alarm matches test start/end times ±5 min."""
     if alarm_df is None or alarm_df.empty:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm Match",
@@ -188,8 +255,32 @@ def _rule_2_power_alarm_match(bdt: BDTData,
             passed=False, verdict="Rejected",
             detail=f"Invalid test date: {bdt.test_date!r}",
         )
-    power = _find_power_alarms(alarm_df, bdt.site_code)
 
+    start_time = _parse_test_time(bdt.time_in)
+    end_time = _parse_test_time(bdt.time_out)
+    if start_time is None or end_time is None:
+        missing_parts = []
+        if start_time is None:
+            missing_parts.append("time_in")
+        if end_time is None:
+            missing_parts.append("time_out")
+        return RuleResult(
+            rule_id="R2", rule_name="Power Alarm Match",
+            passed=False, verdict="Revise",
+            detail=(f"Cannot validate alarm timing: invalid {', '.join(missing_parts)} "
+                    f"(expected HH:MM or HH:MM:SS)"),
+        )
+
+    start_ts = test_date + pd.Timedelta(
+        hours=start_time.hour, minutes=start_time.minute, seconds=start_time.second
+    )
+    end_ts = test_date + pd.Timedelta(
+        hours=end_time.hour, minutes=end_time.minute, seconds=end_time.second
+    )
+    if end_ts < start_ts:
+        end_ts += pd.Timedelta(days=1)
+
+    power = _find_power_alarms(alarm_df, bdt.site_code)
     if power.empty:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm Match",
@@ -199,9 +290,8 @@ def _rule_2_power_alarm_match(bdt: BDTData,
 
     # Check if any Power alarm occurred on the test date
     power_dates = power["occurred_on"].dt.normalize()
-    match = power[power_dates == test_date]
-
-    if match.empty:
+    same_date = power[power_dates == test_date]
+    if same_date.empty:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm Match",
             passed=False, verdict="Rejected",
@@ -209,10 +299,40 @@ def _rule_2_power_alarm_match(bdt: BDTData,
                     f"{bdt.site_code}. Power was never cut from the grid."),
         )
 
+    if "cleared_on" not in same_date.columns:
+        return RuleResult(
+            rule_id="R2", rule_name="Power Alarm Match",
+            passed=False, verdict="Revise",
+            detail="Cannot validate alarm timing: cleared_on column missing",
+        )
+    same_date = same_date[same_date["cleared_on"].notna()]
+    if same_date.empty:
+        return RuleResult(
+            rule_id="R2", rule_name="Power Alarm Match",
+            passed=False, verdict="Revise",
+            detail="Cannot validate alarm timing: matching Power alarms have no cleared_on time",
+        )
+
+    tol = pd.Timedelta(minutes=5)
+    start_diff = (same_date["occurred_on"] - start_ts).abs()
+    end_diff = (same_date["cleared_on"] - end_ts).abs()
+    match = same_date[(start_diff <= tol) & (end_diff <= tol)]
+
+    if match.empty:
+        min_start = (start_diff.min() / pd.Timedelta(minutes=1))
+        min_end = (end_diff.min() / pd.Timedelta(minutes=1))
+        return RuleResult(
+            rule_id="R2", rule_name="Power Alarm Match",
+            passed=False, verdict="Rejected",
+            detail=(f"No Power alarm time match within ±5 min "
+                    f"(closest diffs: start {min_start:.1f} min, end {min_end:.1f} min)"),
+        )
+
     return RuleResult(
         rule_id="R2", rule_name="Power Alarm Match",
         passed=True, verdict="Accepted",
-        detail=f"Power alarm found on {test_date.date()} ({len(match)} match(es))",
+        detail=(f"Power alarm matched test window ({len(match)} match(es), "
+                f"tolerance ±5 min)"),
     )
 
 
@@ -325,26 +445,26 @@ def _rule_4_discharge_table(bdt: BDTData,
 
 
 def _rule_5_start_ampere(bdt: BDTData) -> RuleResult:
-    """R5: I Battery — battery current before test in 0.0–0.4 A range (rounds to 0)."""
+    """R5: Starting I-Battery ampere should be approximately 0A."""
     if bdt.ibat_before_test is None:
         return RuleResult(
-            rule_id="R5", rule_name="I Battery",
+            rule_id="R5", rule_name="Starting I-Battery ampere",
             passed=None, verdict="N/A",
-            detail="Ibat before test not found in file",
+            detail="Starting I-Battery ampere not found in file",
         )
 
     passed = abs(bdt.ibat_before_test) < 0.5
     return RuleResult(
-        rule_id="R5", rule_name="I Battery",
+        rule_id="R5", rule_name="Starting I-Battery ampere",
         passed=passed,
         verdict="Accepted" if passed else "Rejected",
-        detail=f"Ibat before test: {bdt.ibat_before_test} A (range: 0.0–0.4)",
+        detail=(f"Starting I-Battery ampere: {bdt.ibat_before_test} A "
+                f"(approximate 0A threshold: |I| < 0.5A)"),
     )
 
 
 def _rule_6_end_voltage(bdt: BDTData, health_pct: float) -> RuleResult:
-    """R6: End voltage — auto-accept if test cutoff at ≥180 min with
-    remaining capacity, otherwise require 45–47 V range."""
+    """R6: Completion OR rule — discharge >=180 min OR end voltage 45–47 V."""
     if bdt.end_voltage is None:
         return RuleResult(
             rule_id="R6", rule_name="End Voltage Range",
@@ -352,26 +472,15 @@ def _rule_6_end_voltage(bdt: BDTData, health_pct: float) -> RuleResult:
             detail="End voltage not found in file",
         )
 
-    # Auto-accept when test was cut off early (≥180 min) and battery
-    # still had theoretical capacity remaining.
     reported = bdt.discharge_minutes
-    if reported >= 180:
-        theoretical = _theoretical_backup_minutes(bdt, health_pct)
-        if theoretical is not None and theoretical > reported:
-            return RuleResult(
-                rule_id="R6", rule_name="End Voltage Range",
-                passed=True, verdict="Accepted",
-                detail=(f"End voltage: {bdt.end_voltage}V — test cutoff at "
-                        f"{reported:.0f} min (theoretical: {theoretical:.0f} min); "
-                        f"battery had remaining capacity"),
-            )
-
-    passed = 45.0 <= bdt.end_voltage <= 47.0
+    in_voltage_range = 45.0 <= bdt.end_voltage <= 47.0
+    passed = reported >= 180 or in_voltage_range
     return RuleResult(
         rule_id="R6", rule_name="End Voltage Range",
         passed=passed,
         verdict="Accepted" if passed else "Rejected",
-        detail=f"End voltage: {bdt.end_voltage}V (range: 45.0-47.0V)",
+        detail=(f"Discharge: {reported:.0f} min (target >=180) OR "
+                f"end voltage: {bdt.end_voltage}V (range: 45.0-47.0V)"),
     )
 
 
@@ -407,14 +516,14 @@ def _rule_7_inverse_relationship(bdt: BDTData) -> RuleResult:
         rule_id="R7", rule_name="V/A Inverse",
         passed=passed,
         verdict="Accepted" if passed else "Rejected",
-        detail=(f"V/A correlation: {corr:.3f} "
-                f"({'inverse' if corr < 0 else 'direct'} relationship)"),
+        detail=(f"Voltage-current correlation: {corr:.3f} "
+                f"({'expected inverse trend' if corr < 0 else 'unexpected direct trend'})"),
     )
 
 
 def _is_lithium(brand: str) -> bool:
     """Check if battery brand indicates lithium chemistry."""
-    return "lith" in brand.lower()
+    return "lith" in str(brand or "").lower()
 
 
 def _theoretical_backup_minutes(bdt: BDTData, health_pct: float) -> float | None:
@@ -441,7 +550,30 @@ def _theoretical_backup_minutes(bdt: BDTData, health_pct: float) -> float | None
 
 
 def _rule_8_backup_time(bdt: BDTData, health_pct: float) -> RuleResult:
-    """R8: Reported discharge time vs theoretical backup time from battery specs."""
+    """R8: Lithium sizing-vs-actual discharge time consistency check."""
+    reported = bdt.discharge_minutes
+    if not _is_lithium(bdt.battery_brand):
+        return RuleResult(
+            rule_id="R8", rule_name="Sizing vs Actual",
+            passed=None, verdict="N/A",
+            detail="Not applicable: battery type is not lithium",
+        )
+
+    if not 0.95 <= health_pct <= 1.00:
+        return RuleResult(
+            rule_id="R8", rule_name="Sizing vs Actual",
+            passed=None, verdict="N/A",
+            detail=(f"Not applicable: health_pct {health_pct:.2f} "
+                    f"outside required range [0.95, 1.00]"),
+        )
+
+    if reported >= 180:
+        return RuleResult(
+            rule_id="R8", rule_name="Sizing vs Actual",
+            passed=None, verdict="N/A",
+            detail=f"Not applicable: actual discharge is {reported:.0f} min (requires <180 min)",
+        )
+
     missing = []
     if bdt.battery_ah is None:
         missing.append("AH")
@@ -451,43 +583,127 @@ def _rule_8_backup_time(bdt: BDTData, health_pct: float) -> RuleResult:
         missing.append("strings")
     if missing:
         return RuleResult(
-            rule_id="R8", rule_name="Theoretical BT",
+            rule_id="R8", rule_name="Sizing vs Actual",
             passed=None, verdict="N/A",
-            detail=f"Battery {', '.join(missing)} not found in file",
+            detail=f"Not applicable: battery {', '.join(missing)} not found in file",
         )
 
     theoretical_mins = _theoretical_backup_minutes(bdt, health_pct)
     if theoretical_mins is None:
         return RuleResult(
-            rule_id="R8", rule_name="Theoretical BT",
+            rule_id="R8", rule_name="Sizing vs Actual",
             passed=None, verdict="N/A",
-            detail="Cannot compute theoretical BT (no load data before disconnect)",
+            detail="Not applicable: cannot compute theoretical duration from available load data",
         )
 
-    reported = bdt.discharge_minutes
+    delta = abs(theoretical_mins - reported)
+    passed = delta <= 15.0
+    return RuleResult(
+        rule_id="R8", rule_name="Sizing vs Actual",
+        passed=passed,
+        verdict="Accepted" if passed else "Rejected",
+        detail=(f"Theoretical: {theoretical_mins:.0f} min, actual: {reported:.0f} min, "
+                f"absolute difference: {delta:.1f} min (limit: 15 min)"),
+    )
 
-    # 3-hour cutoff detection: theoretical > 180 min but reported ~180 min
-    if theoretical_mins > 180 and abs(reported - 180) <= 5.0:
+
+def _rule_9_discharge_current_tolerance(bdt: BDTData) -> RuleResult:
+    """R9: Discharge current should stay within ±1A from baseline."""
+    readings = [(label, a) for label, _, a in bdt.discharge_readings if a is not None]
+    if len(readings) < 2:
         return RuleResult(
-            rule_id="R8", rule_name="Theoretical BT",
-            passed=False, verdict="Rejected",
-            detail=(f"Suspected 3hr cutoff — theoretical: {theoretical_mins:.0f} min, "
-                    f"reported: {reported:.0f} min"),
+            rule_id="R9", rule_name="Discharge Current Tolerance",
+            passed=None, verdict="N/A",
+            detail=f"Insufficient discharge current readings ({len(readings)}, need 2+)",
         )
 
-    # Check if reported exceeds theoretical by more than 15%
-    if reported > theoretical_mins * 1.15:
+    baseline_label, baseline = readings[0]
+    for label, current in readings[1:]:
+        diff = abs(current - baseline)
+        if diff > 1.0:
+            return RuleResult(
+                rule_id="R9", rule_name="Discharge Current Tolerance",
+                passed=False, verdict="Rejected",
+                detail=(f"Baseline at {baseline_label}: {baseline:.2f}A; "
+                        f"{label}: {current:.2f}A (|Δ|={diff:.2f}A > 1.0A)"),
+            )
+
+    return RuleResult(
+        rule_id="R9", rule_name="Discharge Current Tolerance",
+        passed=True, verdict="Accepted",
+        detail=f"All discharge currents stayed within ±1.0A from baseline ({baseline:.2f}A)",
+    )
+
+
+def _find_door_alarms(alarm_df: pd.DataFrame, site_code: str,
+                      test_date: pd.Timestamp) -> pd.DataFrame:
+    """Find same-site same-date alarms that indicate door condition."""
+    required_cols = {"site_id", "occurred_on"}
+    if not required_cols.issubset(alarm_df.columns):
+        return alarm_df.iloc[0:0]
+
+    alarm_df = _normalize_alarm_datetimes(alarm_df)
+    site_mask = (
+        alarm_df["site_id"].astype(str).str.strip().str.upper()
+        == site_code.strip().upper()
+    )
+    date_mask = alarm_df["occurred_on"].dt.normalize() == test_date
+
+    category_mask = pd.Series(False, index=alarm_df.index)
+    if "alarm_category" in alarm_df.columns:
+        category_mask = (
+            alarm_df["alarm_category"].astype(str).str.strip().str.lower() == "door"
+        )
+
+    name_mask = pd.Series(False, index=alarm_df.index)
+    if "alarm_name" in alarm_df.columns:
+        name_mask = alarm_df["alarm_name"].astype(str).str.contains("door", case=False, na=False)
+
+    source_mask = pd.Series(False, index=alarm_df.index)
+    if "file_source" in alarm_df.columns:
+        source_mask = alarm_df["file_source"].astype(str).str.contains("door", case=False, na=False)
+
+    door_mask = category_mask | name_mask | source_mask
+    return alarm_df[site_mask & date_mask & door_mask]
+
+
+def _rule_10_door_alarm_match(bdt: BDTData,
+                              alarm_df: pd.DataFrame | None) -> RuleResult:
+    """R10: Same-site/date Door alarm must exist."""
+    if alarm_df is None or alarm_df.empty:
         return RuleResult(
-            rule_id="R8", rule_name="Theoretical BT",
-            passed=False, verdict="Rejected",
-            detail=(f"Reported ({reported:.0f} min) exceeds theoretical "
-                    f"({theoretical_mins:.0f} min) by "
-                    f">{((reported / theoretical_mins) - 1) * 100:.0f}%"),
+            rule_id="R10", rule_name="Door Alarm Condition",
+            passed=None, verdict="N/A",
+            detail="No alarm data loaded",
+        )
+
+    if bdt.test_date is None:
+        return RuleResult(
+            rule_id="R10", rule_name="Door Alarm Condition",
+            passed=False, verdict="Revise",
+            detail="Cannot validate door alarm condition: missing test date",
+        )
+
+    try:
+        test_date = pd.Timestamp(bdt.test_date).normalize()
+    except Exception:
+        return RuleResult(
+            rule_id="R10", rule_name="Door Alarm Condition",
+            passed=False, verdict="Revise",
+            detail=f"Cannot validate door alarm condition: invalid test date {bdt.test_date!r}",
+        )
+
+    doors = _find_door_alarms(alarm_df, bdt.site_code, test_date)
+    if doors.empty:
+        return RuleResult(
+            rule_id="R10", rule_name="Door Alarm Condition",
+            passed=False, verdict="Revise",
+            detail=(f"No Door alarm found for site {bdt.site_code} on "
+                    f"{test_date.date()}"),
         )
 
     return RuleResult(
-        rule_id="R8", rule_name="Theoretical BT",
+        rule_id="R10", rule_name="Door Alarm Condition",
         passed=True, verdict="Accepted",
-        detail=(f"Theoretical: {theoretical_mins:.0f} min, "
-                f"reported: {reported:.0f} min"),
+        detail=f"Door alarm found for site {bdt.site_code} on {test_date.date()} ({len(doors)} match(es))",
     )

@@ -294,6 +294,7 @@ class AlarmViewer(QMainWindow):
         self._loader     = None
         self._col_filters: dict[str, set | None] = {}  # col -> selected values
         self._both_pd_active = False  # "Both P+D" filter flag
+        self._last_bdt_health_pct: float | None = None
         self._build_ui()
         self.setStyleSheet(STYLE)
         self._restore_ui_state()
@@ -562,7 +563,9 @@ class AlarmViewer(QMainWindow):
             ("Time In",           "time_in"),
             ("Time Out",          "time_out"),
             ("Discharge Duration","discharge_minutes"),
-            ("Ibat Before Test",  "ibat_before_test"),
+            ("Starting I-Battery ampere", "starting_ibattery_ampere"),
+            ("End Rectifier Voltage (V)", "end_rectifier_voltage"),
+            ("Lead-acid SOH (%)", "lead_acid_soh"),
             ("Battery Brand",     "battery_brand"),
             ("Battery AH",        "battery_ah"),
             ("Battery Voltage",   "battery_voltage"),
@@ -1153,6 +1156,7 @@ class AlarmViewer(QMainWindow):
         alarm_df = self._full_df if not self._full_df.empty else None
         tolerance = self._spn_tolerance.value() / 100.0
         health_pct = self._spn_health.value() / 100.0
+        self._last_bdt_health_pct = health_pct
 
         self._sbar.showMessage(
             f"Validating {len(bdt_files)} BDT file(s)…")
@@ -1197,20 +1201,23 @@ class AlarmViewer(QMainWindow):
         }
 
         for r, res in enumerate(results):
-            def _cell_text(rule):
-                if rule.verdict == "N/A" and "No alarm data" in rule.detail:
-                    return "No alarm data"
-                return rule.verdict
+            row_map = {
+                "File": res.filename,
+                "Site Code": res.site_code,
+                "Test Date": res.test_date,
+                "Verdict": res.overall,
+                "End Rectifier Voltage (V)": self._format_end_rectifier_voltage(
+                    res.bdt_data),
+                "Lead-acid SOH (%)": self._format_lead_acid_soh(res.bdt_data),
+            }
+            for rule in res.rules:
+                row_map[rule.rule_id] = self._rule_cell_text(rule)
 
-            vals = [
-                res.filename, res.site_code, res.test_date, res.overall,
-            ] + [_cell_text(rule) for rule in res.rules]
-
-            for c, val in enumerate(vals):
+            for c, col_name in enumerate(BDT_RESULT_HEADERS):
+                val = row_map.get(col_name, "--")
                 item = QTableWidgetItem(str(val))
                 item.setTextAlignment(Qt.AlignCenter)
-                # Color the verdict and rule columns
-                if c >= 3:  # Verdict + R1-R7 columns
+                if col_name == "Verdict" or col_name.startswith("R"):
                     item.setForeground(colors.get(val, QColor("#cdd6f4")))
                 self._bdt_table.setItem(r, c, item)
 
@@ -1225,6 +1232,35 @@ class AlarmViewer(QMainWindow):
             f" &middot; <span style='color:#fab387;'>{n_rev} Revise</span>"
             f" &middot; <span style='color:#6c7086;'>"
             f"{len(results)} files</span>")
+
+    @staticmethod
+    def _rule_cell_text(rule) -> str:
+        if rule.verdict == "N/A" and "No alarm data" in rule.detail:
+            return "No alarm data"
+        return rule.verdict
+
+    @staticmethod
+    def _is_lithium_brand(brand: str | None) -> bool:
+        return "lith" in (brand or "").lower()
+
+    def _lead_acid_soh_percent(self, bdt: BDTData | None) -> float | None:
+        if not bdt or self._is_lithium_brand(bdt.battery_brand):
+            return None
+        if self._last_bdt_health_pct is None:
+            return None
+        return self._last_bdt_health_pct * 100.0
+
+    @staticmethod
+    def _format_end_rectifier_voltage(bdt: BDTData | None) -> str:
+        if not bdt or bdt.end_voltage is None:
+            return "--"
+        return f"{bdt.end_voltage:.2f}"
+
+    def _format_lead_acid_soh(self, bdt: BDTData | None) -> str:
+        soh = self._lead_acid_soh_percent(bdt)
+        if soh is None:
+            return "--"
+        return f"{soh:.0f}"
 
     def _filter_bdt_table(self, text: str):
         """Live-filter the BDT results table by site ID or date."""
@@ -1276,6 +1312,9 @@ class AlarmViewer(QMainWindow):
 
         # ── Info grid ──
         if bdt:
+            start_ibat = bdt.starting_ibattery_ampere
+            if start_ibat is None:
+                start_ibat = bdt.ibat_before_test
             vals = {
                 "site_code":         bdt.site_code or "--",
                 "site_name":         bdt.site_name or "--",
@@ -1285,9 +1324,10 @@ class AlarmViewer(QMainWindow):
                 "time_out":          bdt.time_out or "--",
                 "discharge_minutes": (f"{bdt.discharge_minutes:.0f} min"
                                       if bdt.discharge_minutes else "--"),
-                "ibat_before_test":  (f"{bdt.ibat_before_test} A"
-                                      if bdt.ibat_before_test is not None
-                                      else "--"),
+                "starting_ibattery_ampere": (
+                    f"{start_ibat} A" if start_ibat is not None else "--"),
+                "end_rectifier_voltage": self._format_end_rectifier_voltage(bdt),
+                "lead_acid_soh": self._format_lead_acid_soh(bdt),
                 "battery_brand":     bdt.battery_brand or "--",
                 "battery_ah":        (f"{bdt.battery_ah} AH"
                                       if bdt.battery_ah else "--"),
@@ -1429,8 +1469,45 @@ class AlarmViewer(QMainWindow):
 
             self._bdt_photo_grid.addWidget(card, row, col)
 
-    # Key photo slots for default comparison (Batteries + Load/Current bands)
-    _COMPARE_KEY_SLOTS = {3, 4, 5, 9, 10, 11}
+    _COMPARE_KEY_CATEGORIES = {"rectifier", "batteries", "modules"}
+
+    @staticmethod
+    def _slot_category(slot) -> str:
+        category = getattr(slot, "category", "")
+        if category:
+            return str(category).lower()
+        return "other"
+
+    def _build_compare_category_summary(self, slots) -> dict[str, int]:
+        summary = {cat: 0 for cat in sorted(self._COMPARE_KEY_CATEGORIES)}
+        for slot in slots:
+            cat = self._slot_category(slot)
+            if cat in summary and slot.image_data:
+                summary[cat] += 1
+        return summary
+
+    @staticmethod
+    def _category_summary_text(prefix: str, summary: dict[str, int]) -> str:
+        return (
+            f"{prefix}: "
+            f"Rectifier {summary.get('rectifier', 0)} · "
+            f"Batteries {summary.get('batteries', 0)} · "
+            f"Modules {summary.get('modules', 0)}"
+        )
+
+    def _comparison_slot_indices(self, bdt: BDTData, other: BDTData,
+                                 all_slots: bool) -> list[int]:
+        if all_slots:
+            return list(range(min(len(bdt.photo_slots), len(other.photo_slots))))
+        indices: list[int] = []
+        limit = min(len(bdt.photo_slots), len(other.photo_slots))
+        for idx in range(limit):
+            cur_cat = self._slot_category(bdt.photo_slots[idx])
+            oth_cat = self._slot_category(other.photo_slots[idx])
+            if (cur_cat in self._COMPARE_KEY_CATEGORIES
+                    or oth_cat in self._COMPARE_KEY_CATEGORIES):
+                indices.append(idx)
+        return indices
 
     def _setup_photo_comparison(self, bdt: BDTData | None):
         """Check if comparison data is available and configure the UI."""
@@ -1508,6 +1585,8 @@ class AlarmViewer(QMainWindow):
         other_year = (other.test_date.strftime("%Y")
                       if other.test_date else "Other")
 
+        slot_indices = self._comparison_slot_indices(bdt, other, all_slots)
+
         # Header row
         hdr_slot = QLabel("Slot")
         hdr_slot.setObjectName("bdt_info_key")
@@ -1522,12 +1601,33 @@ class AlarmViewer(QMainWindow):
         self._bdt_compare_grid.addWidget(hdr_cur, 0, 1)
         self._bdt_compare_grid.addWidget(hdr_oth, 0, 2)
 
-        slot_indices = (range(min(len(bdt.photo_slots),
-                                  len(other.photo_slots)))
-                        if all_slots
-                        else sorted(self._COMPARE_KEY_SLOTS))
-
         grid_row = 1
+        if not all_slots:
+            cur_summary = self._build_compare_category_summary(
+                [bdt.photo_slots[idx] for idx in slot_indices])
+            oth_summary = self._build_compare_category_summary(
+                [other.photo_slots[idx] for idx in slot_indices])
+            summary_slot = QLabel("Category photos")
+            summary_slot.setObjectName("bdt_info_key")
+            summary_slot.setAlignment(Qt.AlignCenter)
+            summary_cur = QLabel(self._category_summary_text("Current", cur_summary))
+            summary_cur.setObjectName("bdt_photo_label")
+            summary_cur.setAlignment(Qt.AlignCenter)
+            summary_oth = QLabel(self._category_summary_text(other_year, oth_summary))
+            summary_oth.setObjectName("bdt_photo_label")
+            summary_oth.setAlignment(Qt.AlignCenter)
+            self._bdt_compare_grid.addWidget(summary_slot, grid_row, 0)
+            self._bdt_compare_grid.addWidget(summary_cur, grid_row, 1)
+            self._bdt_compare_grid.addWidget(summary_oth, grid_row, 2)
+            grid_row += 1
+
+        if not slot_indices:
+            lbl = QLabel("No matching slots for this comparison mode")
+            lbl.setObjectName("bdt_photo_label")
+            lbl.setAlignment(Qt.AlignCenter)
+            self._bdt_compare_grid.addWidget(lbl, grid_row, 0, 1, 3)
+            return
+
         for idx in slot_indices:
             if idx >= len(bdt.photo_slots) or idx >= len(other.photo_slots):
                 continue
@@ -1596,12 +1696,19 @@ class AlarmViewer(QMainWindow):
                 "File": res.filename,
                 "Site Code": res.site_code,
                 "Test Date": res.test_date,
+                "End Rectifier Voltage (V)": self._format_end_rectifier_voltage(
+                    res.bdt_data),
+                "Lead-acid SOH (%)": self._format_lead_acid_soh(res.bdt_data),
                 "Verdict": res.overall,
             }
             for rule in res.rules:
-                row[rule.rule_id] = rule.verdict
+                row[rule.rule_id] = self._rule_cell_text(rule)
                 row[f"{rule.rule_id} Detail"] = rule.detail
-            rows.append(row)
+            ordered = {col: row.get(col, "--") for col in BDT_RESULT_HEADERS}
+            for rule in res.rules:
+                ordered[f"{rule.rule_id} Detail"] = row.get(
+                    f"{rule.rule_id} Detail", "")
+            rows.append(ordered)
         self._btn_bdt_export.setEnabled(False)
         self._sbar.showMessage("Exporting BDT results …")
         self._bdt_export_thread = ExportThread(pd.DataFrame(rows), fp)

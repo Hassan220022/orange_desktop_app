@@ -17,7 +17,7 @@ Alarm Viewer lets telecom engineers load CSV/XLSX alarm exports, filter them by 
 - **Bulk file loading** -- recursive directory scan with parallel parsing via `ThreadPoolExecutor`
 - **Advanced filtering** -- text search, date range, vendor/network/category dropdowns, duration range, and Google Sheets-style per-column filter popups
 - **Backup-time analysis** -- matches Power and Down alarms per site to compute battery hold time, with summary statistics (avg, min, max) and CSV/Excel export
-- **BDT validation** -- parses Battery Discharge Test Excel files and cross-references against alarm data using 7 automated rules (photos, power alarm match, duration match, discharge table, start ampere, end voltage, V/A inverse relationship)
+- **BDT validation** -- parses Battery Discharge Test Excel files and cross-references against alarm data using 10 automated rules (photos by required categories, power timing match, duration match, discharge table match, starting I-Battery ampere, completion/end-voltage rule, V/A inverse relation, sizing-vs-actual applicability check, discharge current tolerance, and door alarm condition)
 - **Session persistence** -- saves UI state (filters, window geometry) and DataFrame cache to `~/.alarm_viewer/` for instant restore on next launch
 - **Site Down detection** -- flags Power alarms where a Down alarm occurred within the same outage window
 - **Alarm ID configuration** -- custom alarm ID lists for Power/Down classification beyond filename-based detection
@@ -239,7 +239,7 @@ make run
 2. **Select files** -- check the files you want to load from the file list, then click "Load Selected".
 3. **Filter** -- use the search bar, date pickers, dropdown filters (vendor, network, category, status), and duration range to narrow results. Click column headers for per-column filter popups.
 4. **Backup-time analysis** -- click the "Backup Time" button to compute battery hold times across all loaded Power and Down alarms. Results open in a dedicated dialog with summary statistics and export.
-5. **BDT validation** -- switch to the BDT tab, load Battery Discharge Test `.xlsx` files, and validate them against the loaded alarm data. Each file is checked against 7 rules with per-rule verdicts.
+5. **BDT validation** -- switch to the BDT tab, load Battery Discharge Test `.xlsx` files, and validate them against the loaded alarm data. Each file is checked against 10 rules with per-rule verdicts.
 6. **Export** -- export the current filtered view or backup-time results to Excel.
 
 ### Alarm Classification
@@ -271,7 +271,7 @@ alarm_app/
 ├── parsers.py         File discovery, CSV/XLSX parsing, LoaderThread, ExportThread
 ├── backup_time.py     compute_backup_times() + BackupTimeDialog + BackupTimeThread
 ├── bdt_parser.py      Battery Discharge Test Excel parser (openpyxl, non-tabular layout)
-├── bdt_validator.py   7-rule BDT validation engine with cross-referencing against alarms
+├── bdt_validator.py   10-rule BDT validation engine with cross-referencing against alarms
 ├── state.py           Session persistence -- JSON state + Parquet DataFrame cache
 ├── viewer.py          AlarmViewer (QMainWindow) -- all UI, filter logic, slots
 ├── requirements.txt   Python dependencies
@@ -308,13 +308,16 @@ QTableView display
 
 | Rule | Name                  | Description                                                   |
 | ---- | --------------------- | ------------------------------------------------------------- |
-| R1   | Photos                | All photo slots in the BDT template are filled                |
-| R2   | Power Alarm Match     | A Power alarm exists on the test date for the same site       |
+| R1   | Photos                | Required photo categories (rectifier and batteries) are present |
+| R2   | Power Alarm Match     | Power alarm start/end match test start/end within ±5 minutes on same date |
 | R3   | Duration Match        | Test duration matches Power alarm duration (within tolerance) |
 | R4   | Discharge Table Match | Reported backup time matches discharge readings               |
-| R5   | Start Ampere = 0      | Battery current before test is in 0.0--0.4 A range            |
-| R6   | End Voltage Range     | End voltage is within 40.5--45.0 V                            |
+| R5   | Starting I-Battery ampere | Starting battery current is approximately 0 A (`|I| < 0.5A`) |
+| R6   | End Voltage / Completion | Accepted when discharge is `>= 180` min OR end voltage is `45.0--47.0 V` |
 | R7   | V/A Inverse           | Voltage and ampere show inverse correlation during discharge  |
+| R8   | Sizing vs Actual      | Lithium-only applicability check (`health 95--100%`, `actual < 180`) with ±15 min diff threshold |
+| R9   | Discharge Current Tolerance | Discharge current remains within ±1 A of baseline reading |
+| R10  | Door Alarm Condition  | Door alarm detected for same site on test date               |
 
 ### Performance Optimizations
 

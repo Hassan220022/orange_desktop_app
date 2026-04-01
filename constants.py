@@ -88,25 +88,40 @@ BT_WIDTHS = {
 # ── BDT validation constants ──────────────────────────────
 BDT_DEFAULT_TOLERANCE = 0.15   # 15%
 BDT_DEFAULT_HEALTH_PCT = 0.80  # 80% default battery health
+BDT_DISCHARGE_CURRENT_TOLERANCE_A = 1.0
+BDT_POWER_TIMING_TOLERANCE_MIN = 5
+BDT_COMPLETION_MINUTES = 180
+BDT_END_VOLTAGE_MIN = 45.0
+BDT_END_VOLTAGE_MAX = 47.0
+BDT_SIZING_TOLERANCE_MINUTES = 15
+BDT_LITHIUM_HEALTH_MIN = 0.95
+BDT_LITHIUM_HEALTH_MAX = 1.00
+BDT_SIZING_SKIP_MINUTES = 180
+BDT_REQUIRED_PHOTO_CATEGORIES = ("rectifier", "batteries")
 
 BDT_RULES = [
     ("R1", "Photos"),
     ("R2", "Power Alarm Match"),
     ("R3", "Duration Match"),
     ("R4", "Discharge Table Match"),
-    ("R5", "I Battery"),
-    ("R6", "End Voltage Range"),
+    ("R5", "Starting I-Battery ampere"),
+    ("R6", "End Voltage / Completion"),
     ("R7", "V/A Inverse"),
-    ("R8", "Theoretical BT"),
+    ("R8", "Sizing vs Actual"),
+    ("R9", "Discharge Current Tolerance"),
+    ("R10", "Door Alarm Condition"),
 ]
 
 BDT_RESULT_HEADERS = [
     "File", "Site Code", "Test Date", "Verdict",
-    "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8",
+    "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10",
+    "End Rectifier Voltage (V)", "Lead-acid SOH (%)",
 ]
 
 BDT_RESULT_WIDTHS = {
     "File": 200, "Site Code": 90, "Test Date": 100, "Verdict": 90,
     "R1": 65, "R2": 65, "R3": 65, "R4": 65,
-    "R5": 65, "R6": 65, "R7": 65, "R8": 65,
+    "R5": 65, "R6": 65, "R7": 65, "R8": 65, "R9": 65, "R10": 65,
+    "End Rectifier Voltage (V)": 170,
+    "Lead-acid SOH (%)": 150,
 }

@@ -386,6 +386,10 @@ class TestParseBdtFile:
         rows[12][3] = 52.4
         # Start ampere at (13, 5) -> index 12, col 4
         rows[12][4] = 15.2
+        # String currents at cols 7,9,...,21 (1-indexed) -> indices 6,8,...
+        rows[12][6] = 0.2
+        rows[12][8] = 0.35
+        rows[12][10] = 0.4
 
         # Discharge reading at row 14 (1-indexed) -> index 13
         rows[13][0] = "5 min"
@@ -419,6 +423,8 @@ class TestParseBdtFile:
         assert result.start_ampere == 15.2
         assert result.after_reconnect_voltage == 53.0
         assert result.after_reconnect_ampere == 0.5
+        assert result.ibat_before_test == 0.4
+        assert result.starting_ibattery_ampere == 0.4
         assert result.battery_brand == "Narada"
         assert result.battery_voltage == 48.0
         assert result.battery_ah == 100.0
@@ -632,9 +638,11 @@ class TestBDTDataDefaults:
         assert data.after_reconnect_voltage is None
         assert data.after_reconnect_ampere is None
         assert data.ibat_before_test is None
+        assert data.starting_ibattery_ampere is None
         assert data.battery_ah is None
         assert data.battery_voltage is None
         assert data.num_strings is None
+        assert data.door_alarm_condition is None
 
     def test_default_numeric_fields(self):
         data = BDTData()
@@ -689,3 +697,4 @@ class TestBDTDataDefaults:
         assert slot.label == "Test Label"
         assert slot.image_data is None
         assert slot.image_ext == ""
+        assert slot.category == "other"
