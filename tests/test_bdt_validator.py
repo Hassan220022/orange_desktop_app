@@ -135,11 +135,13 @@ def _door_alarm(
 class TestValidateBDTOverall:
 
     def test_rules_appended_in_order_and_overall_accepted(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
         bdt = _make_bdt(
-            photo_slots=[
-                _slot("Rectifier Photo", "rectifier", b"img"),
-                _slot("Batteries Photo", "batteries", b"img"),
-            ],
+            photo_slots=slots,
+            photo_count=16,
         )
         alarm_df = _make_alarm_df([
             _power_alarm(),
@@ -188,29 +190,39 @@ class TestValidateBDTOverall:
 
 class TestR1Photos:
 
-    def test_required_categories_filled_accepted(self):
-        bdt = _make_bdt(photo_slots=[
-            _slot("Rectifier 1", "rectifier", b"img"),
-            _slot("Batteries 1", "batteries", b"img"),
-        ])
+    def test_all_16_photos_accepted(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(photo_slots=slots)
         r = _rule_1_photos(bdt)
         assert r.verdict == "Accepted"
         assert r.passed is True
 
-    def test_missing_required_category_revise(self):
+    def test_partial_photos_revise_even_if_categories_present(self):
+        bdt = _make_bdt(photo_slots=[
+            _slot("Rectifier 1", "rectifier", b"img"),
+            _slot("Batteries 1", "batteries", b"img"),
+        ], photo_count=16)
+        r = _rule_1_photos(bdt)
+        assert r.verdict == "Revise"
+        assert r.passed is False
+
+    def test_slot_data_takes_precedence_over_photo_count(self):
         bdt = _make_bdt(photo_slots=[
             _slot("Rectifier 1", "rectifier", b"img"),
             _slot("Batteries 1", "batteries", None),
         ])
         r = _rule_1_photos(bdt)
         assert r.verdict == "Revise"
-        assert "Batteries" in r.detail
+        assert r.passed is False
 
     def test_no_filled_images_rejected(self):
         bdt = _make_bdt(photo_slots=[
             _slot("Rectifier 1", "rectifier", None),
             _slot("Batteries 1", "batteries", None),
-        ])
+        ], photo_count=0)
         r = _rule_1_photos(bdt)
         assert r.verdict == "Rejected"
         assert r.passed is False
@@ -218,7 +230,14 @@ class TestR1Photos:
     def test_no_slots_fallback_photo_count(self):
         bdt = _make_bdt(photo_slots=[], photo_count=1)
         r = _rule_1_photos(bdt)
+        assert r.verdict == "Revise"
+        assert r.passed is False
+
+    def test_no_slots_fallback_photo_count_accepted_when_16(self):
+        bdt = _make_bdt(photo_slots=[], photo_count=16)
+        r = _rule_1_photos(bdt)
         assert r.verdict == "Accepted"
+        assert r.passed is True
 
     def test_deferred_photos_na(self):
         bdt = _make_bdt(photo_slots=[], photos_deferred=True)

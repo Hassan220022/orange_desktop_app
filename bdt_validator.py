@@ -13,10 +13,18 @@ import numpy as np
 
 try:
     from .bdt_parser import BDTData
-    from .constants import BDT_DEFAULT_TOLERANCE, BDT_DEFAULT_HEALTH_PCT
+    from .constants import (
+        BDT_DEFAULT_TOLERANCE,
+        BDT_DEFAULT_HEALTH_PCT,
+        BDT_REQUIRED_PHOTO_COUNT,
+    )
 except ImportError:
     from bdt_parser import BDTData
-    from constants import BDT_DEFAULT_TOLERANCE, BDT_DEFAULT_HEALTH_PCT
+    from constants import (
+        BDT_DEFAULT_TOLERANCE,
+        BDT_DEFAULT_HEALTH_PCT,
+        BDT_REQUIRED_PHOTO_COUNT,
+    )
 
 
 @dataclass
@@ -110,7 +118,7 @@ def _slot_category(slot) -> str:
 
 
 def _rule_1_photos(bdt: BDTData) -> RuleResult:
-    """R1: Required photo categories must have at least one filled image."""
+    """R1: Photo completeness policy (16=Accepted, 0=Rejected, partial=Revise)."""
     if bdt.photos_deferred:
         return RuleResult(
             rule_id="R1", rule_name="Photos",
@@ -119,41 +127,52 @@ def _rule_1_photos(bdt: BDTData) -> RuleResult:
         )
 
     if bdt.photo_slots:
-        counts = {cat: 0 for cat in _REQUIRED_PHOTO_CATEGORIES}
-        any_filled = False
-
-        for slot in bdt.photo_slots:
-            has_image = bool(getattr(slot, "image_data", None))
-            if has_image:
-                any_filled = True
-            category = _slot_category(slot)
-            if category in counts and has_image:
-                counts[category] += 1
-
-        missing = [cat.title() for cat, n in counts.items() if n == 0]
-        if not missing:
+        total_slots = len(bdt.photo_slots)
+        filled_slots = sum(
+            1 for slot in bdt.photo_slots if bool(getattr(slot, "image_data", None))
+        )
+        if filled_slots == 0:
+            return RuleResult(
+                rule_id="R1", rule_name="Photos",
+                passed=False, verdict="Rejected",
+                detail=f"No photos embedded in file (0/{total_slots} slots filled)",
+            )
+        if filled_slots >= BDT_REQUIRED_PHOTO_COUNT:
             return RuleResult(
                 rule_id="R1", rule_name="Photos",
                 passed=True, verdict="Accepted",
-                detail=(f"Required categories present: Rectifier ({counts['rectifier']}), "
-                        f"Batteries ({counts['batteries']})"),
+                detail=(f"All required photos are available "
+                        f"({filled_slots}/{BDT_REQUIRED_PHOTO_COUNT})"),
             )
-
-        verdict = "Rejected" if not any_filled else "Revise"
+        missing_count = max(BDT_REQUIRED_PHOTO_COUNT - filled_slots, 0)
         return RuleResult(
             rule_id="R1", rule_name="Photos",
-            passed=False, verdict=verdict,
-            detail=f"Missing required photo categories: {', '.join(missing)}",
+            passed=False, verdict="Revise",
+            detail=(f"Photo set incomplete: {filled_slots}/{BDT_REQUIRED_PHOTO_COUNT} "
+                    f"(missing {missing_count})"),
         )
 
-    # Fallback to simple media count when per-slot metadata is unavailable
-    has = bdt.photo_count > 0
+    # Fallback when per-slot metadata is unavailable.
+    count = int(bdt.photo_count or 0)
+    if count == 0:
+        return RuleResult(
+            rule_id="R1", rule_name="Photos",
+            passed=False, verdict="Rejected",
+            detail="No photos embedded in file",
+        )
+    if count >= BDT_REQUIRED_PHOTO_COUNT:
+        return RuleResult(
+            rule_id="R1", rule_name="Photos",
+            passed=True, verdict="Accepted",
+            detail=f"All required photos are available ({count}/{BDT_REQUIRED_PHOTO_COUNT})",
+        )
+    missing_count = BDT_REQUIRED_PHOTO_COUNT - count
     return RuleResult(
         rule_id="R1", rule_name="Photos",
-        passed=has,
-        verdict="Accepted" if has else "Rejected",
-        detail=(f"{bdt.photo_count} photo(s) found"
-                if has else "No photos embedded in file"),
+        passed=False,
+        verdict="Revise",
+        detail=(f"Photo set incomplete: {count}/{BDT_REQUIRED_PHOTO_COUNT} "
+                f"(missing {missing_count})"),
     )
 
 

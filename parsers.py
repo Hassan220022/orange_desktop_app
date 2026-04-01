@@ -441,10 +441,10 @@ class BDTValidationThread(QThread):
 
     def run(self):
         try:
-            from .bdt_parser import parse_bdt_file
+            from .bdt_parser import parse_bdt_file, load_bdt_photos
             from .bdt_validator import validate_bdt
         except ImportError:
-            from bdt_parser import parse_bdt_file
+            from bdt_parser import parse_bdt_file, load_bdt_photos
             from bdt_validator import validate_bdt
         from datetime import datetime
 
@@ -473,6 +473,11 @@ class BDTValidationThread(QThread):
                         bdt_data = future.result()
                     except Exception:
                         continue
+
+                    # R1 photo rule must evaluate actual image availability.
+                    # Bulk parsing may defer photos for speed, so load now.
+                    if getattr(bdt_data, "photos_deferred", False):
+                        load_bdt_photos(bdt_data)
 
                     result = validate_bdt(
                         bdt_data, self._alarm_df,
