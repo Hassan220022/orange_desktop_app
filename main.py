@@ -9,8 +9,15 @@ import sys
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
-from .constants import APP_NAME, APP_VERSION
-from .viewer import AlarmViewer
+try:
+    from .constants import APP_NAME, APP_VERSION
+    from .viewer import AlarmViewer
+except ImportError:  # PyInstaller flat-module runtime fallback
+    from constants import APP_NAME, APP_VERSION
+    from viewer import AlarmViewer
+except ImportError:  # PyInstaller flat-module runtime fallback
+    from constants import APP_NAME, APP_VERSION
+    from viewer import AlarmViewer
 
 
 def main():

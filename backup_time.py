@@ -15,7 +15,10 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 
-from .constants import BT_HEADERS, BT_WIDTHS
+try:
+    from .constants import BT_HEADERS, BT_WIDTHS
+except ImportError:
+    from constants import BT_HEADERS, BT_WIDTHS
 
 
 # ─────────────────────────────────────────────────────────────────

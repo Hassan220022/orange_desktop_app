@@ -19,7 +19,10 @@ import numpy as np
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from .constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
+try:
+    from .constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
+except ImportError:
+    from constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
 
 _EXTS = frozenset((".csv", ".xlsx", ".xls"))
 _ENCODINGS = ("utf-8-sig", "latin-1")          # utf-8-sig covers plain utf-8 too
@@ -437,8 +440,12 @@ class BDTValidationThread(QThread):
         self._health_pct = health_pct
 
     def run(self):
-        from .bdt_parser import parse_bdt_file
-        from .bdt_validator import validate_bdt
+        try:
+            from .bdt_parser import parse_bdt_file
+            from .bdt_validator import validate_bdt
+        except ImportError:
+            from bdt_parser import parse_bdt_file
+            from bdt_validator import validate_bdt
         from datetime import datetime
 
         try:

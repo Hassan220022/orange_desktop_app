@@ -22,15 +22,26 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QDate, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QKeySequence, QPixmap, QTextCharFormat
 
-from .constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
-                        COL_WIDTHS, DISPLAY_COLUMNS)
-from .styles import STYLE
-from .models import AlarmTableModel
-from .parsers import discover_alarm_files, LoaderThread, ExportThread, classify_by_alarm_id, compute_site_down_flag, BDTValidationThread
-from .backup_time import BackupTimeDialog, BackupTimeThread
-from .bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
-from .bdt_validator import validate_bdt, ValidationResult
-from . import state
+try:
+    from .constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
+                            COL_WIDTHS, DISPLAY_COLUMNS)
+    from .styles import STYLE
+    from .models import AlarmTableModel
+    from .parsers import discover_alarm_files, LoaderThread, ExportThread, classify_by_alarm_id, compute_site_down_flag, BDTValidationThread
+    from .backup_time import BackupTimeDialog, BackupTimeThread
+    from .bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
+    from .bdt_validator import validate_bdt, ValidationResult
+    from . import state
+except ImportError:
+    from constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
+                           COL_WIDTHS, DISPLAY_COLUMNS)
+    from styles import STYLE
+    from models import AlarmTableModel
+    from parsers import discover_alarm_files, LoaderThread, ExportThread, classify_by_alarm_id, compute_site_down_flag, BDTValidationThread
+    from backup_time import BackupTimeDialog, BackupTimeThread
+    from bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
+    from bdt_validator import validate_bdt, ValidationResult
+    import state
 
 
 

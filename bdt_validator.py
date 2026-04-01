@@ -10,8 +10,12 @@ from dataclasses import dataclass, field
 import pandas as pd
 import numpy as np
 
-from .bdt_parser import BDTData
-from .constants import BDT_DEFAULT_TOLERANCE, BDT_DEFAULT_HEALTH_PCT
+try:
+    from .bdt_parser import BDTData
+    from .constants import BDT_DEFAULT_TOLERANCE, BDT_DEFAULT_HEALTH_PCT
+except ImportError:
+    from bdt_parser import BDTData
+    from constants import BDT_DEFAULT_TOLERANCE, BDT_DEFAULT_HEALTH_PCT
 
 
 @dataclass
