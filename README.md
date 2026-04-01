@@ -342,6 +342,24 @@ This creates a standalone `alarm_app/dist/AlarmViewer.exe` that runs on any Wind
 3. Builds a single-file `.exe` with PyInstaller
 4. Cleans up build artifacts
 
+### Windows installer (.exe setup)
+
+To create a polished installer wizard for end users:
+
+```bash
+cd alarm_app/scripts
+build_windows_installer.bat
+```
+
+This produces:
+
+- `alarm_app/dist/AlarmViewer.exe` (portable app)
+- `alarm_app/dist/AlarmViewer-Setup.exe` (installer wizard)
+
+Installer requirements:
+
+- Inno Setup 6 (`iscc`) installed and available on PATH
+
 ### macOS
 
 Run the included macOS build script:
@@ -353,6 +371,27 @@ cd alarm_app/scripts
 
 This creates a standalone `dist/AlarmViewer.app` bundle.
 
+### macOS installer (.dmg)
+
+To package a user-friendly macOS installer image:
+
+```bash
+cd alarm_app/scripts
+./build_macos_installer.sh
+```
+
+This produces:
+
+- `dist/AlarmViewer.app`
+- `dist/AlarmViewer-macOS.dmg`
+
+The script supports optional signing/notarization via environment variables:
+
+- `APPLE_DEVELOPER_ID_APPLICATION`
+- `APPLE_ID`
+- `APPLE_TEAM_ID`
+- `APPLE_APP_SPECIFIC_PASSWORD`
+
 ### Makefile shortcuts
 
 From `alarm_app/` you can also run:
@@ -360,18 +399,27 @@ From `alarm_app/` you can also run:
 ```bash
 make build-windows
 make build-macos
+make build-windows-installer
+make build-macos-installer
 ```
 
-### Get a ready-made `.exe` from GitHub Actions
+### Get ready-made installers from GitHub Actions
 
-If you want the final executable without running local Windows commands:
+If you want installable artifacts without running local packaging commands:
 
 1. Push your branch to GitHub.
-2. Open **Actions** → **Build Windows EXE**.
+2. Open **Actions** and run one of:
+        - **Build Windows EXE**
+        - **Build Windows Installer**
+        - **Build macOS Installer**
 3. Click **Run workflow**.
-4. Download artifact **`AlarmViewer-windows-exe`**.
+4. Download artifacts:
+        - `AlarmViewer-windows-exe`
+        - `AlarmViewer-windows-installer`
+        - `AlarmViewer-macos-app`
+        - `AlarmViewer-macos-installer`
 
-The artifact contains `AlarmViewer.exe`.
+Windows users should install via `AlarmViewer-Setup.exe`. macOS users should install from `AlarmViewer-macOS.dmg`.
 
 ## Session Persistence
 

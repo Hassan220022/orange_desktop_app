@@ -29,20 +29,25 @@ call .venv_build\Scripts\activate.bat
 echo.
 echo [2/5] Installing dependencies...
 pip install --upgrade pip -q
-pip install PyQt5 pandas numpy openpyxl xlrd pyinstaller -q
+pip install -r alarm_app\requirements.txt -q
 
 echo.
 echo [3/5] Building standalone EXE with PyInstaller...
 pyinstaller ^
+    --noconfirm ^
     --onefile ^
     --windowed ^
     --name "AlarmViewer" ^
+    --paths alarm_app ^
+    --collect-submodules alarm_app ^
     --distpath alarm_app\dist ^
     --workpath alarm_app\build ^
     --specpath alarm_app ^
     --hidden-import pandas ^
     --hidden-import openpyxl ^
     --hidden-import xlrd ^
+    --hidden-import pyarrow ^
+    --hidden-import python_calamine ^
     alarm_app\scripts\pyinstaller_entry.py
 
 echo.
@@ -58,4 +63,6 @@ echo   Copy that single file to any Windows PC - no Python needed!
 echo.
 call deactivate
 popd
+if /I "%CI%"=="true" goto :eof
+if /I "%NO_PAUSE%"=="1" goto :eof
 pause

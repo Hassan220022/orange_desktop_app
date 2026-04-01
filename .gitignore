@@ -48,5 +48,7 @@ web/frontend/.env.production
 # ── Axon graph database ─────────────────────────────────────
 .axon/
 # ── Repo-local CI/build helper files not for upstream ─────────
-.github/
+.github/*
+!.github/workflows/
+!.github/workflows/*.yml
 scripts/pyinstaller_entry.py

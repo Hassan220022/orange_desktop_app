@@ -26,13 +26,19 @@ source .venv_build/bin/activate
 echo
 echo "[2/5] Installing dependencies..."
 python -m pip install --upgrade pip -q
-python -m pip install PyQt5 pandas numpy openpyxl xlrd pyinstaller -q
+python -m pip install -r requirements.txt -q
 
 echo
 echo "[3/5] Building macOS app bundle with PyInstaller..."
+chmod -R u+w dist/AlarmViewer dist/AlarmViewer.app 2>/dev/null || true
+rm -rf dist/AlarmViewer dist/AlarmViewer.app
+
 pyinstaller \
+  --noconfirm \
   --windowed \
   --name "AlarmViewer" \
+  --paths ".." \
+  --collect-submodules alarm_app \
   --distpath "dist" \
   --workpath "build" \
   --specpath "." \
