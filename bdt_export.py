@@ -75,6 +75,44 @@ _CORE_BDT_FALLBACKS: dict[str, str] = {
     "Discharge time( Mins)": "discharge_minutes",
     "PLD Value": "pld_value",
 }
+_INTEGER_COLUMNS = {
+    "# of BSC",
+    "# of BTS",
+    "# of GSM/MRFU/RF",
+    "# of DSC/MRFU/RF",
+    "# of MW",
+    "# of SDH",
+    "# of ADM",
+    "# of Routers",
+    "No. Of 3G RF",
+    "No. Of 4G RF",
+    "# of Modules",
+    "No of String",
+    "No of Batteries",
+}
+_STRICT_NUMERIC_COLUMNS = _INTEGER_COLUMNS | {
+    "PLD Value",
+}
+_NUMERIC_WITH_UNITS_COLUMNS = {
+    "Battery Volt",
+    "Battery Ampere Hour",
+    "Discharge time( Mins)",
+    "Start Volt",
+    "Start Amp",
+    "Charging current",
+    "End Volt",
+    "End Amp",
+}
+_TEXT_ONLY_COLUMNS = {
+    "BSC Type",
+    "BTS Type",
+    "MW Type",
+    "AC1 Type",
+    "AC2 Type",
+    "3G Type",
+    "4G Type",
+}
+_NUMERIC_RE = re.compile(r"^-?\d+(?:[.,]\d+)?$")
 
 
 def _clean_text(value: Any) -> str:
@@ -162,6 +200,170 @@ def _format_bdt_value(value: Any) -> str:
     return _clean_text(value)
 
 
+def _numeric_from_strict_text(text: str) -> float | None:
+    val = text.strip().replace(",", ".")
+    if not _NUMERIC_RE.fullmatch(val):
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _numeric_from_text_with_units(text: str) -> float | None:
+    val = text.strip().lower().replace(",", ".")
+    val = re.sub(r"\s+", "", val)
+    for suffix in ("minutes", "minute", "mins", "min", "vdc", "ah", "am", "v", "a"):
+        if val.endswith(suffix):
+            val = val[: -len(suffix)]
+            break
+    return _numeric_from_strict_text(val)
+
+
+def _format_numeric(num: float, *, integer: bool) -> str:
+    if integer and abs(num - round(num)) < 1e-9:
+        return str(int(round(num)))
+    return f"{num:.2f}".rstrip("0").rstrip(".")
+
+
+def _normalize_numeric_column(column: str, value: str) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    if column in _STRICT_NUMERIC_COLUMNS:
+        num = _numeric_from_strict_text(text)
+    elif column in _NUMERIC_WITH_UNITS_COLUMNS:
+        num = _numeric_from_text_with_units(text)
+    else:
+        num = None
+    if num is None:
+        return ""
+    return _format_numeric(num, integer=(column in _INTEGER_COLUMNS))
+
+
+def _parse_date(value: Any):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+
+    text = _clean_text(value)
+    if not text:
+        return None
+
+    for fmt in (
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%Y-%m-%d %H:%M:%S",
+        "%d-%b-%y",
+        "%d-%b-%Y",
+        "%d-%m-%Y",
+        "%d-%m-%y",
+        "%d/%m/%Y",
+    ):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+
+    for day_first in (False, True):
+        parsed = pd.to_datetime(text, errors="coerce", dayfirst=day_first)
+        if not pd.isna(parsed):
+            return parsed.to_pydatetime()
+    return None
+
+
+def _normalize_date_text(value: Any) -> str:
+    parsed = _parse_date(value)
+    if parsed is None:
+        return _clean_text(value)
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _normalize_week(value: str, test_date: str) -> str:
+    text = _clean_text(value)
+    if text:
+        m = re.match(r"^\s*[wW]\s*(\d{1,2})\s*$", text)
+        if m:
+            week_no = int(m.group(1))
+            if week_no > 0:
+                return f"W{week_no:02d}"
+        n = _numeric_from_strict_text(text)
+        if n is not None and n > 0:
+            return f"W{int(round(n)):02d}"
+
+    parsed = _parse_date(test_date)
+    if parsed is None:
+        return text
+    return f"W{int(parsed.isocalendar().week):02d}"
+
+
+def _normalize_site_category(value: str) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    key = _normalize_key(text)
+    if key in {"od", "outdoor"}:
+        return "OUTDOOR"
+    if key in {"shelter", "indoor"}:
+        return "SHELTER"
+    return text.upper()
+
+
+def _normalize_type(value: str) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    key = _normalize_key(text)
+    if key in {"bronze", "silver", "gold", "platinum"}:
+        return text.upper()
+    return text
+
+
+def _normalize_power_source(value: str) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    upper = text.upper().replace(" ", "")
+    if upper in {"ECDG", "EC+DG"}:
+        return "EC+DG"
+    if upper in {"ETDG", "ET+DG"}:
+        return "ET+DG"
+    if upper in {"EC", "DG", "ET"}:
+        return upper
+    return text.upper()
+
+
+def _blank_if_numeric(value: str) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    return "" if _numeric_from_strict_text(text) is not None else text
+
+
+def _normalize_canonical_row(row: dict[str, str], row_index: int) -> None:
+    row["Short Code"] = _clean_text(row.get("Short Code", "")).upper()
+    row["On Air Date"] = _normalize_date_text(row.get("On Air Date", ""))
+    row["Test Date"] = _normalize_date_text(row.get("Test Date", ""))
+    row["Week"] = _normalize_week(row.get("Week", ""), row.get("Test Date", ""))
+    row["Ser"] = str(row_index + 1)
+    row["Type"] = _normalize_type(row.get("Type", ""))
+    row["Site Category"] = _normalize_site_category(row.get("Site Category", ""))
+    row["Power Source"] = _normalize_power_source(row.get("Power Source", ""))
+
+    reason_repeat = _clean_text(row.get("Reason for Repeated BDT", ""))
+    if _normalize_key(reason_repeat) == "cycle":
+        row["Reason for Repeated BDT"] = "Cycle"
+    else:
+        row["Reason for Repeated BDT"] = reason_repeat
+
+    for col in _STRICT_NUMERIC_COLUMNS | _NUMERIC_WITH_UNITS_COLUMNS:
+        row[col] = _normalize_numeric_column(col, row.get(col, ""))
+
+    for col in _TEXT_ONLY_COLUMNS:
+        row[col] = _blank_if_numeric(row.get(col, ""))
+
+
 def _apply_bdt_fallbacks(row: dict[str, str], bdt) -> None:
     if bdt is None:
         return
@@ -204,7 +406,7 @@ def _to_export_row(canonical_row: dict[str, str]) -> dict[str, str]:
 def build_pm_summary_rows(results, health_pct: float | None = None) -> list[dict[str, str]]:
     del health_pct  # Kept in signature for call-site compatibility.
     rows: list[dict[str, str]] = []
-    for res in results:
+    for row_index, res in enumerate(results):
         bdt = getattr(res, "bdt_data", None)
         summary_data = getattr(bdt, "summary_data", None) if bdt is not None else None
         exact, ordered = _normalize_summary_data(summary_data)
@@ -215,6 +417,7 @@ def build_pm_summary_rows(results, health_pct: float | None = None) -> list[dict
         }
         _apply_ac_hp_split_fallback(canonical_row, exact, ordered)
         _apply_bdt_fallbacks(canonical_row, bdt)
+        _normalize_canonical_row(canonical_row, row_index)
         rows.append(_to_export_row(canonical_row))
     return rows
 

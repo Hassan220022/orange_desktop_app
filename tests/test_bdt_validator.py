@@ -647,23 +647,49 @@ class TestR7InverseRelationship:
 
 class TestR8SizingVsActual:
 
-    def test_non_lithium_na(self):
-        bdt = _make_bdt(battery_brand="Narada", discharge_minutes=120.0)
-        r = _rule_8_backup_time(bdt, health_pct=0.95)
-        assert r.verdict == "N/A"
-        assert "not lithium" in r.detail.lower()
+    def test_non_lithium_is_evaluated_not_na(self):
+        bdt = _make_bdt(
+            battery_brand="Narada",
+            battery_ah=100.0,
+            battery_voltage=48.0,
+            num_strings=1,
+            start_voltage=48.0,
+            start_ampere=40.0,
+            discharge_minutes=120.0,  # theoretical=120 with health_pct=0.80
+        )
+        r = _rule_8_backup_time(bdt, health_pct=0.80)
+        assert r.verdict == "Accepted"
+        assert "Theoretical: 120" in r.detail
 
-    def test_health_pct_outside_range_na(self):
-        bdt = _make_bdt(battery_brand="Lithium", discharge_minutes=120.0)
-        r = _rule_8_backup_time(bdt, health_pct=0.90)
-        assert r.verdict == "N/A"
-        assert "health_pct" in r.detail
-
-    def test_actual_180_or_more_na(self):
-        bdt = _make_bdt(battery_brand="Lithium", discharge_minutes=180.0)
+    def test_theoretical_over_180_requires_cap_reached_rejected(self):
+        # theoretical = (100*48*1)/(48*30)*60 = 200 min (>180 cap)
+        bdt = _make_bdt(
+            battery_brand="Lithium",
+            battery_ah=100.0,
+            battery_voltage=48.0,
+            num_strings=1,
+            start_voltage=48.0,
+            start_ampere=30.0,
+            discharge_minutes=170.0,
+        )
         r = _rule_8_backup_time(bdt, health_pct=0.95)
-        assert r.verdict == "N/A"
-        assert "requires <180" in r.detail
+        assert r.verdict == "Rejected"
+        assert "short by" in r.detail
+
+    def test_theoretical_over_180_accepts_when_cap_reached(self):
+        # theoretical = 200 min (>180 cap), actual reaches cap
+        bdt = _make_bdt(
+            battery_brand="Lithium",
+            battery_ah=100.0,
+            battery_voltage=48.0,
+            num_strings=1,
+            start_voltage=48.0,
+            start_ampere=30.0,
+            discharge_minutes=180.0,
+        )
+        r = _rule_8_backup_time(bdt, health_pct=0.95)
+        assert r.verdict == "Accepted"
+        assert "reached cap" in r.detail
 
     def test_abs_difference_within_15_accepted(self):
         # theoretical = (100*48*1)/(48*40)*60 = 150 min; actual = 135, diff=15
@@ -693,14 +719,15 @@ class TestR8SizingVsActual:
         r = _rule_8_backup_time(bdt, health_pct=0.95)
         assert r.verdict == "Rejected"
 
-    def test_missing_specs_na(self):
+    def test_missing_specs_rejected_not_na(self):
         bdt = _make_bdt(
             battery_brand="Lithium",
             battery_ah=None,
             discharge_minutes=120.0,
         )
         r = _rule_8_backup_time(bdt, health_pct=0.95)
-        assert r.verdict == "N/A"
+        assert r.verdict == "Rejected"
+        assert "Cannot compute theoretical duration" in r.detail
 
 
 # ── R9 Discharge current tolerance ──────────────────────────────────────

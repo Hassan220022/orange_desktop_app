@@ -79,9 +79,9 @@ class TestBDTExport:
         assert row["BTS Type"] == "Macro BTS"
         assert row["CAP request "] == "CR-22"
         assert row["Reason for Stop BDT"] == "Load issue"
-        assert row["Charging current"] == "30A"
-        assert row["PLD Value"] == "44.0"
-        assert row["Site Category"] == "Urban"
+        assert row["Charging current"] == "30"
+        assert row["PLD Value"] == "44"
+        assert row["Site Category"] == "URBAN"
         assert row["AC1 HP"] == "15"
         assert row["AC2 HP"] == "18"
 
@@ -123,3 +123,35 @@ class TestBDTExport:
         assert row["End Amp"] == "21.7"
         assert row["Discharge time( Mins)"] == "180"
         assert row["PLD Value"] == "44"
+
+    def test_pm_summary_normalizes_week_ser_dates_and_numeric_cells(self):
+        res = _make_result(
+            summary_data={
+                "Week": "W00",
+                "Ser": "",
+                "Site Category": "out door",
+                "Type": "Bronze",
+                "Power Source": "et dg",
+                "Reason for Repeated BDT": "cycle",
+                "# of BTS": "Huawei",
+                "BSC Type": "0.0",
+                "Battery Volt": "48V",
+                "Battery Ampere Hour": "100AH",
+                "Discharge time( Mins)": "65 min",
+                "Test Date": "13-1-2026",
+            }
+        )
+        row = build_bdt_export_sheets([res], health_pct=0.8)[BDT_SUMMARY_SHEET_NAME].iloc[0]
+
+        assert row["Week"] == "W03"
+        assert row["Ser"] == "1"
+        assert row["Test Date"] == "2026-01-13"
+        assert row["Site Category"] == "OUTDOOR"
+        assert row["Type"] == "BRONZE"
+        assert row["Power Source"] == "ET+DG"
+        assert row["Reason for Repeated BDT"] == "Cycle"
+        assert row["# of BTS"] == ""
+        assert row["BSC Type"] == ""
+        assert row["Battery Volt"] == "48"
+        assert row["Battery Ampere Hour"] == "100"
+        assert row["Discharge time( Mins)"] == "65"

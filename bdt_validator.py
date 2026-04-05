@@ -666,52 +666,43 @@ def _theoretical_backup_minutes(bdt: BDTData, health_pct: float) -> float | None
 
 
 def _rule_8_backup_time(bdt: BDTData, health_pct: float) -> RuleResult:
-    """R8: Lithium sizing-vs-actual discharge time consistency check."""
-    reported = bdt.discharge_minutes
-    if not _is_lithium(bdt.battery_brand):
-        return RuleResult(
-            rule_id="R8", rule_name="Sizing vs Actual",
-            passed=None, verdict="N/A",
-            detail="Not applicable: battery type is not lithium",
-        )
+    """R8: Sizing-vs-actual discharge time consistency check (never N/A).
 
-    if not 0.95 <= health_pct <= 1.00:
-        return RuleResult(
-            rule_id="R8", rule_name="Sizing vs Actual",
-            passed=None, verdict="N/A",
-            detail=(f"Not applicable: health_pct {health_pct:.2f} "
-                    f"outside required range [0.95, 1.00]"),
-        )
-
-    if reported >= 180:
-        return RuleResult(
-            rule_id="R8", rule_name="Sizing vs Actual",
-            passed=None, verdict="N/A",
-            detail=f"Not applicable: actual discharge is {reported:.0f} min (requires <180 min)",
-        )
-
-    missing = []
-    if bdt.battery_ah is None:
-        missing.append("AH")
-    if bdt.battery_voltage is None:
-        missing.append("voltage")
-    if bdt.num_strings is None:
-        missing.append("strings")
-    if missing:
-        return RuleResult(
-            rule_id="R8", rule_name="Sizing vs Actual",
-            passed=None, verdict="N/A",
-            detail=f"Not applicable: battery {', '.join(missing)} not found in file",
-        )
-
+    Business rules:
+    - The test target is capped at 180 minutes.
+    - If theoretical duration is >180, accept only when actual discharge >=180.
+    - Otherwise (theoretical <=180), compare actual vs theoretical with ±15 min tolerance.
+    """
+    reported = float(bdt.discharge_minutes or 0.0)
     theoretical_mins = _theoretical_backup_minutes(bdt, health_pct)
+
     if theoretical_mins is None:
         return RuleResult(
             rule_id="R8", rule_name="Sizing vs Actual",
-            passed=None, verdict="N/A",
-            detail="Not applicable: cannot compute theoretical duration from available load data",
+            passed=False, verdict="Rejected",
+            detail=("Cannot compute theoretical duration (missing/invalid AH, voltage, "
+                    "strings, or starting load readings)"),
         )
 
+    # Cap-driven branch: batteries theoretically needing >180 min are expected to
+    # hit/exceed the 180-min test cap.
+    if theoretical_mins > 180.0:
+        short_by = max(0.0, 180.0 - reported)
+        passed = reported >= 180.0
+        if passed:
+            detail = (f"Theoretical: {theoretical_mins:.0f} min (>180 cap), "
+                      f"actual: {reported:.0f} min (reached cap)")
+        else:
+            detail = (f"Theoretical: {theoretical_mins:.0f} min (>180 cap), "
+                      f"actual: {reported:.0f} min, short by {short_by:.1f} min to 180")
+        return RuleResult(
+            rule_id="R8", rule_name="Sizing vs Actual",
+            passed=passed,
+            verdict="Accepted" if passed else "Rejected",
+            detail=detail,
+        )
+
+    # Normal branch: compare against theoretical target with fixed tolerance.
     delta = abs(theoretical_mins - reported)
     passed = delta <= 15.0
     return RuleResult(
@@ -719,7 +710,7 @@ def _rule_8_backup_time(bdt: BDTData, health_pct: float) -> RuleResult:
         passed=passed,
         verdict="Accepted" if passed else "Rejected",
         detail=(f"Theoretical: {theoretical_mins:.0f} min, actual: {reported:.0f} min, "
-                f"absolute difference: {delta:.1f} min (limit: 15 min)"),
+                f"difference: {delta:.1f} min (limit: 15 min)"),
     )
 
 

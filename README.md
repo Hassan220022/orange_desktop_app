@@ -240,7 +240,7 @@ make run
 3. **Filter** -- use the search bar, date pickers, dropdown filters (vendor, network, category, status), and duration range to narrow results. Click column headers for per-column filter popups.
 4. **Backup-time analysis** -- click the "Backup Time" button to compute battery hold times across all loaded Power and Down alarms. Results open in a dedicated dialog with summary statistics and export.
 5. **BDT validation** -- switch to the BDT tab, load Battery Discharge Test `.xlsx` files, and validate them against the loaded alarm data. Each file is checked against 11 rules with per-rule verdicts.
-6. **Export** -- export the current filtered view or backup-time results to Excel. BDT export writes one summary sheet (`BDT 2025-2026`) in the same 53-column layout used by the weekly summary file.
+6. **Export** -- export the current filtered view or backup-time results to Excel. BDT export writes one summary sheet (`BDT 2025-2026`) in the same 53-column layout used by the weekly summary file, with normalized week/date/unit formatting.
 
 ### Alarm Classification
 
