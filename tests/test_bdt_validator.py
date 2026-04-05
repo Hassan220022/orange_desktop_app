@@ -275,6 +275,26 @@ class TestR1Photos:
         assert r.verdict == "Accepted"
         assert r.passed is True
 
+    def test_16_photos_all_rectifier_no_batteries_revise(self):
+        """16 photos but all rectifier category — missing batteries = Revise."""
+        slots = [_slot(f"Slot {i+1}", "rectifier", b"img") for i in range(16)]
+        bdt = _make_bdt(photo_slots=slots)
+        r = _rule_1_photos(bdt)
+        assert r.verdict == "Revise"
+        assert "missing category: batteries" in r.detail
+
+    def test_16_photos_both_categories_accepted(self):
+        """16 photos with both rectifier and batteries categories = Accepted."""
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 10 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(photo_slots=slots)
+        r = _rule_1_photos(bdt)
+        assert r.verdict == "Accepted"
+        assert "rectifier" in r.detail
+        assert "batteries" in r.detail
+
     def test_deferred_photos_na(self):
         bdt = _make_bdt(photo_slots=[], photos_deferred=True)
         r = _rule_1_photos(bdt)

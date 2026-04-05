@@ -134,7 +134,7 @@ def _slot_category(slot) -> str:
 
 
 def _rule_1_photos(bdt: BDTData) -> RuleResult:
-    """R1: Photo completeness policy (16=Accepted, 0=Rejected, partial=Revise)."""
+    """R1: Photo completeness — count + required categories (rectifier & batteries)."""
     if bdt.photos_deferred:
         return RuleResult(
             rule_id="R1", rule_name="Photos",
@@ -153,22 +153,43 @@ def _rule_1_photos(bdt: BDTData) -> RuleResult:
                 passed=False, verdict="Rejected",
                 detail=f"No photos embedded in file (0/{total_slots} slots filled)",
             )
-        if filled_slots >= BDT_REQUIRED_PHOTO_COUNT:
+
+        # Check required categories: must have at least one rectifier AND one batteries photo
+        filled_categories = set()
+        for slot in bdt.photo_slots:
+            if bool(getattr(slot, "image_data", None)):
+                cat = _slot_category(slot)
+                if cat:
+                    filled_categories.add(cat)
+
+        missing_cats = [
+            c for c in _REQUIRED_PHOTO_CATEGORIES if c not in filled_categories
+        ]
+
+        if filled_slots >= BDT_REQUIRED_PHOTO_COUNT and not missing_cats:
             return RuleResult(
                 rule_id="R1", rule_name="Photos",
                 passed=True, verdict="Accepted",
-                detail=(f"All required photos are available "
-                        f"({filled_slots}/{BDT_REQUIRED_PHOTO_COUNT})"),
+                detail=(f"All required photos available "
+                        f"({filled_slots}/{BDT_REQUIRED_PHOTO_COUNT}), "
+                        f"categories: {', '.join(sorted(filled_categories))}"),
             )
-        missing_count = max(BDT_REQUIRED_PHOTO_COUNT - filled_slots, 0)
+
+        # Build detail about what's incomplete
+        parts = []
+        if filled_slots < BDT_REQUIRED_PHOTO_COUNT:
+            missing_n = BDT_REQUIRED_PHOTO_COUNT - filled_slots
+            parts.append(f"{filled_slots}/{BDT_REQUIRED_PHOTO_COUNT} (missing {missing_n})")
+        if missing_cats:
+            parts.append(f"missing category: {', '.join(missing_cats)}")
+
         return RuleResult(
             rule_id="R1", rule_name="Photos",
             passed=False, verdict="Revise",
-            detail=(f"Photo set incomplete: {filled_slots}/{BDT_REQUIRED_PHOTO_COUNT} "
-                    f"(missing {missing_count})"),
+            detail=f"Photo set incomplete: {'; '.join(parts)}",
         )
 
-    # Fallback when per-slot metadata is unavailable.
+    # Fallback when per-slot metadata is unavailable (no category check possible).
     count = int(bdt.photo_count or 0)
     if count == 0:
         return RuleResult(

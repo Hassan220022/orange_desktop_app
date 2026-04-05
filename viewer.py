@@ -490,8 +490,13 @@ class AlarmViewer(QMainWindow):
         self._bdt_table.verticalHeader().setVisible(False)
         self._bdt_table.verticalHeader().setDefaultSectionSize(28)
         hdr = self._bdt_table.horizontalHeader()
+        # Rule columns (R1-R11) use compact auto-fit; others use fixed widths.
+        rule_cols = {c for c in cols if c.startswith("R") and c[1:].isdigit()}
         for i, col in enumerate(cols):
-            hdr.resizeSection(i, BDT_RESULT_WIDTHS.get(col, 80))
+            if col in rule_cols:
+                hdr.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+            else:
+                hdr.resizeSection(i, BDT_RESULT_WIDTHS.get(col, 80))
         hdr.setStretchLastSection(True)
         self._bdt_table.clicked.connect(self._on_bdt_row_clicked)
         self._bdt_splitter.addWidget(self._bdt_table)
@@ -500,7 +505,10 @@ class AlarmViewer(QMainWindow):
         self._bdt_detail_panel = self._make_bdt_detail_panel()
         self._bdt_detail_panel.setVisible(False)
         self._bdt_splitter.addWidget(self._bdt_detail_panel)
-        self._bdt_splitter.setSizes([500, 300])
+        self._bdt_splitter.setSizes([250, 550])
+        # Let the detail panel stretch more than the table
+        self._bdt_splitter.setStretchFactor(0, 0)  # table: don't stretch
+        self._bdt_splitter.setStretchFactor(1, 1)  # detail: take remaining space
 
         lay.addWidget(self._bdt_splitter, 1)
 
@@ -667,7 +675,7 @@ class AlarmViewer(QMainWindow):
         self._bdt_door_table.setColumnWidth(1, 150)
         self._bdt_door_table.setColumnWidth(2, 150)
         self._bdt_door_table.horizontalHeader().setStretchLastSection(True)
-        self._bdt_door_table.setMaximumHeight(150)
+        self._bdt_door_table.setMinimumHeight(80)
         center_lay.addWidget(self._bdt_door_table)
 
         # ── Test History Comparison ────────────────────────────
@@ -686,7 +694,7 @@ class AlarmViewer(QMainWindow):
         self._bdt_history_table.setColumnWidth(0, 130)
         self._bdt_history_table.setColumnWidth(1, 130)
         self._bdt_history_table.horizontalHeader().setStretchLastSection(True)
-        self._bdt_history_table.setMaximumHeight(200)
+        self._bdt_history_table.setMinimumHeight(80)
         center_lay.addWidget(self._bdt_history_table)
 
         self._bdt_history_label = QLabel("")
@@ -777,7 +785,7 @@ class AlarmViewer(QMainWindow):
         self._bdt_detail_splitter.addWidget(right)
 
         # Set initial proportions (left:center:right = 1:1:2)
-        self._bdt_detail_splitter.setSizes([250, 300, 500])
+        self._bdt_detail_splitter.setSizes([280, 420, 400])
 
         outer.addWidget(self._bdt_detail_splitter)
 
@@ -1359,7 +1367,14 @@ class AlarmViewer(QMainWindow):
 
         if not self._bdt_detail_panel.isVisible():
             self._bdt_detail_panel.setVisible(True)
-            self._bdt_splitter.setSizes([400, 400])
+            # Size the results table to fit its rows (header + rows + margin)
+            row_count = self._bdt_table.rowCount()
+            header_h = self._bdt_table.horizontalHeader().height()
+            row_h = self._bdt_table.verticalHeader().defaultSectionSize()
+            table_h = header_h + (row_count * row_h) + 6
+            table_h = min(table_h, 250)  # cap so detail always gets space
+            total = self._bdt_splitter.height() or 800
+            self._bdt_splitter.setSizes([table_h, total - table_h])
 
         self._populate_bdt_detail(res)
 
