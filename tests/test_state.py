@@ -88,21 +88,23 @@ class TestClearCache:
 # ── load_alarm_ids / save_alarm_ids ────────────────────────────
 class TestAlarmIds:
     def test_round_trip(self):
-        ids = {"power": ["1001", "1002"], "down": ["2001"]}
+        ids = {"power": ["1001", "1002"], "down": ["2001"], "door": ["3001"]}
         state_mod.save_alarm_ids(ids)
         loaded = state_mod.load_alarm_ids()
         assert loaded["power"] == ["1001", "1002"]
         assert loaded["down"] == ["2001"]
+        assert loaded["door"] == ["3001"]
 
     def test_load_missing_returns_empty_defaults(self):
         loaded = state_mod.load_alarm_ids()
-        assert loaded == {"power": [], "down": []}
+        assert loaded == {"power": [], "down": [], "door": []}
 
     def test_strips_whitespace_and_coerces_to_str(self):
-        ids = {"power": [" 100 ", 200], "down": []}
+        ids = {"power": [" 100 ", 200], "down": [], "door": [" 300 ", 400]}
         state_mod.save_alarm_ids(ids)
         loaded = state_mod.load_alarm_ids()
         assert loaded["power"] == ["100", "200"]
+        assert loaded["door"] == ["300", "400"]
 
 
 # ── compute_file_hashes ───────────────────────────────────────

@@ -22,9 +22,11 @@ except ImportError:
 # ── Pre-computed colour objects (created once, reused for every cell) ──
 _CLR_PWR_BG   = QBrush(QColor("#2d1a1a"))
 _CLR_DWN_BG   = QBrush(QColor("#1a2d1a"))
+_CLR_DOR_BG   = QBrush(QColor("#132236"))
 _CLR_CLEARED  = QBrush(QColor("#a6e3a1"))
 _CLR_PWR_FG   = QBrush(QColor("#f38ba8"))
 _CLR_DWN_FG   = QBrush(QColor("#fab387"))
+_CLR_DOR_FG   = QBrush(QColor("#89dceb"))
 _CLR_SITE     = QBrush(QColor("#cba6f7"))
 _CLR_VENDOR   = QBrush(QColor("#89dceb"))
 _CLR_NET = {
@@ -101,7 +103,13 @@ class AlarmTableModel(QAbstractTableModel):
 
         if role == Qt.BackgroundRole:
             if cname == "alarm_category":
-                return _CLR_PWR_BG if "Power" in sval else _CLR_DWN_BG
+                if "Power" in sval:
+                    return _CLR_PWR_BG
+                if "Down" in sval:
+                    return _CLR_DWN_BG
+                if "Door" in sval:
+                    return _CLR_DOR_BG
+                return None
             if cname == "network_type":
                 return _CLR_NET.get(sval, _CLR_NET_DEF)
             return None
@@ -110,7 +118,13 @@ class AlarmTableModel(QAbstractTableModel):
             if cname == "clearance_status" and sval == "Cleared":
                 return _CLR_CLEARED
             if cname == "alarm_category":
-                return _CLR_PWR_FG if "Power" in sval else _CLR_DWN_FG
+                if "Power" in sval:
+                    return _CLR_PWR_FG
+                if "Down" in sval:
+                    return _CLR_DWN_FG
+                if "Door" in sval:
+                    return _CLR_DOR_FG
+                return None
             if cname == "site_id":
                 return _CLR_SITE
             if cname == "vendor":

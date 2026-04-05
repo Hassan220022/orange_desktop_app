@@ -20,7 +20,7 @@ Alarm Viewer lets telecom engineers load CSV/XLSX alarm exports, filter them by 
 - **BDT validation** -- parses Battery Discharge Test Excel files and cross-references against alarm data using 11 automated rules (photos by required categories, power timing match, duration match, discharge table match, starting I-Battery ampere, completion/end-voltage rule, V/A inverse relation, sizing-vs-actual applicability check, discharge current tolerance, door alarm condition, and summary checklist consistency)
 - **Session persistence** -- saves UI state (filters, window geometry) and DataFrame cache to `~/.alarm_viewer/` for instant restore on next launch
 - **Site Down detection** -- flags Power alarms where a Down alarm occurred within the same outage window
-- **Alarm ID configuration** -- custom alarm ID lists for Power/Down classification beyond filename-based detection
+- **Alarm ID configuration** -- custom alarm ID lists for Power/Down/Door classification beyond filename-based detection
 - **Dark theme** -- Catppuccin Mocha-inspired professional dark UI
 - **Windows standalone** -- builds to a single `.exe` via PyInstaller (no Python needed on target machine)
 
@@ -244,10 +244,11 @@ make run
 
 ### Alarm Classification
 
-Alarms are classified by two methods:
+Alarms are classified by:
 
-- **Filename keywords**: files containing `"power"` in the name are Power alarms, `"down"` are Down alarms
-- **Alarm ID lists**: configurable via the UI; alarm IDs can be mapped to Power or Down categories (stored in `~/.alarm_viewer/alarm_ids.json`)
+- **Filename keywords**: files containing `"power"`, `"down"`, or `"door"` in the name are classified accordingly
+- **Alarm ID lists**: configurable via the UI; alarm IDs can be mapped to Power, Down, or Door categories (stored in `~/.alarm_viewer/alarm_ids.json`)
+- **Door heuristics**: alarms with door signals in `alarm_name`/`file_source`/`alarm_source` are auto-classified as Door
 
 ### Schema Detection
 

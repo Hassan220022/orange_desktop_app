@@ -170,6 +170,8 @@ def parse_alarm_file(info: dict) -> pd.DataFrame | None:
         df["alarm_category"] = "Power"
     elif "down" in fname_lower:
         df["alarm_category"] = "Down"
+    elif "door" in fname_lower:
+        df["alarm_category"] = "Door"
     else:
         df["alarm_category"] = ""
     df["file_source"]    = fname
@@ -187,7 +189,7 @@ def classify_by_alarm_id(df: pd.DataFrame, alarm_ids: dict) -> pd.DataFrame:
 
     Args:
         df: DataFrame with 'alarm_id' and 'alarm_category' columns.
-        alarm_ids: {"power": ["id1", ...], "down": ["id1", ...]}
+        alarm_ids: {"power": [...], "down": [...], "door": [...]}
     Returns:
         DataFrame with updated 'alarm_category' column.
     """
@@ -195,12 +197,23 @@ def classify_by_alarm_id(df: pd.DataFrame, alarm_ids: dict) -> pd.DataFrame:
         return df
     power_set = set(alarm_ids.get("power", []))
     down_set  = set(alarm_ids.get("down", []))
+    door_set  = set(alarm_ids.get("door", []))
     # Normalize: floats like 300.0 → "300", strings stay as-is
     aid = (df["alarm_id"].fillna("").astype(str).str.strip()
            .str.replace(r'\.0$', '', regex=True))
     df = df.copy()
     df.loc[aid.isin(power_set), "alarm_category"] = "Power"
     df.loc[aid.isin(down_set),  "alarm_category"] = "Down"
+    df.loc[aid.isin(door_set),  "alarm_category"] = "Door"
+
+    # Heuristic fallback so door alarms are visible even without configured IDs.
+    door_mask = pd.Series(False, index=df.index)
+    door_rx = r"(?:^|[^a-z])door(?:[^a-z]|$)"
+    for col in ("alarm_name", "file_source", "alarm_source"):
+        if col in df.columns:
+            door_mask |= df[col].astype(str).str.contains(
+                door_rx, case=False, na=False, regex=True)
+    df.loc[door_mask, "alarm_category"] = "Door"
     return df
 
 

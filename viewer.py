@@ -211,14 +211,14 @@ class RestoreThread(QThread):
 
 
 class AlarmIdConfigDialog(QDialog):
-    """Dialog to configure Power/Down alarm ID lists."""
+    """Dialog to configure Power/Down/Door alarm ID lists."""
 
     saved = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Configure Alarm IDs")
-        self.setFixedSize(460, 420)
+        self.setFixedSize(460, 500)
         if parent:
             self.setStyleSheet(parent.styleSheet())
         self._build()
@@ -230,7 +230,7 @@ class AlarmIdConfigDialog(QDialog):
 
         note = QLabel(
             "Enter alarm IDs (comma-separated) to classify alarms.\n"
-            "IDs not in either list keep their filename-based category.")
+            "IDs not in any list keep their filename-based category.")
         note.setStyleSheet("color:#6c7086; font-size:11px;")
         note.setWordWrap(True)
         lay.addWidget(note)
@@ -255,6 +255,16 @@ class AlarmIdConfigDialog(QDialog):
         self._txt_down.setMinimumHeight(32)
         lay.addWidget(self._txt_down)
 
+        # Door IDs
+        lbl_dr = QLabel("Door Alarm IDs")
+        lbl_dr.setStyleSheet(
+            "color:#89dceb; font-size:12px; font-weight:600;")
+        lay.addWidget(lbl_dr)
+        self._txt_door = QLineEdit()
+        self._txt_door.setPlaceholderText("e.g. 91001, 91002, 91003")
+        self._txt_door.setMinimumHeight(32)
+        lay.addWidget(self._txt_door)
+
         lay.addStretch()
 
         # Buttons
@@ -277,13 +287,16 @@ class AlarmIdConfigDialog(QDialog):
         ids = state.load_alarm_ids()
         self._txt_power.setText(", ".join(ids.get("power", [])))
         self._txt_down.setText(", ".join(ids.get("down", [])))
+        self._txt_door.setText(", ".join(ids.get("door", [])))
 
     def _save(self):
         power = [x.strip() for x in self._txt_power.text().split(",")
                  if x.strip()]
         down  = [x.strip() for x in self._txt_down.text().split(",")
                  if x.strip()]
-        state.save_alarm_ids({"power": power, "down": down})
+        door  = [x.strip() for x in self._txt_door.text().split(",")
+                 if x.strip()]
+        state.save_alarm_ids({"power": power, "down": down, "door": door})
         self.saved.emit()
         self.accept()
 
@@ -978,7 +991,7 @@ class AlarmViewer(QMainWindow):
         row2.addWidget(lbl_cat)
 
         self._cb_cat = QComboBox()
-        self._cb_cat.addItems(["All", "Power", "Down"])
+        self._cb_cat.addItems(["All", "Power", "Down", "Door"])
         self._cb_cat.setMinimumWidth(88)
         row2.addWidget(self._cb_cat)
 
@@ -1085,6 +1098,7 @@ class AlarmViewer(QMainWindow):
             ("total",    "Total Records",  "#89b4fa"),
             ("power",    "Power Alarms",   "#f38ba8"),
             ("down",     "Down Alarms",    "#fab387"),
+            ("door",     "Door Alarms",    "#89dceb"),
             ("sites",    "Unique Sites",   "#a6e3a1"),
             ("avg_dur",  "Avg Duration",   "#cba6f7"),
         ):
@@ -2438,6 +2452,8 @@ class AlarmViewer(QMainWindow):
                 f"{(cat == 'Power').sum():,}")
             self._stats["down"].setText(
                 f"{(cat == 'Down').sum():,}")
+            self._stats["door"].setText(
+                f"{(cat == 'Door').sum():,}")
         if "site_id" in df.columns:
             self._stats["sites"].setText(
                 f"{df['site_id'].nunique():,}")

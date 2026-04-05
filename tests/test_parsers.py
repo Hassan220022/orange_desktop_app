@@ -321,6 +321,15 @@ class TestParseAlarmFile:
         assert result is not None
         assert (result["alarm_category"] == "Down").all()
 
+    def test_category_door_from_filename(self, tmp_path):
+        cols = list(SCHEMA_1_MAP.keys())
+        rows = [["src1", "SiteA", "2024-01-01 10:00", "2024-01-01 11:00",
+                 "01:00:00", "100", "Main Door Open", "Cleared", "LTE", "Huawei"]]
+        info = self._write_csv(tmp_path, "door_alarms_2024.csv", cols, rows)
+        result = parse_alarm_file(info)
+        assert result is not None
+        assert (result["alarm_category"] == "Door").all()
+
     def test_category_empty_when_no_keyword(self, tmp_path):
         cols = list(SCHEMA_1_MAP.keys())
         rows = [["src1", "SiteA", "2024-01-01 10:00", "2024-01-01 11:00",
@@ -365,7 +374,7 @@ class TestParseAlarmFile:
 # 5. classify_by_alarm_id
 # ═══════════════════════════════════════════════════════════════════
 class TestClassifyByAlarmId:
-    """Classify rows by alarm_id membership in power/down ID sets."""
+    """Classify rows by alarm_id membership and door-name/source heuristics."""
 
     @staticmethod
     def _make_df(alarm_ids, categories=None):
@@ -390,6 +399,25 @@ class TestClassifyByAlarmId:
         result = classify_by_alarm_id(df, alarm_ids)
         assert result.loc[0, "alarm_category"] == "Down"
         assert result.loc[1, "alarm_category"] == "Down"
+
+    def test_door_ids_classified(self):
+        df = self._make_df(["700", "800"])
+        alarm_ids = {"power": [], "down": [], "door": ["700", "800"]}
+        result = classify_by_alarm_id(df, alarm_ids)
+        assert result.loc[0, "alarm_category"] == "Door"
+        assert result.loc[1, "alarm_category"] == "Door"
+
+    def test_door_heuristic_from_name_or_source(self):
+        df = pd.DataFrame({
+            "alarm_id": ["1", "2", "3"],
+            "alarm_category": ["", "", ""],
+            "alarm_name": ["Main Door Open", "Power Fail", "Outdoor Temp High"],
+            "file_source": ["misc.csv", "door_events.csv", "power.csv"],
+        })
+        result = classify_by_alarm_id(df, {"power": [], "down": [], "door": []})
+        assert result.loc[0, "alarm_category"] == "Door"   # alarm_name contains door
+        assert result.loc[1, "alarm_category"] == "Door"   # file_source contains door
+        assert result.loc[2, "alarm_category"] == ""       # 'Outdoor' must not match
 
     def test_float_ids_normalized(self):
         """IDs like 300.0 (from Excel numeric parsing) become '300'."""

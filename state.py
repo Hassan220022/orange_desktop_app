@@ -65,17 +65,18 @@ def clear_cache():
 ALARM_IDS_FILE = STATE_DIR / "alarm_ids.json"
 
 def load_alarm_ids() -> dict:
-    """Return {"power": [...], "down": [...]} from config, or empty defaults."""
+    """Return {"power": [...], "down": [...], "door": [...]} from config."""
     try:
         if ALARM_IDS_FILE.exists():
             data = json.loads(ALARM_IDS_FILE.read_text(encoding="utf-8"))
             return {
                 "power": [str(x).strip() for x in data.get("power", [])],
                 "down":  [str(x).strip() for x in data.get("down", [])],
+                "door":  [str(x).strip() for x in data.get("door", [])],
             }
     except Exception:
         pass
-    return {"power": [], "down": []}
+    return {"power": [], "down": [], "door": []}
 
 
 def save_alarm_ids(ids: dict):
