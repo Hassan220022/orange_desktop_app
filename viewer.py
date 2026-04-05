@@ -32,6 +32,7 @@ try:
     from .backup_time import BackupTimeDialog, BackupTimeThread
     from .bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
     from .bdt_validator import validate_bdt, ValidationResult
+    from .bdt_export import build_bdt_export_sheets
     from . import state
 except ImportError:
     from constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
@@ -43,6 +44,7 @@ except ImportError:
     from backup_time import BackupTimeDialog, BackupTimeThread
     from bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
     from bdt_validator import validate_bdt, ValidationResult
+    from bdt_export import build_bdt_export_sheets
     import state
 
 
@@ -2053,28 +2055,13 @@ class AlarmViewer(QMainWindow):
             "Excel Files (*.xlsx)")
         if not fp:
             return
-        rows = []
-        for res in self._bdt_results:
-            row = {
-                "File": res.filename,
-                "Site Code": res.site_code,
-                "Test Date": res.test_date,
-                "End Rectifier Voltage (V)": self._format_end_rectifier_voltage(
-                    res.bdt_data),
-                "Lead-acid SOH (%)": self._format_lead_acid_soh(res.bdt_data),
-                "Verdict": res.overall,
-            }
-            for rule in res.rules:
-                row[rule.rule_id] = self._rule_cell_text(rule)
-                row[f"{rule.rule_id} Detail"] = rule.detail
-            ordered = {col: row.get(col, "--") for col in BDT_RESULT_HEADERS}
-            for rule in res.rules:
-                ordered[f"{rule.rule_id} Detail"] = row.get(
-                    f"{rule.rule_id} Detail", "")
-            rows.append(ordered)
+        sheets = build_bdt_export_sheets(
+            self._bdt_results,
+            health_pct=self._last_bdt_health_pct,
+        )
         self._btn_bdt_export.setEnabled(False)
         self._sbar.showMessage("Exporting BDT results …")
-        self._bdt_export_thread = ExportThread(pd.DataFrame(rows), fp)
+        self._bdt_export_thread = ExportThread(sheets, fp)
         self._bdt_export_thread.progress.connect(
             lambda v, m: self._sbar.showMessage(m))
         self._bdt_export_thread.finished.connect(self._on_bdt_export_done)

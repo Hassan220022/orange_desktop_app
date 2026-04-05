@@ -121,6 +121,40 @@ BDT_RESULT_HEADERS = [
     "End Rectifier Voltage (V)", "Lead-acid SOH (%)",
 ]
 
+BDT_RULE_DETAIL_HEADERS = [f"{rule_id} Detail" for rule_id, _ in BDT_RULES]
+BDT_VALIDATION_EXPORT_HEADERS = BDT_RESULT_HEADERS + BDT_RULE_DETAIL_HEADERS
+
+BDT_PM_SUMMARY_HEADERS = [
+    "Week", "Ser", "Site Name", "Short Code", "On Air Date",
+    "Nodal Degree", "PLD Value", "Linked sites name codes", "Type",
+    "Site Category", "Power Source", "# of BSC", "BSC Type", "# of BTS",
+    "BTS Type", "# of GSM/MRFU/RF", "# of DSC/MRFU/RF", "# of MW", "MW Type",
+    "# of SDH", "# of ADM", "# of Routers", "AC1 Type", "AC1 HP", "AC2 Type",
+    "AC2 HP", "3G Type", "No. Of 3G RF", "4G Type", "No. Of 4G RF",
+    "Orange office", "Subcontractor", "Office", "Area", "Network",
+    "Rectifier Brand", "# of Modules", "Battery Brand", "Battery Volt",
+    "Battery Ampere Hour", "No of String", "No of Batteries", "Start Volt",
+    "Start Amp", "Charging current", "End Volt", "End Amp",
+    "Discharge time( Mins)", "Reason for Stop BDT", "Test Date",
+    "Reason for Repeated BDT", "CAP request", "Comment",
+]
+
+BDT_SUMMARY_SHEET_NAME = "BDT 2025-2026"
+BDT_SUMMARY_EXPORT_HEADERS = [
+    "Week", "Ser", "Site Name", "Short Code", "On Air Date",
+    "Nodal Degree", "PLD Value", "Linked sites name codes", "Type",
+    "Site Category", "Power Source", "# of BSC", "BSC Type", "# of BTS",
+    "BTS Type", "# of GSM/MRFU/RF", "# of DSC/MRFU/RF", "# of MW", "MW Type",
+    "# of SDH", "# of ADM", "# of Routers", "AC1 Type", "AC1 HP", "AC2 Type",
+    "AC2 HP", "3G Type", "No. Of 3G RF", "4G Type", "No. Of 4G RF",
+    "Orange office", "Subcontractor", "Office", "Area", "Network",
+    "Rectifier Brand", "# of Modules", "Battery Brand", "Battery Volt",
+    "Battery Ampere Hour", "No of String", "No of Batteries ", "Start Volt",
+    "Start Amp", "Charging current", "End Volt", "End Amp",
+    "Discharge time( Mins)", "Reason for Stop BDT", "Test Date",
+    "Reason for Repeated BDT", "CAP request ", "Comment",
+]
+
 BDT_RESULT_WIDTHS = {
     "File": 200, "Site Code": 90, "Test Date": 100, "Verdict": 90,
     "R1": 65, "R2": 65, "R3": 65, "R4": 65,

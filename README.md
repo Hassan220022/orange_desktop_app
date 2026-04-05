@@ -17,7 +17,7 @@ Alarm Viewer lets telecom engineers load CSV/XLSX alarm exports, filter them by 
 - **Bulk file loading** -- recursive directory scan with parallel parsing via `ThreadPoolExecutor`
 - **Advanced filtering** -- text search, date range, vendor/network/category dropdowns, duration range, and Google Sheets-style per-column filter popups
 - **Backup-time analysis** -- matches Power and Down alarms per site to compute battery hold time, with summary statistics (avg, min, max) and CSV/Excel export
-- **BDT validation** -- parses Battery Discharge Test Excel files and cross-references against alarm data using 10 automated rules (photos by required categories, power timing match, duration match, discharge table match, starting I-Battery ampere, completion/end-voltage rule, V/A inverse relation, sizing-vs-actual applicability check, discharge current tolerance, and door alarm condition)
+- **BDT validation** -- parses Battery Discharge Test Excel files and cross-references against alarm data using 11 automated rules (photos by required categories, power timing match, duration match, discharge table match, starting I-Battery ampere, completion/end-voltage rule, V/A inverse relation, sizing-vs-actual applicability check, discharge current tolerance, door alarm condition, and summary checklist consistency)
 - **Session persistence** -- saves UI state (filters, window geometry) and DataFrame cache to `~/.alarm_viewer/` for instant restore on next launch
 - **Site Down detection** -- flags Power alarms where a Down alarm occurred within the same outage window
 - **Alarm ID configuration** -- custom alarm ID lists for Power/Down classification beyond filename-based detection
@@ -239,8 +239,8 @@ make run
 2. **Select files** -- check the files you want to load from the file list, then click "Load Selected".
 3. **Filter** -- use the search bar, date pickers, dropdown filters (vendor, network, category, status), and duration range to narrow results. Click column headers for per-column filter popups.
 4. **Backup-time analysis** -- click the "Backup Time" button to compute battery hold times across all loaded Power and Down alarms. Results open in a dedicated dialog with summary statistics and export.
-5. **BDT validation** -- switch to the BDT tab, load Battery Discharge Test `.xlsx` files, and validate them against the loaded alarm data. Each file is checked against 10 rules with per-rule verdicts.
-6. **Export** -- export the current filtered view or backup-time results to Excel.
+5. **BDT validation** -- switch to the BDT tab, load Battery Discharge Test `.xlsx` files, and validate them against the loaded alarm data. Each file is checked against 11 rules with per-rule verdicts.
+6. **Export** -- export the current filtered view or backup-time results to Excel. BDT export writes one summary sheet (`BDT 2025-2026`) in the same 53-column layout used by the weekly summary file.
 
 ### Alarm Classification
 

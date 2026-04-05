@@ -393,7 +393,7 @@ class LoaderThread(QThread):
 # Background export thread
 # ─────────────────────────────────────────────────────────────────
 class ExportThread(QThread):
-    """Write a DataFrame to Excel in a background thread.
+    """Write one or more DataFrames to Excel in a background thread.
 
     Signals:
         progress(int, str)  — percentage + status message
@@ -404,7 +404,7 @@ class ExportThread(QThread):
     finished = pyqtSignal(str)
     error    = pyqtSignal(str)
 
-    def __init__(self, df: pd.DataFrame, path: str):
+    def __init__(self, df: pd.DataFrame | dict[str, pd.DataFrame], path: str):
         super().__init__()
         self._df = df
         self._path = path
@@ -412,7 +412,16 @@ class ExportThread(QThread):
     def run(self):
         try:
             self.progress.emit(30, "Writing Excel file …")
-            self._df.to_excel(self._path, index=False, engine="openpyxl")
+            if isinstance(self._df, dict):
+                with pd.ExcelWriter(self._path, engine="openpyxl") as writer:
+                    total = max(len(self._df), 1)
+                    for idx, (sheet_name, df) in enumerate(self._df.items(), start=1):
+                        frame = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
+                        frame.to_excel(writer, sheet_name=sheet_name, index=False)
+                        pct = 30 + int(60 * idx / total)
+                        self.progress.emit(min(pct, 95), f"Writing sheet: {sheet_name}")
+            else:
+                self._df.to_excel(self._path, index=False, engine="openpyxl")
             self.progress.emit(100, "Export complete")
             self.finished.emit(self._path)
         except Exception:
