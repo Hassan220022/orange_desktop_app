@@ -17,6 +17,9 @@ try:
         BDT_DEFAULT_TOLERANCE,
         BDT_DEFAULT_HEALTH_PCT,
         BDT_REQUIRED_PHOTO_COUNT,
+        BDT_POWER_TIMING_TOLERANCE_MIN,
+        BDT_COMPLETION_MINUTES,
+        BDT_STRING_AMPERE_TOLERANCE_A,
     )
 except ImportError:
     from bdt_parser import BDTData
@@ -24,6 +27,9 @@ except ImportError:
         BDT_DEFAULT_TOLERANCE,
         BDT_DEFAULT_HEALTH_PCT,
         BDT_REQUIRED_PHOTO_COUNT,
+        BDT_POWER_TIMING_TOLERANCE_MIN,
+        BDT_COMPLETION_MINUTES,
+        BDT_STRING_AMPERE_TOLERANCE_A,
     )
 
 
@@ -51,7 +57,8 @@ class ValidationResult:
 
 def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
                  tolerance: float = BDT_DEFAULT_TOLERANCE,
-                 health_pct: float = BDT_DEFAULT_HEALTH_PCT) -> ValidationResult:
+                 health_pct: float = BDT_DEFAULT_HEALTH_PCT,
+                 power_timing_tol: float | None = None) -> ValidationResult:
     """Validate a parsed BDT file against alarm data.
 
     Args:
@@ -73,8 +80,8 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
     )
 
     result.rules.append(_rule_1_photos(bdt))
-    result.rules.append(_rule_2_power_alarm_match(bdt, alarm_df))
-    result.rules.append(_rule_3_duration_match(bdt, alarm_df, tolerance))
+    result.rules.append(_rule_2_power_alarm_match(bdt, alarm_df, tol_override=power_timing_tol))
+    result.rules.append(_rule_3_string_vs_busbar(bdt))
     result.rules.append(_rule_4_discharge_table(bdt, tolerance))
     result.rules.append(_rule_5_start_ampere(bdt))
     result.rules.append(_rule_6_end_voltage(bdt, health_pct))
@@ -82,14 +89,23 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
     result.rules.append(_rule_8_backup_time(bdt, health_pct))
     result.rules.append(_rule_9_discharge_current_tolerance(bdt))
     result.rules.append(_rule_10_door_alarm_match(bdt, alarm_df))
+    result.rules.append(_rule_11_summary_checklist(bdt))
 
     # Overall verdict
     failed = [r for r in result.rules if r.verdict == "Rejected"]
     revise = [r for r in result.rules if r.verdict == "Revise"]
+    no_alarm_data_na = any(
+        r.verdict == "N/A" and "no alarm data" in str(r.detail).lower()
+        for r in result.rules
+    )
 
     if failed:
         result.overall = "Rejected"
     elif revise:
+        result.overall = "Revise"
+    elif no_alarm_data_na:
+        # If alarm-dependent rules are not evaluable due to missing alarm data,
+        # surface as Revise (incomplete evidence), not Accepted.
         result.overall = "Revise"
     else:
         result.overall = "Accepted"
@@ -218,6 +234,34 @@ def _find_power_alarms(alarm_df: pd.DataFrame, site_code: str) -> pd.DataFrame:
     return power
 
 
+def _find_down_alarms(alarm_df: pd.DataFrame, site_code: str) -> pd.DataFrame:
+    """Find Down alarms for a site using category/name/source signals."""
+    required_cols = {"site_id", "occurred_on"}
+    if not required_cols.issubset(alarm_df.columns):
+        return alarm_df.iloc[0:0]
+
+    alarm_df = _normalize_alarm_datetimes(alarm_df)
+    site_mask = (
+        alarm_df["site_id"].astype(str).str.strip().str.upper()
+        == site_code.strip().upper()
+    ) & (alarm_df["occurred_on"].notna())
+
+    down_mask = pd.Series(False, index=alarm_df.index)
+    if "alarm_category" in alarm_df.columns:
+        down_mask = down_mask | (
+            alarm_df["alarm_category"].astype(str).str.strip().str.lower() == "down"
+        )
+    if "alarm_name" in alarm_df.columns:
+        down_mask = down_mask | (
+            alarm_df["alarm_name"].astype(str).str.contains("down", case=False, na=False)
+        )
+    if "file_source" in alarm_df.columns:
+        down_mask = down_mask | (
+            alarm_df["file_source"].astype(str).str.contains("down", case=False, na=False)
+        )
+    return alarm_df[site_mask & down_mask]
+
+
 def _parse_test_time(raw_time) -> time | None:
     """Parse BDT test time from HH:MM or HH:MM:SS formats."""
     if raw_time is None:
@@ -242,7 +286,11 @@ def _parse_test_time(raw_time) -> time | None:
     text = str(raw_time).strip()
     if not text or text.lower() == "nan":
         return None
-    for fmt in ("%H:%M:%S", "%H:%M"):
+    for fmt in (
+        "%H:%M:%S", "%H:%M",
+        "%I:%M:%S%p", "%I:%M:%S %p",   # 12-hour with AM/PM (e.g. "12:31:10PM")
+        "%I:%M%p", "%I:%M %p",          # 12-hour without seconds
+    ):
         try:
             return datetime.strptime(text, fmt).time()
         except ValueError:
@@ -250,18 +298,37 @@ def _parse_test_time(raw_time) -> time | None:
     return None
 
 
+def _max_reached_discharge_minutes(bdt: BDTData) -> float | None:
+    """Return max discharge-minute label that has at least one real reading."""
+    max_mins = 0.0
+    for label, v, a in bdt.discharge_readings:
+        if v is None and a is None:
+            continue
+        try:
+            mins = float(str(label).split()[0])
+        except (ValueError, TypeError, IndexError):
+            continue
+        if mins > max_mins:
+            max_mins = mins
+    return max_mins if max_mins > 0 else None
+
+
 def _rule_2_power_alarm_match(bdt: BDTData,
-                               alarm_df: pd.DataFrame | None) -> RuleResult:
-    """R2: Same-site/date Power alarm matches test start/end times ±5 min."""
+                               alarm_df: pd.DataFrame | None,
+                               tol_override: float | None = None) -> RuleResult:
+    """R2: Unified Power timing + duration check (Power→Cleared or Power→Down)."""
+    tol_min = float(tol_override if tol_override is not None else BDT_POWER_TIMING_TOLERANCE_MIN)
+    tol = pd.Timedelta(minutes=tol_min)
+
     if alarm_df is None or alarm_df.empty:
         return RuleResult(
-            rule_id="R2", rule_name="Power Alarm Match",
+            rule_id="R2", rule_name="Power Alarm + Duration",
             passed=None, verdict="N/A",
             detail="No alarm data loaded",
         )
     if bdt.test_date is None:
         return RuleResult(
-            rule_id="R2", rule_name="Power Alarm Match",
+            rule_id="R2", rule_name="Power Alarm + Duration",
             passed=False, verdict="Rejected",
             detail="No test date found in BDT file",
         )
@@ -270,39 +337,44 @@ def _rule_2_power_alarm_match(bdt: BDTData,
         test_date = pd.Timestamp(bdt.test_date).normalize()
     except Exception:
         return RuleResult(
-            rule_id="R2", rule_name="Power Alarm Match",
+            rule_id="R2", rule_name="Power Alarm + Duration",
             passed=False, verdict="Rejected",
             detail=f"Invalid test date: {bdt.test_date!r}",
         )
 
-    start_time = _parse_test_time(bdt.time_in)
-    end_time = _parse_test_time(bdt.time_out)
-    if start_time is None or end_time is None:
-        missing_parts = []
-        if start_time is None:
-            missing_parts.append("time_in")
-        if end_time is None:
-            missing_parts.append("time_out")
+    discharge_minutes = _max_reached_discharge_minutes(bdt)
+    if discharge_minutes is None:
         return RuleResult(
-            rule_id="R2", rule_name="Power Alarm Match",
+            rule_id="R2", rule_name="Power Alarm + Duration",
             passed=False, verdict="Revise",
-            detail=(f"Cannot validate alarm timing: invalid {', '.join(missing_parts)} "
-                    f"(expected HH:MM or HH:MM:SS)"),
+            detail=("Cannot validate timing: no reached minute found in discharge table "
+                    "(need at least one row with V or A reading)"),
+        )
+    if discharge_minutes > BDT_COMPLETION_MINUTES:
+        return RuleResult(
+            rule_id="R2", rule_name="Power Alarm + Duration",
+            passed=False, verdict="Rejected",
+            detail=(f"Invalid discharge duration ({discharge_minutes:.1f} min): "
+                    f"must not exceed {BDT_COMPLETION_MINUTES} min"),
+        )
+
+    start_time = _parse_test_time(bdt.time_in)
+    if start_time is None:
+        return RuleResult(
+            rule_id="R2", rule_name="Power Alarm + Duration",
+            passed=False, verdict="Revise",
+            detail="Cannot validate alarm timing: invalid time_in (expected HH:MM or HH:MM:SS)",
         )
 
     start_ts = test_date + pd.Timedelta(
         hours=start_time.hour, minutes=start_time.minute, seconds=start_time.second
     )
-    end_ts = test_date + pd.Timedelta(
-        hours=end_time.hour, minutes=end_time.minute, seconds=end_time.second
-    )
-    if end_ts < start_ts:
-        end_ts += pd.Timedelta(days=1)
+    expected_end_ts = start_ts + pd.Timedelta(minutes=discharge_minutes)
 
     power = _find_power_alarms(alarm_df, bdt.site_code)
     if power.empty:
         return RuleResult(
-            rule_id="R2", rule_name="Power Alarm Match",
+            rule_id="R2", rule_name="Power Alarm + Duration",
             passed=False, verdict="Rejected",
             detail=f"No Power alarms found for site {bdt.site_code}",
         )
@@ -312,114 +384,126 @@ def _rule_2_power_alarm_match(bdt: BDTData,
     same_date = power[power_dates == test_date]
     if same_date.empty:
         return RuleResult(
-            rule_id="R2", rule_name="Power Alarm Match",
+            rule_id="R2", rule_name="Power Alarm + Duration",
             passed=False, verdict="Rejected",
             detail=(f"No Power alarm on {test_date.date()} for site "
                     f"{bdt.site_code}. Power was never cut from the grid."),
         )
 
-    if "cleared_on" not in same_date.columns:
-        return RuleResult(
-            rule_id="R2", rule_name="Power Alarm Match",
-            passed=False, verdict="Revise",
-            detail="Cannot validate alarm timing: cleared_on column missing",
-        )
-    same_date = same_date[same_date["cleared_on"].notna()]
-    if same_date.empty:
-        return RuleResult(
-            rule_id="R2", rule_name="Power Alarm Match",
-            passed=False, verdict="Revise",
-            detail="Cannot validate alarm timing: matching Power alarms have no cleared_on time",
-        )
-
-    tol = pd.Timedelta(minutes=5)
-    start_diff = (same_date["occurred_on"] - start_ts).abs()
-    end_diff = (same_date["cleared_on"] - end_ts).abs()
-    match = same_date[(start_diff <= tol) & (end_diff <= tol)]
-
-    if match.empty:
-        min_start = (start_diff.min() / pd.Timedelta(minutes=1))
-        min_end = (end_diff.min() / pd.Timedelta(minutes=1))
-        return RuleResult(
-            rule_id="R2", rule_name="Power Alarm Match",
-            passed=False, verdict="Rejected",
-            detail=(f"No Power alarm time match within ±5 min "
-                    f"(closest diffs: start {min_start:.1f} min, end {min_end:.1f} min)"),
-        )
-
-    return RuleResult(
-        rule_id="R2", rule_name="Power Alarm Match",
-        passed=True, verdict="Accepted",
-        detail=(f"Power alarm matched test window ({len(match)} match(es), "
-                f"tolerance ±5 min)"),
+    same_date = same_date.copy()
+    same_date["start_diff_min"] = (
+        (same_date["occurred_on"] - start_ts).abs() / pd.Timedelta(minutes=1)
     )
-
-
-def _rule_3_duration_match(bdt: BDTData, alarm_df: pd.DataFrame | None,
-                            tolerance: float) -> RuleResult:
-    """R3: Test duration matches Power alarm duration."""
-    if alarm_df is None or alarm_df.empty:
+    start_candidates = same_date[same_date["start_diff_min"] <= tol_min]
+    if start_candidates.empty:
+        min_start = same_date["start_diff_min"].min()
         return RuleResult(
-            rule_id="R3", rule_name="Duration Match",
-            passed=None, verdict="N/A",
-            detail="No alarm data loaded",
-        )
-    if bdt.test_date is None:
-        return RuleResult(
-            rule_id="R3", rule_name="Duration Match",
+            rule_id="R2", rule_name="Power Alarm + Duration",
             passed=False, verdict="Rejected",
-            detail="No test date in BDT file",
+            detail=(f"No Power alarm start match within ±{tol_min:.0f} min "
+                    f"(closest start Δ={min_start:.1f} min)"),
         )
 
-    try:
-        test_date = pd.Timestamp(bdt.test_date).normalize()
-    except Exception:
+    down = _find_down_alarms(alarm_df, bdt.site_code)
+    if not down.empty:
+        down = down.copy()
+        down = down[down["occurred_on"].notna()]
+        down = down[(down["occurred_on"] >= (start_ts - tol)) &
+                    (down["occurred_on"] <= (expected_end_ts + tol))]
+
+    attempts = []
+    for _, power_row in start_candidates.iterrows():
+        power_start = power_row["occurred_on"]
+        start_diff_min = float(power_row["start_diff_min"])
+
+        power_clear = power_row.get("cleared_on", pd.NaT)
+        if pd.notna(power_clear) and power_clear >= power_start:
+            alarm_duration_min = float(
+                (power_clear - power_start) / pd.Timedelta(minutes=1)
+            )
+            end_diff_min = float(
+                abs(power_clear - expected_end_ts) / pd.Timedelta(minutes=1)
+            )
+            duration_diff_min = abs(alarm_duration_min - discharge_minutes)
+            attempts.append({
+                "path": "Power→Cleared",
+                "start_diff_min": start_diff_min,
+                "end_diff_min": end_diff_min,
+                "duration_min": alarm_duration_min,
+                "duration_diff_min": duration_diff_min,
+            })
+
+        if not down.empty:
+            down_after = down[down["occurred_on"] >= power_start]
+            for down_ts in down_after["occurred_on"]:
+                alarm_duration_min = float(
+                    (down_ts - power_start) / pd.Timedelta(minutes=1)
+                )
+                end_diff_min = float(
+                    abs(down_ts - expected_end_ts) / pd.Timedelta(minutes=1)
+                )
+                duration_diff_min = abs(alarm_duration_min - discharge_minutes)
+                attempts.append({
+                    "path": "Power→Down",
+                    "start_diff_min": start_diff_min,
+                    "end_diff_min": end_diff_min,
+                    "duration_min": alarm_duration_min,
+                    "duration_diff_min": duration_diff_min,
+                })
+
+    if not attempts:
         return RuleResult(
-            rule_id="R3", rule_name="Duration Match",
-            passed=False, verdict="Rejected",
-            detail=f"Invalid test date: {bdt.test_date!r}",
+            rule_id="R2", rule_name="Power Alarm + Duration",
+            passed=False, verdict="Revise",
+            detail=("No usable end event found for matched Power start "
+                    "(need Power clear or Down alarm)"),
         )
-    all_power = _find_power_alarms(alarm_df, bdt.site_code)
-    power = all_power[all_power["occurred_on"].dt.normalize() == test_date]
 
-    if power.empty:
+    for a in attempts:
+        a["within_limit"] = a["duration_min"] <= BDT_COMPLETION_MINUTES
+        a["passed"] = (
+            a["within_limit"]
+            and a["start_diff_min"] <= tol_min
+            and a["end_diff_min"] <= tol_min
+            and a["duration_diff_min"] <= tol_min
+        )
+
+    passed_attempts = [a for a in attempts if a["passed"]]
+    if passed_attempts:
+        best = min(
+            passed_attempts,
+            key=lambda a: (a["duration_diff_min"], a["end_diff_min"], a["start_diff_min"]),
+        )
         return RuleResult(
-            rule_id="R3", rule_name="Duration Match",
-            passed=False, verdict="Rejected",
-            detail="No matching Power alarm to compare duration",
+            rule_id="R2", rule_name="Power Alarm + Duration",
+            passed=True, verdict="Accepted",
+            detail=(f"{best['path']} matched test window: "
+                    f"start Δ={best['start_diff_min']:.1f} min, "
+                    f"end Δ={best['end_diff_min']:.1f} min, "
+                    f"alarm duration={best['duration_min']:.1f} min vs "
+                    f"discharge-table max {discharge_minutes:.1f} min "
+                    f"(duration Δ={best['duration_diff_min']:.1f} min, "
+                    f"tolerance ±{tol_min:.0f} min, max {BDT_COMPLETION_MINUTES} min)"),
         )
 
-    # Get alarm duration in minutes
-    alarm_dur_mins = None
-    if "_duration_secs" in power.columns:
-        alarm_dur_mins = power["_duration_secs"].max() / 60.0
-    elif "duration" in power.columns:
-        # Parse HH:MM:SS
-        dur_str = power["duration"].iloc[0]
-        try:
-            parts = str(dur_str).split(":")
-            alarm_dur_mins = (int(parts[0]) * 60 + int(parts[1])
-                              + int(parts[2]) / 60.0)
-        except (ValueError, IndexError):
-            pass
-
-    if alarm_dur_mins is None or alarm_dur_mins == 0:
-        return RuleResult(
-            rule_id="R3", rule_name="Duration Match",
-            passed=None, verdict="N/A",
-            detail="Cannot determine alarm duration",
-        )
-
-    bdt_mins = bdt.discharge_minutes
-    diff_ratio = abs(bdt_mins - alarm_dur_mins) / alarm_dur_mins if alarm_dur_mins > 0 else 1.0
-
-    passed = diff_ratio <= tolerance
+    best = min(
+        attempts,
+        key=lambda a: (a["duration_diff_min"], a["end_diff_min"], a["start_diff_min"]),
+    )
+    limit_note = ""
+    if not best["within_limit"]:
+        limit_note = f"; exceeds max {BDT_COMPLETION_MINUTES} min"
     return RuleResult(
-        rule_id="R3", rule_name="Duration Match",
-        passed=passed,
-        verdict="Accepted" if passed else "Rejected",
-        detail=(f"BDT: {bdt_mins:.0f} min, Alarm: {alarm_dur_mins:.0f} min "
-                f"(diff: {diff_ratio*100:.0f}%, tolerance: {tolerance*100:.0f}%)"),
+        rule_id="R2", rule_name="Power Alarm + Duration",
+        passed=False, verdict="Rejected",
+        detail=(f"No Power timing/duration match within ±{tol_min:.0f} min. "
+                f"Closest path {best['path']}: "
+                f"start Δ={best['start_diff_min']:.1f} min, "
+                f"end Δ={best['end_diff_min']:.1f} min, "
+                f"duration Δ={best['duration_diff_min']:.1f} min "
+                f"(alarm {best['duration_min']:.1f} min vs discharge-table max "
+                f"{discharge_minutes:.1f} min)"
+                f"{limit_note}"),
     )
 
 
@@ -433,16 +517,8 @@ def _rule_4_discharge_table(bdt: BDTData,
             detail="No discharge readings found",
         )
 
-    # Find last reading with data
-    last_mins = 0.0
-    for label, v, a in bdt.discharge_readings:
-        if v is not None or a is not None:
-            try:
-                last_mins = float(label.split()[0])
-            except ValueError:
-                pass
-
-    if last_mins == 0:
+    last_mins = _max_reached_discharge_minutes(bdt)
+    if last_mins is None:
         return RuleResult(
             rule_id="R4", rule_name="Discharge Table Match",
             passed=False, verdict="Revise",
@@ -716,7 +792,7 @@ def _rule_10_door_alarm_match(bdt: BDTData,
     if doors.empty:
         return RuleResult(
             rule_id="R10", rule_name="Door Alarm Condition",
-            passed=False, verdict="Revise",
+            passed=False, verdict="Rejected",
             detail=(f"No Door alarm found for site {bdt.site_code} on "
                     f"{test_date.date()}"),
         )
@@ -725,4 +801,158 @@ def _rule_10_door_alarm_match(bdt: BDTData,
         rule_id="R10", rule_name="Door Alarm Condition",
         passed=True, verdict="Accepted",
         detail=f"Door alarm found for site {bdt.site_code} on {test_date.date()} ({len(doors)} match(es))",
+    )
+
+
+def _rule_3_string_vs_busbar(bdt: BDTData) -> RuleResult:
+    """R3: Sum of per-string amperes must not be more than 3A below bus bar ampere."""
+    if not bdt.string_discharge_readings or not bdt.discharge_readings:
+        return RuleResult(
+            rule_id="R3", rule_name="String vs Bus Bar Ampere",
+            passed=None, verdict="N/A",
+            detail="No per-string discharge data available",
+        )
+
+    tolerance = BDT_STRING_AMPERE_TOLERANCE_A
+    checked = 0
+
+    # string_discharge_readings[0] is the "Before disconnecting" row,
+    # while discharge_readings starts at the first timed row (10 min, etc.).
+    # Slice off index 0 to align the two lists.
+    string_readings = bdt.string_discharge_readings[1:]
+
+    for dr, sr in zip(bdt.discharge_readings, string_readings):
+        bus_a = dr[2]  # bus bar ampere
+        string_pairs = sr
+        string_amps = [a for _, a in string_pairs if a is not None]
+
+        if bus_a is None or not string_amps:
+            continue
+
+        string_sum = sum(string_amps)
+        diff = string_sum - bus_a
+        checked += 1
+
+        if diff < -tolerance:
+            return RuleResult(
+                rule_id="R3", rule_name="String vs Bus Bar Ampere",
+                passed=False, verdict="Rejected",
+                detail=(f"At {dr[0]}: string sum {string_sum:.2f}A vs "
+                        f"bus bar {bus_a:.2f}A (diff={diff:.2f}A, "
+                        f"limit >=-{tolerance:.1f}A)"),
+            )
+
+    if checked == 0:
+        return RuleResult(
+            rule_id="R3", rule_name="String vs Bus Bar Ampere",
+            passed=None, verdict="N/A",
+            detail="No valid paired readings found",
+        )
+
+    return RuleResult(
+        rule_id="R3", rule_name="String vs Bus Bar Ampere",
+        passed=True, verdict="Accepted",
+        detail=(f"All {checked} time points within tolerance "
+                f"(string sum - bus bar >= -{tolerance:.1f}A)"),
+    )
+
+
+def _normalize_for_comparison(val: str) -> str:
+    """Strip units, whitespace, and normalize for comparison."""
+    if val is None:
+        return ""
+    s = str(val).strip().lower()
+    # Remove common unit suffixes
+    for suffix in ("ah", "vdc", "min", "mins", "v", "a", " min"):
+        if s.endswith(suffix):
+            s = s[:-len(suffix)].strip()
+    # Remove "none" / "na" / "n/a"
+    if s in ("none", "na", "n/a", "nan", "--", "-", ""):
+        return ""
+    return s
+
+
+def _values_match(bdt_val: str, summary_val: str, field_name: str) -> bool:
+    """Compare a BDT sheet value against a Summary sheet value with tolerance."""
+    a = _normalize_for_comparison(bdt_val)
+    b = _normalize_for_comparison(summary_val)
+    if not a and not b:
+        return True  # both empty = match
+    if not a or not b:
+        return False  # one empty, one not = mismatch
+    # Try numeric comparison with epsilon
+    try:
+        fa, fb = float(a), float(b)
+        return abs(fa - fb) < 0.5
+    except (ValueError, TypeError):
+        pass
+    # String: case-insensitive containment (Summary may abbreviate or expand)
+    return a in b or b in a
+
+
+def _rule_11_summary_checklist(bdt: BDTData) -> RuleResult:
+    """R11: Cross-check key fields between BDT sheet and Summary sheet."""
+    if not bdt.summary_data:
+        return RuleResult(
+            rule_id="R11", rule_name="Summary Checklist",
+            passed=None, verdict="N/A",
+            detail="No Summary sheet data available",
+        )
+
+    checks = [
+        ("Short Code",      str(bdt.site_code or ""),           "Short Code"),
+        ("PLVD Value",      str(bdt.pld_value or ""),           "PLVD Value"),
+        ("Rectifier Brand", str(bdt.rectifier_brand or ""),     "Rectifier Brand"),
+        ("# of Modules",    str(bdt.num_modules or ""),         "# of Modules"),
+        ("Battery Brand",   str(bdt.battery_brand or ""),       "Battery Brand"),
+        ("Battery Voltage",  str(bdt.battery_voltage or ""),    "Battery Volt"),
+        ("# of Strings",    str(bdt.num_strings or ""),         "No of String"),
+        ("# of Batteries",  str(bdt.num_batteries or ""),       "No of Batteries"),
+        ("Start Voltage",   str(bdt.start_voltage or ""),       "Start Volt"),
+        ("Start Amp",       str(bdt.start_ampere or ""),        "Start Amp"),
+        ("End Voltage",     str(bdt.end_voltage or ""),         "End Volt"),
+        ("End Amp",         str(bdt.end_ampere or ""),          "End Amp"),
+        ("Discharge Time",  str(bdt.discharge_minutes or ""),   "Discharge time( Mins)"),
+        ("Test Date",       (bdt.test_date.strftime("%Y-%m-%d") if bdt.test_date else ""), "Test Date"),
+    ]
+
+    mismatches = []
+    checked = 0
+    for display_name, bdt_val, summary_key in checks:
+        summary_val = bdt.summary_data.get(summary_key, "")
+        if not bdt_val and not summary_val:
+            continue  # skip fields missing from both
+        checked += 1
+        if not _values_match(bdt_val, summary_val, display_name):
+            mismatches.append(f"{display_name}: BDT='{bdt_val}' vs Summary='{summary_val}'")
+
+    if checked == 0:
+        return RuleResult(
+            rule_id="R11", rule_name="Summary Checklist",
+            passed=None, verdict="N/A",
+            detail="No comparable fields found between BDT and Summary sheets",
+        )
+
+    if not mismatches:
+        return RuleResult(
+            rule_id="R11", rule_name="Summary Checklist",
+            passed=True, verdict="Accepted",
+            detail=f"All {checked} checklist fields match between BDT and Summary sheets",
+        )
+
+    n = len(mismatches)
+    detail = f"{n} mismatch(es): " + "; ".join(mismatches[:5])
+    if n > 5:
+        detail += f" (and {n - 5} more)"
+
+    if n >= 4:
+        return RuleResult(
+            rule_id="R11", rule_name="Summary Checklist",
+            passed=False, verdict="Rejected",
+            detail=detail,
+        )
+    return RuleResult(
+        rule_id="R11", rule_name="Summary Checklist",
+        passed=False, verdict="Revise",
+        detail=detail,
     )

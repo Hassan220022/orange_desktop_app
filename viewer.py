@@ -19,8 +19,8 @@ from PyQt5.QtWidgets import (
     QDialog, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem,
     QGridLayout,
 )
-from PyQt5.QtCore import Qt, QDate, QThread, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QKeySequence, QPixmap, QTextCharFormat
+from PyQt5.QtCore import Qt, QDate, QThread, pyqtSignal, QUrl
+from PyQt5.QtGui import QColor, QFont, QKeySequence, QPixmap, QTextCharFormat, QDesktopServices
 
 try:
     from .constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
@@ -522,6 +522,7 @@ class AlarmViewer(QMainWindow):
         # Store validation results for detail view & export
         self._bdt_results: list[ValidationResult] = []
         self._bdt_by_site: dict[str, list[BDTData]] = {}
+        self._current_bdt: BDTData | None = None
 
         return w
 
@@ -583,6 +584,13 @@ class AlarmViewer(QMainWindow):
 
         left_lay.addWidget(info_frame)
 
+        btn_open_bdt = QPushButton("Open BDT File")
+        btn_open_bdt.setObjectName("btn_search")
+        btn_open_bdt.setFixedHeight(28)
+        btn_open_bdt.clicked.connect(self._open_current_bdt_file)
+        left_lay.addWidget(btn_open_bdt)
+        self._btn_open_bdt = btn_open_bdt
+
         lbl_dis = QLabel("DISCHARGE READINGS")
         lbl_dis.setObjectName("bdt_section_title")
         left_lay.addWidget(lbl_dis)
@@ -641,6 +649,50 @@ class AlarmViewer(QMainWindow):
         self._bdt_parse_errors_lbl.setWordWrap(True)
         self._bdt_parse_errors_lbl.setVisible(False)
         center_lay.addWidget(self._bdt_parse_errors_lbl)
+
+        # ── Door Alarm History ──────────────────────────────────
+        lbl_door = QLabel("DOOR ALARM HISTORY")
+        lbl_door.setObjectName("section_label")
+        lbl_door.setStyleSheet("font-weight: bold; font-size: 11px; color: #89dceb; margin-top: 12px;")
+        center_lay.addWidget(lbl_door)
+
+        self._bdt_door_table = QTableWidget(0, 4)
+        self._bdt_door_table.setHorizontalHeaderLabels(["Site", "Occurred", "Cleared", "Alarm Name"])
+        self._bdt_door_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._bdt_door_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._bdt_door_table.setAlternatingRowColors(True)
+        self._bdt_door_table.verticalHeader().setVisible(False)
+        self._bdt_door_table.verticalHeader().setDefaultSectionSize(24)
+        self._bdt_door_table.setColumnWidth(0, 90)
+        self._bdt_door_table.setColumnWidth(1, 150)
+        self._bdt_door_table.setColumnWidth(2, 150)
+        self._bdt_door_table.horizontalHeader().setStretchLastSection(True)
+        self._bdt_door_table.setMaximumHeight(150)
+        center_lay.addWidget(self._bdt_door_table)
+
+        # ── Test History Comparison ────────────────────────────
+        lbl_hist = QLabel("TEST HISTORY COMPARISON")
+        lbl_hist.setObjectName("section_label")
+        lbl_hist.setStyleSheet("font-weight: bold; font-size: 11px; color: #cba6f7; margin-top: 12px;")
+        center_lay.addWidget(lbl_hist)
+
+        self._bdt_history_table = QTableWidget(0, 3)
+        self._bdt_history_table.setHorizontalHeaderLabels(["Field", "Previous", "Current"])
+        self._bdt_history_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._bdt_history_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._bdt_history_table.setAlternatingRowColors(True)
+        self._bdt_history_table.verticalHeader().setVisible(False)
+        self._bdt_history_table.verticalHeader().setDefaultSectionSize(24)
+        self._bdt_history_table.setColumnWidth(0, 130)
+        self._bdt_history_table.setColumnWidth(1, 130)
+        self._bdt_history_table.horizontalHeader().setStretchLastSection(True)
+        self._bdt_history_table.setMaximumHeight(200)
+        center_lay.addWidget(self._bdt_history_table)
+
+        self._bdt_history_label = QLabel("")
+        self._bdt_history_label.setWordWrap(True)
+        self._bdt_history_label.setStyleSheet("color: #6c7086; font-size: 10px;")
+        center_lay.addWidget(self._bdt_history_label)
 
         self._bdt_detail_splitter.addWidget(center)
 
@@ -1203,7 +1255,7 @@ class AlarmViewer(QMainWindow):
         for r, res in enumerate(results):
             row_map = {
                 "File": res.filename,
-                "Site Code": res.site_code,
+                "Site Code": res.site_code or "--",
                 "Test Date": res.test_date,
                 "Verdict": res.overall,
                 "End Rectifier Voltage (V)": self._format_end_rectifier_voltage(
@@ -1233,9 +1285,14 @@ class AlarmViewer(QMainWindow):
             f" &middot; <span style='color:#6c7086;'>"
             f"{len(results)} files</span>")
 
+        # Re-apply current search text so row visibility is always consistent
+        # after rebuilding the table.
+        self._filter_bdt_table(self._bdt_search.text())
+
     @staticmethod
     def _rule_cell_text(rule) -> str:
-        if rule.verdict == "N/A" and "No alarm data" in rule.detail:
+        if (rule.verdict == "N/A"
+                and "no alarm data" in str(rule.detail).lower()):
             return "No alarm data"
         return rule.verdict
 
@@ -1409,6 +1466,83 @@ class AlarmViewer(QMainWindow):
         else:
             self._bdt_parse_errors_lbl.setVisible(False)
 
+        # ── Populate door alarm history ──────────────────────────
+        self._bdt_door_table.setRowCount(0)
+        if bdt and bdt.test_date and self._full_df is not None and not self._full_df.empty:
+            try:
+                try:
+                    from .bdt_validator import _find_door_alarms
+                except ImportError:
+                    from bdt_validator import _find_door_alarms
+                import pandas as pd
+                test_date_ts = pd.Timestamp(bdt.test_date).normalize()
+                doors = _find_door_alarms(self._full_df, bdt.site_code, test_date_ts)
+                if not doors.empty:
+                    self._bdt_door_table.setRowCount(len(doors))
+                    for i, (_, row) in enumerate(doors.iterrows()):
+                        self._bdt_door_table.setItem(i, 0, QTableWidgetItem(str(row.get("site_id", ""))))
+                        occ = row.get("occurred_on", "")
+                        self._bdt_door_table.setItem(i, 1, QTableWidgetItem(
+                            str(occ.strftime("%Y-%m-%d %H:%M") if hasattr(occ, "strftime") else occ)))
+                        clr = row.get("cleared_on", "")
+                        self._bdt_door_table.setItem(i, 2, QTableWidgetItem(
+                            str(clr.strftime("%Y-%m-%d %H:%M") if hasattr(clr, "strftime") else clr)))
+                        self._bdt_door_table.setItem(i, 3, QTableWidgetItem(str(row.get("alarm_name", ""))))
+            except Exception:
+                pass  # Graceful fallback if alarm data unavailable
+
+        # ── Populate test history comparison ──────────────────
+        self._bdt_history_table.setRowCount(0)
+        self._bdt_history_label.setText("")
+        if bdt and bdt.test_date and bdt.site_code:
+            try:
+                try:
+                    from .bdt_history import load_previous_test, compare_tests
+                except ImportError:
+                    from bdt_history import load_previous_test, compare_tests
+                from datetime import date as date_type
+                test_date = (bdt.test_date.date() if hasattr(bdt.test_date, "date")
+                             else bdt.test_date)
+                if isinstance(test_date, date_type):
+                    prev = load_previous_test(bdt.site_code, test_date)
+                    if prev:
+                        comp = compare_tests(bdt, prev)
+                        fields = [
+                            ("Battery Brand", prev.battery_brand, str(bdt.battery_brand or "")),
+                            ("Battery AH", str(prev.battery_ah or ""), str(bdt.battery_ah or "")),
+                            ("Battery Voltage", str(prev.battery_voltage or ""), str(bdt.battery_voltage or "")),
+                            ("# Strings", str(prev.num_strings or ""), str(bdt.num_strings or "")),
+                            ("# Batteries", str(prev.num_batteries or ""), str(getattr(bdt, "num_batteries", "") or "")),
+                            ("# Modules", str(prev.num_modules or ""), str(getattr(bdt, "num_modules", "") or "")),
+                            ("Rectifier", str(prev.rectifier_brand or ""), str(getattr(bdt, "rectifier_brand", "") or "")),
+                        ]
+                        self._bdt_history_table.setRowCount(len(fields))
+                        for i, (label, prev_val, curr_val) in enumerate(fields):
+                            self._bdt_history_table.setItem(i, 0, QTableWidgetItem(label))
+                            item_prev = QTableWidgetItem(prev_val)
+                            item_curr = QTableWidgetItem(curr_val)
+                            # Highlight changes in red
+                            if prev_val.strip().lower() != curr_val.strip().lower() and prev_val and curr_val:
+                                item_prev.setForeground(QColor("#f38ba8"))
+                                item_curr.setForeground(QColor("#f38ba8"))
+                            self._bdt_history_table.setItem(i, 1, item_prev)
+                            self._bdt_history_table.setItem(i, 2, item_curr)
+
+                        if comp.has_critical_change:
+                            self._bdt_history_label.setText(
+                                f"<span style='color:#f38ba8;'>Equipment change detected vs {prev.test_date}</span>")
+                        else:
+                            self._bdt_history_label.setText(
+                                f"<span style='color:#a6e3a1;'>No critical changes vs {prev.test_date}</span>")
+                    else:
+                        self._bdt_history_label.setText(
+                            "<span style='color:#6c7086;'>No previous test history found</span>")
+            except ImportError:
+                self._bdt_history_label.setText(
+                    "<span style='color:#6c7086;'>History module not available</span>")
+            except Exception:
+                pass
+
         # ── Photos (lazy-load if skipped during batch validation) ──
         if bdt:
             load_bdt_photos(bdt)
@@ -1418,8 +1552,153 @@ class AlarmViewer(QMainWindow):
         self._current_bdt = bdt
         self._setup_photo_comparison(bdt)
 
+    def _open_current_bdt_file(self):
+        """Open the currently selected BDT file with the OS default application."""
+        if not self._current_bdt or not self._current_bdt.file_path:
+            return
+        url = QUrl.fromLocalFile(self._current_bdt.file_path)
+        QDesktopServices.openUrl(url)
+
+    def _show_photo_fullsize(self, image_data: bytes, label: str):
+        """Open a modal dialog with zoom (scroll wheel, +/- buttons, fit)."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(label)
+        dlg.setMinimumSize(800, 600)
+        dlg.resize(1000, 750)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Original pixmap (never mutated)
+        original_pix = QPixmap()
+        original_pix.loadFromData(image_data)
+
+        # State shared by closures
+        state = {"zoom": 100}  # percentage
+
+        # Scroll area with the image
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(False)
+        scroll.setAlignment(Qt.AlignCenter)
+        scroll.setStyleSheet("background: #11111b; border: none;")
+
+        img_lbl = QLabel()
+        img_lbl.setAlignment(Qt.AlignCenter)
+
+        def _apply_zoom():
+            z = state["zoom"]
+            w = int(original_pix.width() * z / 100)
+            scaled = original_pix.scaledToWidth(
+                max(w, 50), Qt.SmoothTransformation)
+            img_lbl.setPixmap(scaled)
+            img_lbl.resize(scaled.size())
+            zoom_lbl.setText(f"{z}%")
+
+        scroll.setWidget(img_lbl)
+        layout.addWidget(scroll, 1)
+
+        # Toolbar: Zoom -, zoom level, Zoom +, Fit, label
+        toolbar = QWidget()
+        toolbar.setStyleSheet("background: #1e1e2e;")
+        tb_lay = QHBoxLayout(toolbar)
+        tb_lay.setContentsMargins(8, 4, 8, 4)
+        tb_lay.setSpacing(6)
+
+        btn_out = QPushButton("-")
+        btn_out.setFixedSize(32, 28)
+        btn_out.setStyleSheet(
+            "font-size: 16px; font-weight: bold; color: #cdd6f4; "
+            "background: #313244; border: 1px solid #45475a; border-radius: 4px;")
+        tb_lay.addWidget(btn_out)
+
+        zoom_lbl = QLabel("100%")
+        zoom_lbl.setFixedWidth(50)
+        zoom_lbl.setAlignment(Qt.AlignCenter)
+        zoom_lbl.setStyleSheet("font-size: 12px; color: #cdd6f4;")
+        tb_lay.addWidget(zoom_lbl)
+
+        btn_in = QPushButton("+")
+        btn_in.setFixedSize(32, 28)
+        btn_in.setStyleSheet(
+            "font-size: 16px; font-weight: bold; color: #cdd6f4; "
+            "background: #313244; border: 1px solid #45475a; border-radius: 4px;")
+        tb_lay.addWidget(btn_in)
+
+        btn_fit = QPushButton("Fit")
+        btn_fit.setFixedSize(40, 28)
+        btn_fit.setStyleSheet(
+            "font-size: 11px; color: #cdd6f4; "
+            "background: #313244; border: 1px solid #45475a; border-radius: 4px;")
+        tb_lay.addWidget(btn_fit)
+
+        btn_full = QPushButton("1:1")
+        btn_full.setFixedSize(40, 28)
+        btn_full.setStyleSheet(
+            "font-size: 11px; color: #cdd6f4; "
+            "background: #313244; border: 1px solid #45475a; border-radius: 4px;")
+        tb_lay.addWidget(btn_full)
+
+        tb_lay.addStretch()
+
+        name_lbl = QLabel(label)
+        name_lbl.setStyleSheet(
+            "font-size: 13px; font-weight: bold; color: #89b4fa;")
+        tb_lay.addWidget(name_lbl)
+
+        layout.addWidget(toolbar)
+
+        # Zoom actions
+        def _zoom_in():
+            state["zoom"] = min(state["zoom"] + 25, 500)
+            _apply_zoom()
+
+        def _zoom_out():
+            state["zoom"] = max(state["zoom"] - 25, 25)
+            _apply_zoom()
+
+        def _zoom_fit():
+            vp = scroll.viewport().size()
+            fw = int(vp.width() / original_pix.width() * 100) if original_pix.width() > 0 else 100
+            fh = int(vp.height() / original_pix.height() * 100) if original_pix.height() > 0 else 100
+            state["zoom"] = max(min(fw, fh), 25)
+            _apply_zoom()
+
+        def _zoom_full():
+            state["zoom"] = 100
+            _apply_zoom()
+
+        btn_in.clicked.connect(_zoom_in)
+        btn_out.clicked.connect(_zoom_out)
+        btn_fit.clicked.connect(_zoom_fit)
+        btn_full.clicked.connect(_zoom_full)
+
+        # Scroll wheel zoom
+        def _wheel(event):
+            delta = event.angleDelta().y()
+            if delta > 0:
+                _zoom_in()
+            elif delta < 0:
+                _zoom_out()
+
+        scroll.wheelEvent = _wheel
+
+        # Start at fit-to-window
+        dlg.showEvent = lambda _: _zoom_fit()
+
+        dlg.exec_()
+
+    # Band layout: name, start slot index, number of columns in this band
+    _PHOTO_BANDS = [
+        ("Rectifier",               0,  3),
+        ("Batteries",               4,  3),
+        ("CBs / Rack / LVD",        8,  3),
+        ("Current / Load / PLVD",  12,  3),
+        ("Charging / Disconnect",  16,  4),
+    ]
+
     def _populate_bdt_photos(self, bdt: BDTData | None):
-        """Fill the photo gallery grid from BDTData.photo_slots."""
+        """Fill the photo gallery grid with band headings matching the BDT template."""
         # Clear existing widgets
         while self._bdt_photo_grid.count():
             item = self._bdt_photo_grid.takeAt(0)
@@ -1434,40 +1713,62 @@ class AlarmViewer(QMainWindow):
             self._bdt_photo_grid.addWidget(lbl, 0, 0)
             return
 
-        cols_per_row = 3
-        for idx, slot in enumerate(bdt.photo_slots):
-            row = idx // cols_per_row
-            col = idx % cols_per_row
+        grid_row = 0
+        max_cols = 4  # widest band has 4 columns
 
-            card = QFrame()
-            card_lay = QVBoxLayout(card)
-            card_lay.setContentsMargins(4, 4, 4, 4)
-            card_lay.setSpacing(2)
+        for band_name, start_idx, band_cols in self._PHOTO_BANDS:
+            # Band heading
+            heading = QLabel(band_name.upper())
+            heading.setStyleSheet(
+                "font-weight: bold; font-size: 11px; color: #89b4fa; "
+                "padding: 6px 0 2px 0; border-bottom: 1px solid #313244;")
+            heading.setAlignment(Qt.AlignLeft)
+            self._bdt_photo_grid.addWidget(heading, grid_row, 0, 1, max_cols)
+            grid_row += 1
 
-            if slot.image_data:
-                card.setObjectName("bdt_photo_card")
-                pix = QPixmap()
-                pix.loadFromData(slot.image_data)
-                thumb = pix.scaledToWidth(
-                    200, Qt.SmoothTransformation)
-                img_lbl = QLabel()
-                img_lbl.setPixmap(thumb)
-                img_lbl.setAlignment(Qt.AlignCenter)
-                card_lay.addWidget(img_lbl)
-            else:
-                card.setObjectName("bdt_photo_missing")
-                na_lbl = QLabel("Not Available")
-                na_lbl.setObjectName("bdt_photo_missing_label")
-                na_lbl.setAlignment(Qt.AlignCenter)
-                card_lay.addWidget(na_lbl, 1)
+            # Photo cards for this band
+            for ci in range(band_cols):
+                slot_idx = start_idx + ci
+                if slot_idx >= len(bdt.photo_slots):
+                    continue
+                slot = bdt.photo_slots[slot_idx]
 
-            name_lbl = QLabel(slot.label)
-            name_lbl.setObjectName("bdt_photo_label")
-            name_lbl.setAlignment(Qt.AlignCenter)
-            name_lbl.setWordWrap(True)
-            card_lay.addWidget(name_lbl)
+                card = QFrame()
+                card_lay = QVBoxLayout(card)
+                card_lay.setContentsMargins(4, 4, 4, 4)
+                card_lay.setSpacing(2)
 
-            self._bdt_photo_grid.addWidget(card, row, col)
+                if slot.image_data:
+                    card.setObjectName("bdt_photo_card")
+                    card.setCursor(Qt.PointingHandCursor)
+                    pix = QPixmap()
+                    pix.loadFromData(slot.image_data)
+                    thumb = pix.scaledToWidth(
+                        200, Qt.SmoothTransformation)
+                    img_lbl = QLabel()
+                    img_lbl.setPixmap(thumb)
+                    img_lbl.setAlignment(Qt.AlignCenter)
+                    card_lay.addWidget(img_lbl)
+                    # Click to view full size
+                    _data = slot.image_data
+                    _label = slot.label
+                    card.mousePressEvent = lambda _, d=_data, l=_label: self._show_photo_fullsize(d, l)
+                else:
+                    card.setObjectName("bdt_photo_missing")
+                    na_lbl = QLabel("Not Available")
+                    na_lbl.setObjectName("bdt_photo_missing_label")
+                    na_lbl.setAlignment(Qt.AlignCenter)
+                    card_lay.addWidget(na_lbl, 1)
+
+                name_lbl = QLabel(slot.label)
+                name_lbl.setObjectName("bdt_photo_label")
+                name_lbl.setAlignment(Qt.AlignCenter)
+                name_lbl.setWordWrap(True)
+                card_lay.addWidget(name_lbl)
+
+                self._bdt_photo_grid.addWidget(card, grid_row, ci)
+
+            grid_row += 1
 
     _COMPARE_KEY_CATEGORIES = {"rectifier", "batteries", "modules"}
 
@@ -1509,6 +1810,57 @@ class AlarmViewer(QMainWindow):
                 indices.append(idx)
         return indices
 
+    @staticmethod
+    def _normalize_site_token(text: str) -> str:
+        """Normalize site/file text to alphanumeric uppercase for robust matching."""
+        return "".join(ch for ch in str(text).upper() if ch.isalnum())
+
+    @classmethod
+    def _filename_contains_site_code(cls, site_code: str, file_name: str) -> bool:
+        """Check whether filename likely belongs to a site code."""
+        site_token = cls._normalize_site_token(site_code)
+        if len(site_token) < 3:
+            return False
+        file_token = cls._normalize_site_token(file_name)
+        return bool(file_token) and site_token in file_token
+
+    def _comparison_candidates_for_site(self, bdt: BDTData) -> list[BDTData]:
+        """Collect comparison candidates from exact site map + filename fallback."""
+        key = (bdt.site_code or "").strip().upper()
+        if not key:
+            return []
+
+        seen_paths: set[str] = set()
+        candidates: list[BDTData] = []
+
+        def _add_candidate(candidate: BDTData | None):
+            if not candidate:
+                return
+            fp = candidate.file_path or ""
+            if not fp or fp == bdt.file_path or fp in seen_paths:
+                return
+            seen_paths.add(fp)
+            candidates.append(candidate)
+
+        # Primary source: parsed site_code grouping.
+        for candidate in self._bdt_by_site.get(key, []):
+            _add_candidate(candidate)
+
+        # Fallback source: filename contains current site code token.
+        for res in self._bdt_results:
+            candidate = res.bdt_data
+            if not candidate:
+                continue
+            if self._filename_contains_site_code(
+                    key, candidate.filename or candidate.file_path):
+                _add_candidate(candidate)
+
+        candidates.sort(
+            key=lambda c: c.test_date or datetime.min,
+            reverse=True,
+        )
+        return candidates
+
     def _setup_photo_comparison(self, bdt: BDTData | None):
         """Check if comparison data is available and configure the UI."""
         # Clear comparison grid
@@ -1522,11 +1874,7 @@ class AlarmViewer(QMainWindow):
             self._bdt_compare_section.setVisible(False)
             return
 
-        key = bdt.site_code.strip().upper()
-        site_tests = self._bdt_by_site.get(key, [])
-        # Filter out current test
-        others = [b for b in site_tests
-                  if b.file_path != bdt.file_path]
+        others = self._comparison_candidates_for_site(bdt)
 
         if not others:
             self._bdt_compare_section.setVisible(False)

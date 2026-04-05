@@ -18,6 +18,7 @@ from alarm_app.bdt_parser import (
     PhotoSlot,
     _parse_battery_info,
     _parse_test_date,
+    _resolve_bdt_sheet_name,
     _safe_float,
     _safe_str,
     parse_bdt_file,
@@ -362,6 +363,17 @@ class TestParseBdtFile:
         assert "Missing 'BDT sheet'" in result.errors[0]
         assert result.filename == "test.xlsx"
 
+    def test_case_insensitive_bdt_sheet_name_is_accepted(self):
+        rows = [[None] * 20 for _ in range(10)]
+        rows[3][8] = "4415DE"
+        result = self._run_with_calamine(
+            "/fake/path/test.xlsx",
+            sheet_names=["bdt sheet"],
+            rows=rows,
+        )
+        assert result.errors == []
+        assert result.site_code == "4415DE"
+
     def test_calamine_returns_known_rows(self):
         """Mock calamine to return known rows and verify extraction."""
         # Build a grid large enough: 70 rows x 20 cols, all None
@@ -461,6 +473,36 @@ class TestParseBdtFile:
         assert result.start_voltage == 50.0
         assert result.start_ampere == 10.0
         assert result.after_reconnect_voltage == 51.0
+
+    def test_site_code_falls_back_to_filename_token_when_sheet_unknown(self):
+        rows = [[None] * 20 for _ in range(70)]
+        rows[3][8] = "Unknown"  # (4,9) placeholder
+        result = self._run_with_calamine(
+            "/fake/path/U_S_3938CA_BOLAKDAKROR27_3938CA_BDT.XLSX",
+            sheet_names=["BDT sheet"],
+            rows=rows,
+        )
+        assert result.site_code == "3938CA"
+
+    def test_site_code_extracts_token_from_sheet_text(self):
+        rows = [[None] * 20 for _ in range(70)]
+        rows[3][8] = "Site code: 0482SI"
+        result = self._run_with_calamine(
+            "/fake/path/random.xlsx",
+            sheet_names=["BDT sheet"],
+            rows=rows,
+        )
+        assert result.site_code == "0482SI"
+
+    def test_filename_token_overrides_non_token_sheet_site_code(self):
+        rows = [[None] * 20 for _ in range(70)]
+        rows[3][8] = "RMS-OLD-FREE-TEXT"
+        result = self._run_with_calamine(
+            "/fake/path/02186_N_0296CA_KABLATE_0296CA_BDT.XLSX",
+            sheet_names=["BDT sheet"],
+            rows=rows,
+        )
+        assert result.site_code == "0296CA"
 
     def test_calamine_import_fails_falls_back_to_openpyxl(self):
         """When calamine is not installed, openpyxl fallback kicks in."""
@@ -627,6 +669,8 @@ class TestBDTDataDefaults:
         assert data.time_in == ""
         assert data.time_out == ""
         assert data.battery_brand == ""
+        assert data.rectifier_brand == ""
+        assert data.pld_value == ""
 
     def test_default_none_fields(self):
         data = BDTData()
@@ -642,6 +686,8 @@ class TestBDTDataDefaults:
         assert data.battery_ah is None
         assert data.battery_voltage is None
         assert data.num_strings is None
+        assert data.num_batteries is None
+        assert data.num_modules is None
         assert data.door_alarm_condition is None
 
     def test_default_numeric_fields(self):
@@ -655,6 +701,8 @@ class TestBDTDataDefaults:
         assert data.discharge_readings == []
         assert data.photo_slots == []
         assert data.errors == []
+        assert data.string_discharge_readings == []
+        assert data.summary_data == {}
 
     def test_list_fields_are_independent_instances(self):
         """Each BDTData instance gets its own list (not shared)."""
@@ -698,3 +746,232 @@ class TestBDTDataDefaults:
         assert slot.image_data is None
         assert slot.image_ext == ""
         assert slot.category == "other"
+
+
+class TestResolveBdtSheetName:
+    def test_exact_match(self):
+        assert _resolve_bdt_sheet_name(["BDT sheet", "Other"]) == "BDT sheet"
+
+    def test_case_insensitive_match(self):
+        assert _resolve_bdt_sheet_name(["bdt sheet"]) == "bdt sheet"
+
+    def test_flexible_variant_match(self):
+        assert _resolve_bdt_sheet_name(["BDT_Sheet(1)"]) == "BDT_Sheet(1)"
+
+    def test_bdt_prefix_match(self):
+        assert _resolve_bdt_sheet_name(["BDT-Template"]) == "BDT-Template"
+
+    def test_bdt_filename_fallback_to_first_sheet(self):
+        assert _resolve_bdt_sheet_name(
+            ["Sheet1", "Data"], "QN-IND-NTH_0630UP_0630UP_BDT.XLSX"
+        ) == "Sheet1"
+
+    def test_missing_match(self):
+        assert _resolve_bdt_sheet_name(["Sheet1", "Data"], "random.xlsx") is None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 8. String discharge readings
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestStringDischargeReadings:
+    """Tests for per-string (V, A) discharge readings stored alongside bus-bar."""
+
+    def _run_with_calamine(self, file_path, sheet_names, rows=None,
+                           skip_photos=True):
+        mock_mod = _make_calamine_mock(sheet_names, rows)
+        saved = sys.modules.get("python_calamine")
+        sys.modules["python_calamine"] = mock_mod
+        try:
+            return parse_bdt_file(file_path, skip_photos=skip_photos)
+        finally:
+            if saved is None:
+                sys.modules.pop("python_calamine", None)
+            else:
+                sys.modules["python_calamine"] = saved
+
+    def test_two_strings_stored_aligned_with_bus_bar(self):
+        """With 2 string columns, string_discharge_readings aligns with discharge_readings."""
+        # 70 rows x 22 cols
+        rows = [[None] * 22 for _ in range(70)]
+
+        # Discharge header at row 10 (index 9)
+        rows[9][1] = "Batteries discharge test"
+        # Header row with Rec Bus Bar at col 4 (index 3) and String columns
+        rows[10][3] = "Rec Bus Bar"
+        # String #1 header at col 6 (index 5), ampere col at 7 (index 6)
+        rows[10][5] = "String #1"
+        # String #2 header at col 8 (index 7), ampere col at 9 (index 8)
+        rows[10][7] = "String #2"
+
+        # "Before disconnecting Rectifier" at row 13 (index 12)
+        rows[12][0] = "Before disconnecting Rectifier"
+        rows[12][3] = 52.0   # bus bar voltage
+        rows[12][4] = 15.0   # bus bar ampere
+        rows[12][5] = 51.5   # string 1 voltage
+        rows[12][6] = 7.5    # string 1 ampere
+        rows[12][7] = 51.8   # string 2 voltage
+        rows[12][8] = 7.4    # string 2 ampere
+
+        # Discharge reading at row 14 (index 13): "5 min"
+        rows[13][0] = "5 min"
+        rows[13][3] = 50.5
+        rows[13][4] = 14.0
+        rows[13][5] = 50.0   # string 1 voltage
+        rows[13][6] = 7.0    # string 1 ampere
+        rows[13][7] = 50.2   # string 2 voltage
+        rows[13][8] = 6.9    # string 2 ampere
+
+        # "After connecting" at row 15 (index 14)
+        rows[14][0] = "After connecting rectifier"
+        rows[14][3] = 53.0
+        rows[14][4] = 0.5
+
+        result = self._run_with_calamine(
+            "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
+        )
+
+        assert len(result.discharge_readings) == 1
+        # string_discharge_readings: index 0 = "Before disconnecting" row,
+        # index 1 = "5 min" row
+        assert len(result.string_discharge_readings) == 2
+        # Each entry has 2 (V, A) tuples (one per string)
+        for entry in result.string_discharge_readings:
+            assert len(entry) == 2
+            for pair in entry:
+                assert isinstance(pair, tuple)
+                assert len(pair) == 2
+
+        # Verify actual values for the "Before disconnecting" row (index 0)
+        assert result.string_discharge_readings[0][0] == (51.5, 7.5)
+        assert result.string_discharge_readings[0][1] == (51.8, 7.4)
+        # Verify "5 min" row (index 1)
+        assert result.string_discharge_readings[1][0] == (50.0, 7.0)
+        assert result.string_discharge_readings[1][1] == (50.2, 6.9)
+
+    def test_no_string_columns_empty_list(self):
+        """When no 'String #' columns detected, string_discharge_readings stays empty."""
+        rows = [[None] * 10 for _ in range(70)]
+
+        # Discharge header but no string columns in header row
+        rows[9][1] = "Batteries discharge test"
+        rows[10][3] = "Rec Bus Bar"
+        # No "String" headers
+
+        rows[12][0] = "Before disconnecting Rectifier"
+        rows[12][3] = 52.0
+        rows[12][4] = 15.0
+
+        rows[13][0] = "5 min"
+        rows[13][3] = 50.5
+        rows[13][4] = 14.0
+
+        rows[14][0] = "After connecting rectifier"
+        rows[14][3] = 53.0
+        rows[14][4] = 0.5
+
+        result = self._run_with_calamine(
+            "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
+        )
+
+        assert result.string_discharge_readings == []
+
+    def test_none_values_preserved_for_empty_cells(self):
+        """Empty string cells produce (None, None) tuples."""
+        rows = [[None] * 22 for _ in range(70)]
+
+        rows[9][1] = "Batteries discharge test"
+        rows[10][3] = "Rec Bus Bar"
+        rows[10][5] = "String #1"
+
+        rows[12][0] = "Before disconnecting Rectifier"
+        rows[12][3] = 52.0
+        rows[12][4] = 15.0
+        # String cols left as None
+
+        rows[13][0] = "5 min"
+        rows[13][3] = 50.5
+        rows[13][4] = 14.0
+        # String cols left as None
+
+        rows[14][0] = "After connecting rectifier"
+        rows[14][3] = 53.0
+        rows[14][4] = 0.5
+
+        result = self._run_with_calamine(
+            "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
+        )
+
+        # Should have entries (before-disconnect + 5 min row)
+        assert len(result.string_discharge_readings) == 2
+        # Each entry has 1 tuple (one string column) with (None, None)
+        assert result.string_discharge_readings[0][0] == (None, None)
+        assert result.string_discharge_readings[1][0] == (None, None)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# 9. New BDT fields (rectifier, modules, batteries, PLVD)
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestNewBDTFields:
+    """Tests for newly added BDT extraction fields."""
+
+    def _run_with_calamine(self, file_path, sheet_names, rows=None,
+                           skip_photos=True):
+        mock_mod = _make_calamine_mock(sheet_names, rows)
+        saved = sys.modules.get("python_calamine")
+        sys.modules["python_calamine"] = mock_mod
+        try:
+            return parse_bdt_file(file_path, skip_photos=skip_photos)
+        finally:
+            if saved is None:
+                sys.modules.pop("python_calamine", None)
+            else:
+                sys.modules["python_calamine"] = saved
+
+    def _make_rows(self):
+        """Build a 70x20 grid of None values."""
+        return [[None] * 20 for _ in range(70)]
+
+    def test_rectifier_brand_extracted(self):
+        rows = self._make_rows()
+        rows[12][8] = "Delta 2"  # cell(13, 9)
+        result = self._run_with_calamine(
+            "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
+        )
+        assert result.rectifier_brand == "Delta 2"
+
+    def test_num_modules_extracted(self):
+        rows = self._make_rows()
+        rows[16][8] = 3  # cell(17, 9)
+        result = self._run_with_calamine(
+            "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
+        )
+        assert result.num_modules == 3
+
+    def test_num_batteries_extracted(self):
+        rows = self._make_rows()
+        rows[42][8] = 2  # cell(43, 9)
+        result = self._run_with_calamine(
+            "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
+        )
+        assert result.num_batteries == 2
+
+    def test_pld_value_extracted(self):
+        rows = self._make_rows()
+        rows[28][8] = 44  # cell(29, 9)
+        result = self._run_with_calamine(
+            "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
+        )
+        assert result.pld_value == "44"
+
+    def test_missing_fields_default_to_none(self):
+        """When cells are empty, fields stay at their defaults."""
+        rows = self._make_rows()
+        result = self._run_with_calamine(
+            "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
+        )
+        assert result.rectifier_brand == ""
+        assert result.num_modules is None
+        assert result.num_batteries is None
+        assert result.pld_value == ""

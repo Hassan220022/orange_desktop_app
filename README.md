@@ -309,8 +309,7 @@ QTableView display
 | Rule | Name                  | Description                                                   |
 | ---- | --------------------- | ------------------------------------------------------------- |
 | R1   | Photos                | Required photo categories (rectifier and batteries) are present |
-| R2   | Power Alarm Match     | Power alarm start/end match test start/end within ±5 minutes on same date |
-| R3   | Duration Match        | Test duration matches Power alarm duration (within tolerance) |
+| R2   | Power Alarm + Duration | Starts at Power alarm occurrence and ends at either Power clear or Down alarm; duration source is the max reached minute in the discharge table (last row with real V/A), and start/end + duration must match within ±5 minutes (max 180 min) |
 | R4   | Discharge Table Match | Reported backup time matches discharge readings               |
 | R5   | Starting I-Battery ampere | Starting battery current is approximately 0 A (`|I| < 0.5A`) |
 | R6   | End Voltage / Completion | Accepted when discharge is `>= 180` min OR end voltage is `45.0--47.0 V` |

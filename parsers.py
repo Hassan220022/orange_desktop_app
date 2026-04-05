@@ -474,6 +474,25 @@ class BDTValidationThread(QThread):
                     except Exception:
                         continue
 
+                    # Skip non-template files and hard parser failures to avoid
+                    # polluting validation table with unusable "Unknown" rows.
+                    parse_errors_lc = [str(e).lower() for e in getattr(bdt_data, "errors", [])]
+                    hard_file_error = any(
+                        ("cannot open file" in err) or ("failed to read bdt sheet" in err)
+                        for err in parse_errors_lc
+                    )
+                    no_extractable_data = (
+                        not getattr(bdt_data, "site_code", "")
+                        and not getattr(bdt_data, "test_date", None)
+                        and not getattr(bdt_data, "discharge_readings", [])
+                        and getattr(bdt_data, "start_voltage", None) is None
+                        and getattr(bdt_data, "start_ampere", None) is None
+                    )
+                    if hard_file_error or no_extractable_data:
+                        self.progress.emit(
+                            pct, f"[{done}/{total}]  skipped invalid BDT: {fname}")
+                        continue
+
                     # R1 photo rule must evaluate actual image availability.
                     # Bulk parsing may defer photos for speed, so load now.
                     if getattr(bdt_data, "photos_deferred", False):
@@ -483,6 +502,16 @@ class BDTValidationThread(QThread):
                         bdt_data, self._alarm_df,
                         self._tolerance, self._health_pct)
                     results.append(result)
+
+                    # Persist test record for historical comparison
+                    try:
+                        try:
+                            from .bdt_history import save_test_record
+                        except ImportError:
+                            from bdt_history import save_test_record
+                        save_test_record(bdt_data, result.overall)
+                    except Exception:
+                        pass  # history saving is best-effort
 
                     if bdt_data.site_code:
                         key = bdt_data.site_code.strip().upper()

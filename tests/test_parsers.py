@@ -10,6 +10,7 @@ import math
 import numpy as np
 import pandas as pd
 import pytest
+from unittest.mock import patch
 
 # We import only the pure helpers and functions, not the QThread classes.
 # The module-level import of PyQt5 inside parsers.py is unavoidable, but
@@ -27,6 +28,111 @@ from alarm_app.constants import (
     SCHEMA_1_MAP,
     SCHEMA_2_MAP,
 )
+
+
+class TestBDTValidationThreadFiltering:
+    def test_skips_missing_bdt_sheet_results(self):
+        # Import here so test_parsers can remain mostly pure-function focused.
+        from alarm_app.parsers import BDTValidationThread
+
+        class _FakeBdtData:
+            def __init__(self, filename, errors):
+                self.filename = filename
+                self.file_path = f"/fake/{filename}"
+                self.site_code = ""
+                self.test_date = None
+                self.errors = errors
+                self.photos_deferred = False
+
+        bad = _FakeBdtData("bad.xlsx", ["Missing 'BDT sheet'"])
+        good = _FakeBdtData("good.xlsx", [])
+        good.site_code = "4415DE"
+
+        def fake_parse(fp, skip_photos=True):
+            return bad if fp.endswith("bad.xlsx") else good
+
+        def fake_validate(bdt_data, alarm_df, tolerance, health_pct):
+            class _Rule:
+                rule_id = "R1"
+                verdict = "Accepted"
+                detail = ""
+            class _Res:
+                def __init__(self, b):
+                    self.filename = b.filename
+                    self.site_code = b.site_code
+                    self.test_date = "Unknown"
+                    self.overall = "Accepted"
+                    self.rules = [_Rule()]
+                    self.parse_errors = list(b.errors)
+                    self.bdt_data = b
+            return _Res(bdt_data)
+
+        files = ["/fake/bad.xlsx", "/fake/good.xlsx"]
+        th = BDTValidationThread(files, None, 0.15, 0.80)
+        captured = {}
+        th.finished.connect(lambda results, by_site: captured.update(
+            {"results": results, "by_site": by_site}))
+
+        with patch("alarm_app.bdt_parser.parse_bdt_file", side_effect=fake_parse), \
+             patch("alarm_app.bdt_validator.validate_bdt", side_effect=fake_validate), \
+             patch("alarm_app.bdt_parser.load_bdt_photos", side_effect=lambda b: None):
+            th.run()
+
+        assert "results" in captured
+        assert len(captured["results"]) == 1
+        assert captured["results"][0].filename == "good.xlsx"
+        assert "4415DE" in captured["by_site"]
+
+    def test_keeps_partially_parsed_file_with_nonfatal_errors(self):
+        from alarm_app.parsers import BDTValidationThread
+
+        class _FakeBdtData:
+            def __init__(self, filename, errors):
+                self.filename = filename
+                self.file_path = f"/fake/{filename}"
+                self.site_code = "0630UP"
+                self.test_date = None
+                self.errors = errors
+                self.photos_deferred = False
+                self.discharge_readings = [("30 min", 52.0, 25.0)]
+                self.start_voltage = 54.0
+                self.start_ampere = 23.0
+
+        partial = _FakeBdtData("partial.xlsx", ["Missing 'BDT sheet'"])
+
+        def fake_parse(_fp, skip_photos=True):
+            return partial
+
+        def fake_validate(bdt_data, alarm_df, tolerance, health_pct):
+            class _Rule:
+                rule_id = "R1"
+                verdict = "Accepted"
+                detail = ""
+            class _Res:
+                def __init__(self, b):
+                    self.filename = b.filename
+                    self.site_code = b.site_code
+                    self.test_date = "Unknown"
+                    self.overall = "Accepted"
+                    self.rules = [_Rule()]
+                    self.parse_errors = list(b.errors)
+                    self.bdt_data = b
+            return _Res(bdt_data)
+
+        th = BDTValidationThread(["/fake/partial.xlsx"], None, 0.15, 0.80)
+        captured = {}
+        th.finished.connect(lambda results, by_site: captured.update(
+            {"results": results, "by_site": by_site}))
+
+        with patch("alarm_app.bdt_parser.parse_bdt_file", side_effect=fake_parse), \
+             patch("alarm_app.bdt_validator.validate_bdt", side_effect=fake_validate), \
+             patch("alarm_app.bdt_parser.load_bdt_photos", side_effect=lambda b: None):
+            th.run()
+
+        assert "results" in captured
+        assert len(captured["results"]) == 1
+        assert captured["results"][0].filename == "partial.xlsx"
+        assert "0630UP" in captured["by_site"]
 
 
 # ═══════════════════════════════════════════════════════════════════
