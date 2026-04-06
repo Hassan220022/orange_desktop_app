@@ -963,6 +963,42 @@ class TestR11SummaryChecklist:
         r = _rule_11_summary_checklist(bdt)
         assert r.verdict == "Accepted"
 
+    def test_alias_headers_and_date_format_match(self):
+        bdt = _make_bdt(
+            site_code="3868DE",
+            pld_value="44",
+            rectifier_brand="Delta 3",
+            num_modules=4,
+            battery_brand="Huawei-Lithium",
+            battery_voltage=48.0,
+            num_strings=2,
+            num_batteries=2,
+            start_voltage=54.14,
+            start_ampere=72.9,
+            end_voltage=46.1,
+            end_ampere=109.0,
+            discharge_minutes=120.0,
+            test_date=datetime(2026, 1, 5),
+            summary_data={
+                "Short Code": "3868DE",
+                "PLD Value": "44",
+                "Rectifier Brand": "Delta 3",
+                "Number of Modules": "4",
+                "Battery Brand": "Huawei-Lithium",
+                "Battery Voltage": "48 V",
+                "Number of Strings": "2",
+                "Number of Batteries": "2",
+                "Start Voltage": "54.14",
+                "Start Amp": "72.9",
+                "End Voltage": "46.1",
+                "End Amp": "109",
+                "Discharge Time (mins)": "120",
+                "Test Date": "5-Jan-26",
+            },
+        )
+        r = _rule_11_summary_checklist(bdt)
+        assert r.verdict == "Accepted"
+
 
 # ── R3 String vs Bus Bar Ampere ────────────────────────────────
 
@@ -989,41 +1025,57 @@ class TestR3StringVsBusbar:
         r = _rule_3_string_vs_busbar(bdt)
         assert r.verdict == "Accepted"
 
-    def test_string_sum_3a_below_busbar_boundary_accepted(self):
-        """Exactly -3.0 is the boundary -- should pass."""
+    def test_string_sum_3a_above_busbar_boundary_accepted(self):
+        """Boundary case: E-(G+I) == -3.0 should pass."""
         bdt = _make_bdt(
             discharge_readings=[
                 ("30 Mins", 49.0, 30.0),
             ],
             string_discharge_readings=[
                 [(54.0, 0.0), (54.0, 0.0)],           # Before (sliced off)
-                [(49.0, 12.0), (49.0, 15.0)],          # sum=27.0, bus=30.0, diff=-3.0
+                [(49.0, 16.0), (49.0, 17.0)],          # sum=33.0, bus=30.0, E-(G+I)=-3.0
             ],
         )
         r = _rule_3_string_vs_busbar(bdt)
         assert r.verdict == "Accepted"
 
-    def test_string_sum_more_than_3a_below_rejected(self):
+    def test_string_sum_below_busbar_rejected(self):
         bdt = _make_bdt(
             discharge_readings=[
                 ("30 Mins", 49.0, 30.0),
             ],
             string_discharge_readings=[
                 [(54.0, 0.0), (54.0, 0.0)],           # Before (sliced off)
-                [(49.0, 12.0), (49.0, 14.0)],          # sum=26.0, bus=30.0, diff=-4.0
+                [(49.0, 14.0), (49.0, 15.0)],          # sum=29.0, bus=30.0, E-(G+I)=+1.0
             ],
         )
         r = _rule_3_string_vs_busbar(bdt)
         assert r.verdict == "Rejected"
-        assert "-4.0" in r.detail or "-4.00" in r.detail
+        assert "Batteries Amp not matched" in r.detail
+        assert "1.00A" in r.detail or "1.0A" in r.detail
+
+    def test_string_sum_more_than_3a_above_busbar_rejected(self):
+        bdt = _make_bdt(
+            discharge_readings=[
+                ("30 Mins", 49.0, 30.0),
+            ],
+            string_discharge_readings=[
+                [(54.0, 0.0), (54.0, 0.0)],           # Before (sliced off)
+                [(49.0, 17.0), (49.0, 17.0)],          # sum=34.0, bus=30.0, E-(G+I)=-4.0
+            ],
+        )
+        r = _rule_3_string_vs_busbar(bdt)
+        assert r.verdict == "Rejected"
+        assert "Batteries Amp not matched" in r.detail
+        assert "-4.00A" in r.detail or "-4.0A" in r.detail
 
     def test_no_string_readings_na(self):
         bdt = _make_bdt(string_discharge_readings=[])
         r = _rule_3_string_vs_busbar(bdt)
         assert r.verdict == "N/A"
 
-    def test_high_load_site_accepted(self):
-        """Real pattern from 3422DE: high load, diffs +1.3 to +4.1."""
+    def test_high_load_site_rejected_when_beyond_neg3_limit(self):
+        """Real pattern from 3422DE includes points below -3.0A on E-(G+I)."""
         bdt = _make_bdt(
             discharge_readings=[
                 ("10 Mins", 48.60, 66.10),
@@ -1038,7 +1090,7 @@ class TestR3StringVsBusbar:
             ],
         )
         r = _rule_3_string_vs_busbar(bdt)
-        assert r.verdict == "Accepted"
+        assert r.verdict == "Rejected"
 
     def test_mixed_none_values_skipped(self):
         bdt = _make_bdt(

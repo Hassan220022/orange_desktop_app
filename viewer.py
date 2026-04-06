@@ -4,6 +4,7 @@ All UI construction and slot logic lives here.
 """
 
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -16,8 +17,8 @@ from PyQt5.QtWidgets import (
     QMessageBox, QFrame, QHeaderView, QAbstractItemView,
     QProgressBar, QListWidget, QListWidgetItem,
     QCheckBox, QSpinBox, QMenu, QAction, QApplication,
-    QDialog, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem,
-    QGridLayout,
+    QDialog, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem, QShortcut,
+    QGridLayout, QSizePolicy,
 )
 from PyQt5.QtCore import Qt, QDate, QThread, pyqtSignal, QUrl
 from PyQt5.QtGui import QColor, QFont, QKeySequence, QPixmap, QTextCharFormat, QDesktopServices
@@ -310,15 +311,32 @@ class AlarmViewer(QMainWindow):
         self._col_filters: dict[str, set | None] = {}  # col -> selected values
         self._both_pd_active = False  # "Both P+D" filter flag
         self._last_bdt_health_pct: float | None = None
+        app = QApplication.instance()
+        self._base_app_font = QFont(app.font()) if app else QFont()
+        self._base_app_font_size = self._base_app_font.pointSizeF()
+        self._app_zoom_pct = 100
+        self._zoom_min_pct = 70
+        self._zoom_max_pct = 170
+        self._zoom_shortcuts: list[QShortcut] = []
+        self._font_size_px_re = re.compile(r"(font-size\s*:\s*)(\d+(?:\.\d+)?)px", re.IGNORECASE)
         self._build_ui()
+        self._setup_zoom_shortcuts()
         self.setStyleSheet(STYLE)
         self._restore_ui_state()
 
     # ── UI construction ──────────────────────────────────────────
     def _build_ui(self):
         self.setWindowTitle(f"{APP_NAME}  v{APP_VERSION}")
-        self.setMinimumSize(1440, 820)
-        self.resize(1680, 980)
+        screen = QApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen else None
+        screen_w = avail.width() if avail else 1680
+        screen_h = avail.height() if avail else 980
+        min_w = min(1024, max(860, int(screen_w * 0.68)))
+        min_h = min(720, max(620, int(screen_h * 0.68)))
+        start_w = min(1680, max(min_w, int(screen_w * 0.96)))
+        start_h = min(980, max(min_h, int(screen_h * 0.92)))
+        self.setMinimumSize(min_w, min_h)
+        self.resize(start_w, start_h)
 
         root = QWidget(); self.setCentralWidget(root)
         root.setObjectName("root")
@@ -328,21 +346,24 @@ class AlarmViewer(QMainWindow):
 
         # Horizontal splitter: sidebar | content
         self._main_splitter = QSplitter(Qt.Horizontal)
-        self._main_splitter.setHandleWidth(3)
+        self._main_splitter.setHandleWidth(8)
         self._main_splitter.setStyleSheet(
-            "QSplitter::handle { background:#1e1e2e; }")
+            "QSplitter::handle { background:#1e1e2e; } "
+            "QSplitter::handle:horizontal { width: 8px; }")
 
         # Left sidebar
         self._sidebar = self._make_left_panel()
         self._sidebar.setObjectName("sidebar")
         self._sidebar.setMinimumWidth(50)
-        self._sidebar.setMaximumWidth(500)
+        self._sidebar.setMaximumWidth(16777215)
         self._main_splitter.addWidget(self._sidebar)
         self._sidebar_width = 260  # remembered width for toggle
 
         # Right content area
         right_wrap = QWidget()
         right_wrap.setObjectName("right_wrap")
+        right_wrap.setMinimumWidth(0)
+        right_wrap.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         rl = QVBoxLayout(right_wrap)
         rl.setContentsMargins(0, 0, 0, 0)
         rl.setSpacing(0)
@@ -355,6 +376,8 @@ class AlarmViewer(QMainWindow):
         # Tab widget
         self._tabs = QTabWidget()
         self._tabs.setObjectName("main_tabs")
+        self._tabs.setMinimumWidth(0)
+        self._tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
 
         # Tab 1: Alarms (existing content)
         alarms_tab = QWidget()
@@ -377,8 +400,12 @@ class AlarmViewer(QMainWindow):
 
         self._main_splitter.addWidget(right_wrap)
         self._main_splitter.setSizes([260, 1420])
+        self._main_splitter.setStretchFactor(0, 0)
+        self._main_splitter.setStretchFactor(1, 1)
         self._main_splitter.setCollapsible(0, True)
-        self._main_splitter.setCollapsible(1, False)
+        self._main_splitter.setCollapsible(1, True)
+        self._main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
+        self._apply_sidebar_constraints()
 
         main.addWidget(self._main_splitter)
 
@@ -439,6 +466,8 @@ class AlarmViewer(QMainWindow):
 
         btn_validate = QPushButton("Validate")
         btn_validate.setObjectName("btn_search")
+        btn_validate.setMinimumWidth(0)
+        btn_validate.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         btn_validate.clicked.connect(self._run_validation)
         top.addWidget(btn_validate)
 
@@ -537,6 +566,8 @@ class AlarmViewer(QMainWindow):
 
         self._btn_bdt_export = QPushButton("Export Results XLSX")
         self._btn_bdt_export.setObjectName("btn_export")
+        self._btn_bdt_export.setMinimumWidth(0)
+        self._btn_bdt_export.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._btn_bdt_export.clicked.connect(self._export_bdt_results)
         bot.addWidget(self._btn_bdt_export)
 
@@ -610,6 +641,8 @@ class AlarmViewer(QMainWindow):
         btn_open_bdt = QPushButton("Open BDT File")
         btn_open_bdt.setObjectName("btn_search")
         btn_open_bdt.setFixedHeight(28)
+        btn_open_bdt.setMinimumWidth(0)
+        btn_open_bdt.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         btn_open_bdt.clicked.connect(self._open_current_bdt_file)
         left_lay.addWidget(btn_open_bdt)
         self._btn_open_bdt = btn_open_bdt
@@ -982,7 +1015,7 @@ class AlarmViewer(QMainWindow):
         row_date.addStretch()
         gl.addLayout(row_date)
 
-        # ── Row 2: combo filters + action buttons ───────────
+        # ── Row 2: combo filters ─────────────────────────────
         row2 = QHBoxLayout(); row2.setSpacing(10)
 
         lbl_cat = QLabel("Category")
@@ -1042,38 +1075,50 @@ class AlarmViewer(QMainWindow):
         self._spn_mindur.setFixedWidth(80)
         row2.addWidget(self._spn_mindur)
 
-        row2.addStretch()
+        gl.addLayout(row2)
+
+        # ── Row 3: action buttons (kept separate for responsive layout) ──
+        row3 = QHBoxLayout(); row3.setSpacing(8)
+        row3.addStretch()
 
         btn_search = QPushButton("Search")
         btn_search.setObjectName("btn_search")
+        btn_search.setMinimumWidth(0)
+        btn_search.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         btn_search.clicked.connect(self._search)
-        row2.addWidget(btn_search)
+        row3.addWidget(btn_search)
 
         btn_cl = QPushButton("Clear")
         btn_cl.setObjectName("btn_clear")
+        btn_cl.setMinimumWidth(0)
+        btn_cl.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         btn_cl.clicked.connect(self._clear_filters)
-        row2.addWidget(btn_cl)
-
-        row2.addWidget(self._vline())
+        row3.addWidget(btn_cl)
 
         self._btn_export = QPushButton("Export XLSX")
         self._btn_export.setObjectName("btn_export")
+        self._btn_export.setMinimumWidth(0)
+        self._btn_export.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._btn_export.clicked.connect(self._export)
-        row2.addWidget(self._btn_export)
+        row3.addWidget(self._btn_export)
 
         self._btn_backup = QPushButton("Backup Time")
         self._btn_backup.setObjectName("btn_backup")
+        self._btn_backup.setMinimumWidth(0)
+        self._btn_backup.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._btn_backup.clicked.connect(self._show_backup_times)
-        row2.addWidget(self._btn_backup)
+        row3.addWidget(self._btn_backup)
 
         self._btn_both = QPushButton("Both P+D")
         self._btn_both.setObjectName("btn_both")
+        self._btn_both.setMinimumWidth(0)
+        self._btn_both.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._btn_both.setToolTip(
             "Show only sites that have both Power and Down alarms")
         self._btn_both.clicked.connect(self._activate_both_pd)
-        row2.addWidget(self._btn_both)
+        row3.addWidget(self._btn_both)
 
-        gl.addLayout(row2)
+        gl.addLayout(row3)
         outer.addWidget(grp, 1)
 
         # ── Stats panel (right of search) ─────────────────
@@ -2125,6 +2170,7 @@ class AlarmViewer(QMainWindow):
             "sort_column": sort_section if sort_section >= 0 else None,
             "sort_order": sort_order,
             "window_geometry": [geo.x(), geo.y(), geo.width(), geo.height()],
+            "ui_zoom_pct": self._app_zoom_pct,
         }
         state.save_state(d)
 
@@ -2138,6 +2184,8 @@ class AlarmViewer(QMainWindow):
         geo = s.get("window_geometry")
         if geo and len(geo) == 4:
             self.setGeometry(*geo)
+        if "ui_zoom_pct" in s:
+            self._set_app_zoom(s["ui_zoom_pct"])
 
         # Directory & site filter
         if s.get("directory"):
@@ -2386,13 +2434,30 @@ class AlarmViewer(QMainWindow):
         event.accept()
 
     def keyPressEvent(self, event):
-        """Keyboard shortcuts: Ctrl+B toggle sidebar, Ctrl+C copy."""
-        if (event.modifiers() == Qt.ControlModifier
-                and event.key() == Qt.Key_B):
+        """Keyboard shortcuts: sidebar/copy + app zoom."""
+        mods = event.modifiers()
+        has_primary = bool(mods & (Qt.ControlModifier | Qt.MetaModifier))
+        has_alt = bool(mods & Qt.AltModifier)
+        txt = event.text() or ""
+
+        if has_primary and not has_alt and (
+            event.key() in (Qt.Key_Minus, Qt.Key_Underscore) or txt in ("-", "_", "−")
+        ):
+            self._zoom_out()
+            return
+        if has_primary and not has_alt and (
+            event.key() in (Qt.Key_Plus, Qt.Key_Equal) or txt in ("+", "=")
+        ):
+            self._zoom_in()
+            return
+        if has_primary and not has_alt and event.key() == Qt.Key_0:
+            self._zoom_reset()
+            return
+
+        if has_primary and not has_alt and event.key() == Qt.Key_B:
             self._toggle_sidebar()
             return
-        if (event.modifiers() == Qt.ControlModifier
-                and event.key() == Qt.Key_C):
+        if has_primary and not has_alt and event.key() == Qt.Key_C:
             indexes = self._table.selectionModel().selectedIndexes()
             if indexes:
                 # Group by row, join with tab; rows separated by newline
@@ -2524,8 +2589,138 @@ class AlarmViewer(QMainWindow):
             self._sidebar_width = sizes[0]
             self._main_splitter.setSizes([0, sizes[0] + sizes[1]])
         else:
-            self._main_splitter.setSizes(
-                [self._sidebar_width, sizes[1] - self._sidebar_width])
+            max_open = self._max_sidebar_width()
+            target = max(1, min(self._sidebar_width or 260, max_open))
+            total = max(1, sizes[0] + sizes[1])
+            target = min(target, total - 1)
+            self._main_splitter.setSizes([target, total - target])
+
+    def _min_sidebar_width(self) -> int:
+        return 1
+
+    def _max_sidebar_width(self) -> int:
+        if not hasattr(self, "_main_splitter"):
+            screen = QApplication.primaryScreen()
+            if screen:
+                return max(1, int(screen.availableGeometry().width() / 3))
+            return 500
+        total = self._main_splitter.width() or self.width() or 1
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_cap = max(1, int(screen.availableGeometry().width() / 3))
+        else:
+            screen_cap = total - 1
+        return max(1, min(total - 1, screen_cap))
+
+    def _apply_sidebar_constraints(self):
+        if not hasattr(self, "_main_splitter"):
+            return
+        max_open = self._max_sidebar_width()
+        self._sidebar.setMinimumWidth(0)
+        self._sidebar.setMaximumWidth(max_open)
+        sizes = self._main_splitter.sizes()
+        if len(sizes) != 2:
+            return
+        left, right = sizes
+        total = max(1, left + right)
+        if left > max_open:
+            self._main_splitter.setSizes([max_open, total - max_open])
+            self._sidebar_width = max_open
+        elif left > 0:
+            self._sidebar_width = left
+
+    def _on_main_splitter_moved(self, _pos: int, _index: int):
+        self._apply_sidebar_constraints()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_main_splitter"):
+            self._apply_sidebar_constraints()
+
+    def _setup_zoom_shortcuts(self):
+        in_seqs = (
+            QKeySequence.ZoomIn,
+            QKeySequence("Ctrl+="),
+            QKeySequence("Meta+="),
+            QKeySequence("Ctrl++"),
+            QKeySequence("Meta++"),
+        )
+        out_seqs = (
+            QKeySequence.ZoomOut,
+            QKeySequence("Ctrl+-"),
+            QKeySequence("Meta+-"),
+            QKeySequence("Ctrl+_"),
+            QKeySequence("Meta+_"),
+            QKeySequence("Ctrl+minus"),
+            QKeySequence("Meta+minus"),
+        )
+        reset_seqs = (
+            QKeySequence("Ctrl+0"),
+            QKeySequence("Meta+0"),
+        )
+        for seq in in_seqs:
+            sc = QShortcut(seq, self)
+            sc.activated.connect(self._zoom_in)
+            self._zoom_shortcuts.append(sc)
+        for seq in out_seqs:
+            sc = QShortcut(seq, self)
+            sc.activated.connect(self._zoom_out)
+            self._zoom_shortcuts.append(sc)
+        for seq in reset_seqs:
+            sc = QShortcut(seq, self)
+            sc.activated.connect(self._zoom_reset)
+            self._zoom_shortcuts.append(sc)
+
+    def _set_app_zoom(self, pct: int):
+        pct = max(self._zoom_min_pct, min(self._zoom_max_pct, int(pct)))
+        self._app_zoom_pct = pct
+        self.setStyleSheet(self._scale_font_sizes(STYLE, pct))
+        for widget in self.findChildren(QWidget):
+            base_ss = widget.property("_zoom_base_style")
+            if base_ss is None:
+                base_ss = widget.styleSheet()
+                widget.setProperty("_zoom_base_style", base_ss)
+            if base_ss:
+                widget.setStyleSheet(self._scale_font_sizes(str(base_ss), pct))
+        app = QApplication.instance()
+        if app:
+            base = self._base_app_font_size
+            if base <= 0:
+                base = 13.0
+            f = QFont(self._base_app_font)
+            f.setPointSizeF(max(7.0, base * (pct / 100.0)))
+            app.setFont(f)
+        row_h = max(22, int(round(28 * (pct / 100.0))))
+        if hasattr(self, "_table"):
+            self._table.verticalHeader().setDefaultSectionSize(row_h)
+        if hasattr(self, "_bdt_table"):
+            self._bdt_table.verticalHeader().setDefaultSectionSize(row_h)
+        if hasattr(self, "_main_splitter"):
+            self._apply_sidebar_constraints()
+        if hasattr(self, "_sbar"):
+            self._sbar.showMessage(f"UI zoom: {pct}%", 1800)
+
+    def _zoom_in(self):
+        self._set_app_zoom(self._app_zoom_pct + 10)
+
+    def _zoom_out(self):
+        self._set_app_zoom(self._app_zoom_pct - 10)
+
+    def _zoom_reset(self):
+        self._set_app_zoom(100)
+
+    def _scale_font_sizes(self, css: str, pct: int) -> str:
+        scale = pct / 100.0
+
+        def repl(match):
+            prefix = match.group(1)
+            px = float(match.group(2))
+            scaled = max(8.0, round(px * scale, 2))
+            if scaled.is_integer():
+                return f"{prefix}{int(scaled)}px"
+            return f"{prefix}{scaled}px"
+
+        return self._font_size_px_re.sub(repl, css)
 
     # ── slots ────────────────────────────────────────────────────
     def _browse(self):

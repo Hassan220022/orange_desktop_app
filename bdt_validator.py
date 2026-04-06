@@ -7,6 +7,7 @@ data to detect fraudulent or incorrect test submissions.
 
 from dataclasses import dataclass, field
 from datetime import datetime, time
+import re
 
 import pandas as pd
 import numpy as np
@@ -817,7 +818,7 @@ def _rule_10_door_alarm_match(bdt: BDTData,
 
 
 def _rule_3_string_vs_busbar(bdt: BDTData) -> RuleResult:
-    """R3: Sum of per-string amperes must not be more than 3A below bus bar ampere."""
+    """R3: Rectifier amp minus summed string amps must stay between -3A and 0A."""
     if not bdt.string_discharge_readings or not bdt.discharge_readings:
         return RuleResult(
             rule_id="R3", rule_name="String vs Bus Bar Ampere",
@@ -842,16 +843,17 @@ def _rule_3_string_vs_busbar(bdt: BDTData) -> RuleResult:
             continue
 
         string_sum = sum(string_amps)
-        diff = string_sum - bus_a
+        diff = bus_a - string_sum
         checked += 1
 
-        if diff < -tolerance:
+        if diff > 0 or diff < -tolerance:
             return RuleResult(
                 rule_id="R3", rule_name="String vs Bus Bar Ampere",
                 passed=False, verdict="Rejected",
-                detail=(f"At {dr[0]}: string sum {string_sum:.2f}A vs "
-                        f"bus bar {bus_a:.2f}A (diff={diff:.2f}A, "
-                        f"limit >=-{tolerance:.1f}A)"),
+                detail=(f"Batteries Amp not matched with the rectifier summation Amp "
+                        f"at {dr[0]}: rectifier={bus_a:.2f}A, "
+                        f"strings_sum={string_sum:.2f}A "
+                        f"(E-(G+I)={diff:.2f}A, required -{tolerance:.1f}A to 0.0A)"),
             )
 
     if checked == 0:
@@ -865,7 +867,7 @@ def _rule_3_string_vs_busbar(bdt: BDTData) -> RuleResult:
         rule_id="R3", rule_name="String vs Bus Bar Ampere",
         passed=True, verdict="Accepted",
         detail=(f"All {checked} time points within tolerance "
-                f"(string sum - bus bar >= -{tolerance:.1f}A)"),
+                f"(E-(G+I) between -{tolerance:.1f}A and 0.0A)"),
     )
 
 
@@ -874,13 +876,14 @@ def _normalize_for_comparison(val: str) -> str:
     if val is None:
         return ""
     s = str(val).strip().lower()
-    # Remove common unit suffixes
-    for suffix in ("ah", "vdc", "min", "mins", "v", "a", " min"):
-        if s.endswith(suffix):
-            s = s[:-len(suffix)].strip()
     # Remove "none" / "na" / "n/a"
     if s in ("none", "na", "n/a", "nan", "--", "-", ""):
         return ""
+    # Strip common units only for numeric-like strings.
+    match = re.match(r"^\s*([-+]?\d+(?:\.\d+)?)\s*(?:ah|vdc|mins?|min|v|a)?\s*$", s)
+    if match:
+        return match.group(1)
+    s = " ".join(s.split())
     return s
 
 
@@ -892,6 +895,22 @@ def _values_match(bdt_val: str, summary_val: str, field_name: str) -> bool:
         return True  # both empty = match
     if not a or not b:
         return False  # one empty, one not = mismatch
+    if field_name.strip().lower() == "test date":
+        try:
+            def _parse_date(text: str):
+                ts = pd.to_datetime(text, errors="coerce", format="%Y-%m-%d")
+                if pd.isna(ts):
+                    ts = pd.to_datetime(text, errors="coerce", dayfirst=True)
+                if pd.isna(ts):
+                    ts = pd.to_datetime(text, errors="coerce")
+                return ts
+
+            da = _parse_date(a)
+            db = _parse_date(b)
+            if not pd.isna(da) and not pd.isna(db):
+                return pd.Timestamp(da).normalize() == pd.Timestamp(db).normalize()
+        except Exception:
+            pass
     # Try numeric comparison with epsilon
     try:
         fa, fb = float(a), float(b)
@@ -900,6 +919,41 @@ def _values_match(bdt_val: str, summary_val: str, field_name: str) -> bool:
         pass
     # String: case-insensitive containment (Summary may abbreviate or expand)
     return a in b or b in a
+
+
+_SUMMARY_KEY_ALIASES = {
+    "Short Code": ("Short Code", "Site Code"),
+    "PLVD Value": ("PLVD Value", "PLD Value"),
+    "Rectifier Brand": ("Rectifier Brand",),
+    "# of Modules": ("# of Modules", "Number of Modules", "No of Modules"),
+    "Battery Brand": ("Battery Brand",),
+    "Battery Volt": ("Battery Volt", "Battery Voltage"),
+    "No of String": ("No of String", "No of Strings", "Number of Strings"),
+    "No of Batteries": ("No of Batteries", "No of Batteries ", "Number of Batteries"),
+    "Start Volt": ("Start Volt", "Start Voltage"),
+    "Start Amp": ("Start Amp",),
+    "End Volt": ("End Volt", "End Voltage"),
+    "End Amp": ("End Amp",),
+    "Discharge time( Mins)": ("Discharge time( Mins)", "Discharge Time (mins)", "Discharge Time (min)"),
+    "Test Date": ("Test Date",),
+}
+
+
+def _normalize_summary_key(key) -> str:
+    return "".join(ch for ch in str(key or "").strip().lower() if ch.isalnum())
+
+
+def _summary_lookup_value(summary_data: dict[str, str], canonical_key: str) -> str:
+    normalized = {}
+    for key, value in summary_data.items():
+        nk = _normalize_summary_key(key)
+        if nk and nk not in normalized:
+            normalized[nk] = value
+    for alias in _SUMMARY_KEY_ALIASES.get(canonical_key, (canonical_key,)):
+        val = normalized.get(_normalize_summary_key(alias))
+        if val is not None:
+            return str(val)
+    return ""
 
 
 def _rule_11_summary_checklist(bdt: BDTData) -> RuleResult:
@@ -913,25 +967,25 @@ def _rule_11_summary_checklist(bdt: BDTData) -> RuleResult:
 
     checks = [
         ("Short Code",      str(bdt.site_code or ""),           "Short Code"),
-        ("PLVD Value",      str(bdt.pld_value or ""),           "PLVD Value"),
+        ("PLD Value",       str(bdt.pld_value or ""),           "PLVD Value"),
         ("Rectifier Brand", str(bdt.rectifier_brand or ""),     "Rectifier Brand"),
-        ("# of Modules",    str(bdt.num_modules or ""),         "# of Modules"),
+        ("Number of Modules", str(bdt.num_modules or ""),       "# of Modules"),
         ("Battery Brand",   str(bdt.battery_brand or ""),       "Battery Brand"),
-        ("Battery Voltage",  str(bdt.battery_voltage or ""),    "Battery Volt"),
-        ("# of Strings",    str(bdt.num_strings or ""),         "No of String"),
-        ("# of Batteries",  str(bdt.num_batteries or ""),       "No of Batteries"),
+        ("Battery Voltage", str(bdt.battery_voltage or ""),     "Battery Volt"),
+        ("Number of Strings", str(bdt.num_strings or ""),       "No of String"),
+        ("Number of Batteries", str(bdt.num_batteries or ""),   "No of Batteries"),
         ("Start Voltage",   str(bdt.start_voltage or ""),       "Start Volt"),
         ("Start Amp",       str(bdt.start_ampere or ""),        "Start Amp"),
         ("End Voltage",     str(bdt.end_voltage or ""),         "End Volt"),
         ("End Amp",         str(bdt.end_ampere or ""),          "End Amp"),
-        ("Discharge Time",  str(bdt.discharge_minutes or ""),   "Discharge time( Mins)"),
+        ("Discharge Time (mins)", str(bdt.discharge_minutes or ""), "Discharge time( Mins)"),
         ("Test Date",       (bdt.test_date.strftime("%Y-%m-%d") if bdt.test_date else ""), "Test Date"),
     ]
 
     mismatches = []
     checked = 0
     for display_name, bdt_val, summary_key in checks:
-        summary_val = bdt.summary_data.get(summary_key, "")
+        summary_val = _summary_lookup_value(bdt.summary_data, summary_key)
         if not bdt_val and not summary_val:
             continue  # skip fields missing from both
         checked += 1

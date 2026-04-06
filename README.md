@@ -239,7 +239,7 @@ make run
 2. **Select files** -- check the files you want to load from the file list, then click "Load Selected".
 3. **Filter** -- use the search bar, date pickers, dropdown filters (vendor, network, category, status), and duration range to narrow results. Click column headers for per-column filter popups.
 4. **Backup-time analysis** -- click the "Backup Time" button to compute battery hold times across all loaded Power and Down alarms. Results open in a dedicated dialog with summary statistics and export.
-5. **BDT validation** -- switch to the BDT tab, load Battery Discharge Test `.xlsx` files, and validate them against the loaded alarm data. Each file is checked against 11 rules with per-rule verdicts.
+5. **BDT validation** -- switch to the BDT tab, load Battery Discharge Test `.xlsx` files, and validate them against the loaded alarm data. Each file is checked against 11 rules with per-rule verdicts. If a weekly summary workbook (for example, `Weekly Battery Update.xlsx`) is present beside the BDT files, R11 also cross-checks against that workbook by **Short Code + Test Date**.
 6. **Export** -- export the current filtered view or backup-time results to Excel. BDT export writes one summary sheet (`BDT 2025-2026`) in the same 53-column layout used by the weekly summary file, with normalized week/date/unit formatting.
 
 ### Alarm Classification
@@ -272,7 +272,7 @@ alarm_app/
 ├── parsers.py         File discovery, CSV/XLSX parsing, LoaderThread, ExportThread
 ├── backup_time.py     compute_backup_times() + BackupTimeDialog + BackupTimeThread
 ├── bdt_parser.py      Battery Discharge Test Excel parser (openpyxl, non-tabular layout)
-├── bdt_validator.py   10-rule BDT validation engine with cross-referencing against alarms
+├── bdt_validator.py   11-rule BDT validation engine with cross-referencing against alarms
 ├── state.py           Session persistence -- JSON state + Parquet DataFrame cache
 ├── viewer.py          AlarmViewer (QMainWindow) -- all UI, filter logic, slots
 ├── requirements.txt   Python dependencies
@@ -318,6 +318,7 @@ QTableView display
 | R8   | Sizing vs Actual      | Lithium-only applicability check (`health 95--100%`, `actual < 180`) with ±15 min diff threshold |
 | R9   | Discharge Current Tolerance | Discharge current remains within ±1 A of baseline reading |
 | R10  | Door Alarm Condition  | Door alarm detected for same site on test date               |
+| R11  | Summary Checklist     | Cross-checks Short Code/PLD/rectifier-battery-discharge values against Summary sheet or external weekly summary workbook |
 
 ### Performance Optimizations
 

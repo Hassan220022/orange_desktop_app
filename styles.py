@@ -55,7 +55,7 @@ QPushButton {
     padding: 7px 16px;
     font-weight: 600;
     font-size: 12px;
-    min-width: 72px;
+    min-width: 0px;
 }
 QPushButton:hover {
     background: #313150;
@@ -78,7 +78,7 @@ QPushButton#btn_search {
     background: #1a2744;
     color: #89b4fa;
     border: 1px solid #2a4070;
-    min-width: 80px;
+    min-width: 0px;
 }
 QPushButton#btn_search:hover {
     background: #1f3258;

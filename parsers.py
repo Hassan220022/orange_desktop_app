@@ -87,6 +87,245 @@ def _quick_header_check(path: str, ext: str) -> bool:
 _ALARM_NAME_HINTS = ("alarm", "power_alarm", "down_alarm")
 
 
+# External weekly-summary workbook support (R11 checklist matching).
+_SUMMARY_FILE_EXTS = frozenset((".xlsx", ".xlsm", ".xls", ".xlsb", ".ods"))
+_SUMMARY_CANONICAL_KEYS = (
+    "Short Code",
+    "PLVD Value",
+    "Rectifier Brand",
+    "# of Modules",
+    "Battery Brand",
+    "Battery Volt",
+    "No of String",
+    "No of Batteries",
+    "Start Volt",
+    "Start Amp",
+    "End Volt",
+    "End Amp",
+    "Discharge time( Mins)",
+    "Test Date",
+)
+_SUMMARY_KEY_ALIASES = {
+    "Short Code": ("Short Code", "Site Code"),
+    "PLVD Value": ("PLVD Value", "PLD Value"),
+    "Rectifier Brand": ("Rectifier Brand",),
+    "# of Modules": ("# of Modules", "Number of Modules", "No of Modules"),
+    "Battery Brand": ("Battery Brand",),
+    "Battery Volt": ("Battery Volt", "Battery Voltage"),
+    "No of String": ("No of String", "No of Strings", "Number of Strings"),
+    "No of Batteries": ("No of Batteries", "No of Batteries ", "Number of Batteries"),
+    "Start Volt": ("Start Volt", "Start Voltage"),
+    "Start Amp": ("Start Amp",),
+    "End Volt": ("End Volt", "End Voltage"),
+    "End Amp": ("End Amp",),
+    "Discharge time( Mins)": ("Discharge time( Mins)", "Discharge Time (mins)", "Discharge Time (min)"),
+    "Test Date": ("Test Date",),
+}
+
+
+def _normalize_summary_key(key) -> str:
+    return "".join(ch for ch in str(key or "").strip().lower() if ch.isalnum())
+
+
+_SUMMARY_ALIAS_TO_CANONICAL = {
+    _normalize_summary_key(alias): canonical
+    for canonical, aliases in _SUMMARY_KEY_ALIASES.items()
+    for alias in aliases
+}
+
+
+def _summary_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        if pd.isna(value):
+            return ""
+        if value.is_integer():
+            return str(int(value))
+    if isinstance(value, np.floating):
+        if np.isnan(value):
+            return ""
+        if float(value).is_integer():
+            return str(int(float(value)))
+    if isinstance(value, int | np.integer):
+        return str(int(value))
+    s = str(value).strip()
+    if s.lower() in {"nan", "none", "null", "na", "n/a", "-", "--"}:
+        return ""
+    return s
+
+
+def _summary_date_key(value) -> str:
+    if value is None:
+        return ""
+    try:
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return ""
+            ts = pd.to_datetime(raw, errors="coerce", format="%Y-%m-%d")
+            if pd.isna(ts):
+                ts = pd.to_datetime(raw, errors="coerce", dayfirst=True)
+            if pd.isna(ts):
+                ts = pd.to_datetime(raw, errors="coerce")
+        else:
+            ts = pd.to_datetime(value, errors="coerce")
+    except Exception:
+        return ""
+    if pd.isna(ts):
+        return ""
+    return pd.Timestamp(ts).normalize().strftime("%Y-%m-%d")
+
+
+def _summary_site_key(value) -> str:
+    return "".join(ch for ch in _summary_text(value).upper() if ch.isalnum())
+
+
+def _summary_candidate_files(bdt_files: list[str]) -> list[str]:
+    bdt_paths = {os.path.normcase(os.path.abspath(p)) for p in bdt_files}
+    scan_dirs = {os.path.dirname(os.path.abspath(p)) for p in bdt_files}
+    candidates: set[str] = set()
+
+    for directory in scan_dirs:
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in names:
+            if name.startswith("~$") or name.startswith("._"):
+                continue
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in _SUMMARY_FILE_EXTS:
+                continue
+            full = os.path.abspath(os.path.join(directory, name))
+            if os.path.normcase(full) in bdt_paths:
+                continue
+            if "bdt" in name.lower():
+                continue
+            candidates.add(full)
+
+    def _sort_key(path: str):
+        name = os.path.basename(path).lower()
+        score = 0
+        if "summary" in name:
+            score += 8
+        if "weekly" in name:
+            score += 5
+        if "battery" in name:
+            score += 4
+        if "update" in name:
+            score += 3
+        return (-score, name)
+
+    return sorted(candidates, key=_sort_key)
+
+
+def _extract_summary_rows(file_path: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    workbook = None
+
+    for engine in ("calamine", "openpyxl"):
+        try:
+            workbook = pd.ExcelFile(file_path, engine=engine)
+            break
+        except Exception:
+            continue
+
+    if workbook is None:
+        return rows
+
+    try:
+        for sheet_name in workbook.sheet_names:
+            try:
+                df = pd.read_excel(workbook, sheet_name=sheet_name, dtype=object)
+            except Exception:
+                continue
+            if df is None or df.empty:
+                continue
+
+            mapped_cols: dict[str, str] = {}
+            for col in df.columns:
+                canonical = _SUMMARY_ALIAS_TO_CANONICAL.get(_normalize_summary_key(col))
+                if canonical and canonical not in mapped_cols.values():
+                    mapped_cols[col] = canonical
+
+            if "Short Code" not in mapped_cols.values():
+                continue
+            if "Test Date" not in mapped_cols.values():
+                continue
+
+            for _, row in df.iterrows():
+                summary_row: dict[str, str] = {}
+                for source_col, canonical in mapped_cols.items():
+                    raw = row.get(source_col, None)
+                    if canonical == "Test Date":
+                        summary_row[canonical] = _summary_date_key(raw)
+                    elif canonical == "Short Code":
+                        summary_row[canonical] = _summary_text(raw).upper()
+                    else:
+                        summary_row[canonical] = _summary_text(raw)
+
+                if not summary_row.get("Short Code"):
+                    continue
+                if not any(summary_row.get(k, "") for k in _SUMMARY_CANONICAL_KEYS
+                           if k not in {"Short Code", "Test Date"}):
+                    continue
+                rows.append(summary_row)
+    finally:
+        try:
+            workbook.close()
+        except Exception:
+            pass
+
+    return rows
+
+
+def _load_external_summary_lookup(bdt_files: list[str]) -> dict[str, dict]:
+    """Build summary lookup maps keyed by (site, test_date) and by site."""
+    lookup = {"by_site_date": {}, "by_site": {}}
+    for path in _summary_candidate_files(bdt_files):
+        for row in _extract_summary_rows(path):
+            site_key = _summary_site_key(row.get("Short Code"))
+            if not site_key:
+                continue
+            date_key = _summary_date_key(row.get("Test Date"))
+            row_copy = dict(row)
+            if date_key:
+                row_copy["Test Date"] = date_key
+                lookup["by_site_date"].setdefault((site_key, date_key), row_copy)
+
+            by_site = lookup["by_site"].setdefault(site_key, {})
+            by_site.setdefault(date_key, row_copy)
+    return lookup
+
+
+def _match_external_summary_row(bdt_data, summary_lookup: dict[str, dict]) -> dict[str, str] | None:
+    if not summary_lookup:
+        return None
+
+    site_key = _summary_site_key(getattr(bdt_data, "site_code", ""))
+    if not site_key:
+        return None
+
+    by_site_date = summary_lookup.get("by_site_date", {})
+    by_site = summary_lookup.get("by_site", {})
+    test_date_key = _summary_date_key(getattr(bdt_data, "test_date", None))
+
+    if test_date_key:
+        exact = by_site_date.get((site_key, test_date_key))
+        if exact:
+            return dict(exact)
+
+    site_rows = by_site.get(site_key, {})
+    if not site_rows:
+        return None
+    if len(site_rows) == 1:
+        return dict(next(iter(site_rows.values())))
+    if "" in site_rows and len(site_rows) == 2 and test_date_key:
+        return dict(site_rows[""])
+    return None
+
+
 def discover_alarm_files(directory: str) -> list[dict]:
     """
     Recursively walk *directory* and return metadata dicts for every
@@ -475,6 +714,7 @@ class BDTValidationThread(QThread):
             results = []
             by_site: dict[str, list] = {}
             done = 0
+            summary_lookup = _load_external_summary_lookup(self._files)
 
             workers = min(total, os.cpu_count() or 1, 8)
 
@@ -519,6 +759,12 @@ class BDTValidationThread(QThread):
                     # Bulk parsing may defer photos for speed, so load now.
                     if getattr(bdt_data, "photos_deferred", False):
                         load_bdt_photos(bdt_data)
+
+                    if summary_lookup:
+                        matched_summary = _match_external_summary_row(
+                            bdt_data, summary_lookup)
+                        if matched_summary:
+                            bdt_data.summary_data = matched_summary
 
                     result = validate_bdt(
                         bdt_data, self._alarm_df,

@@ -19,6 +19,8 @@ from alarm_app.parsers import (
     _is_alarm_header,
     _duration_to_secs,
     _secs_to_hhmmss,
+    _load_external_summary_lookup,
+    _match_external_summary_row,
     parse_alarm_file,
     classify_by_alarm_id,
     compute_site_down_flag,
@@ -133,6 +135,141 @@ class TestBDTValidationThreadFiltering:
         assert len(captured["results"]) == 1
         assert captured["results"][0].filename == "partial.xlsx"
         assert "0630UP" in captured["by_site"]
+
+    def test_applies_external_summary_lookup_before_validation(self):
+        from alarm_app.parsers import BDTValidationThread
+
+        class _FakeBdtData:
+            def __init__(self, filename):
+                self.filename = filename
+                self.file_path = f"/fake/{filename}"
+                self.site_code = "3868DE"
+                self.test_date = datetime.datetime(2026, 1, 5)
+                self.errors = []
+                self.photos_deferred = False
+                self.discharge_readings = [("30 min", 52.0, 25.0)]
+                self.start_voltage = 54.0
+                self.start_ampere = 23.0
+                self.summary_data = {}
+
+        parsed = _FakeBdtData("good.xlsx")
+
+        def fake_parse(_fp, skip_photos=True):
+            return parsed
+
+        observed = {}
+
+        def fake_validate(bdt_data, alarm_df, tolerance, health_pct):
+            observed["summary_data"] = dict(getattr(bdt_data, "summary_data", {}))
+
+            class _Rule:
+                rule_id = "R11"
+                verdict = "Accepted"
+                detail = ""
+
+            class _Res:
+                def __init__(self, b):
+                    self.filename = b.filename
+                    self.site_code = b.site_code
+                    self.test_date = "2026-01-05"
+                    self.overall = "Accepted"
+                    self.rules = [_Rule()]
+                    self.parse_errors = list(b.errors)
+                    self.bdt_data = b
+
+            return _Res(bdt_data)
+
+        lookup = {
+            "by_site_date": {
+                ("3868DE", "2026-01-05"): {
+                    "Short Code": "3868DE",
+                    "PLVD Value": "44",
+                    "Rectifier Brand": "Delta 3",
+                    "Test Date": "2026-01-05",
+                }
+            },
+            "by_site": {
+                "3868DE": {
+                    "2026-01-05": {
+                        "Short Code": "3868DE",
+                        "PLVD Value": "44",
+                        "Rectifier Brand": "Delta 3",
+                        "Test Date": "2026-01-05",
+                    }
+                }
+            },
+        }
+
+        th = BDTValidationThread(["/fake/good.xlsx"], None, 0.15, 0.80)
+        captured = {}
+        th.finished.connect(lambda results, by_site: captured.update(
+            {"results": results, "by_site": by_site}))
+
+        with patch("alarm_app.parsers._load_external_summary_lookup", return_value=lookup), \
+             patch("alarm_app.bdt_parser.parse_bdt_file", side_effect=fake_parse), \
+             patch("alarm_app.bdt_validator.validate_bdt", side_effect=fake_validate), \
+             patch("alarm_app.bdt_parser.load_bdt_photos", side_effect=lambda b: None):
+            th.run()
+
+        assert "results" in captured
+        assert len(captured["results"]) == 1
+        assert observed["summary_data"]["PLVD Value"] == "44"
+        assert observed["summary_data"]["Rectifier Brand"] == "Delta 3"
+
+
+class TestExternalSummaryHelpers:
+    def test_load_external_summary_lookup_maps_alias_headers(self, tmp_path):
+        bdt_file = tmp_path / "SITE_BDT.xlsx"
+        bdt_file.touch()
+        summary_file = tmp_path / "Weekly Battery Update.xlsx"
+
+        df = pd.DataFrame([{
+            "Short Code": "3868DE",
+            "PLD Value": "44",
+            "Rectifier Brand": "Delta 3",
+            "Number of Modules": 4,
+            "Battery Brand": "Huawei-Lithium",
+            "Battery Voltage": "48 V",
+            "Number of Strings": 2,
+            "Number of Batteries": 2,
+            "Start Voltage": 54.14,
+            "Start Amp": 72.9,
+            "End Voltage": 46.1,
+            "End Amp": 109,
+            "Discharge Time (mins)": 120,
+            "Test Date": "5-Jan-26",
+        }])
+        df.to_excel(summary_file, index=False, sheet_name="BDT 2025-2026")
+
+        lookup = _load_external_summary_lookup([str(bdt_file)])
+        key = ("3868DE", "2026-01-05")
+        assert key in lookup["by_site_date"]
+
+        row = lookup["by_site_date"][key]
+        assert row["Short Code"] == "3868DE"
+        assert row["PLVD Value"] == "44"
+        assert row["# of Modules"] == "4"
+        assert row["Battery Volt"] == "48 V"
+        assert row["No of String"] == "2"
+        assert row["No of Batteries"] == "2"
+        assert row["Start Volt"] == "54.14"
+        assert row["End Volt"] == "46.1"
+        assert row["Discharge time( Mins)"] == "120"
+        assert row["Test Date"] == "2026-01-05"
+
+    def test_match_external_summary_row_uses_site_date_key(self):
+        class _FakeBdtData:
+            site_code = "3868DE"
+            test_date = datetime.datetime(2026, 1, 5)
+
+        row = {"Short Code": "3868DE", "Test Date": "2026-01-05"}
+        lookup = {
+            "by_site_date": {("3868DE", "2026-01-05"): row},
+            "by_site": {"3868DE": {"2026-01-05": row}},
+        }
+
+        matched = _match_external_summary_row(_FakeBdtData(), lookup)
+        assert matched == row
 
 
 # ═══════════════════════════════════════════════════════════════════
