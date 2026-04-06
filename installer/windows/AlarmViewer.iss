@@ -1,5 +1,5 @@
 #define MyAppName "Alarm Viewer"
-#define MyAppVersion "0.1.5"
+#define MyAppVersion "0.1.6"
 #define MyAppPublisher "Orange"
 #define MyAppExeName "AlarmViewer.exe"
 
