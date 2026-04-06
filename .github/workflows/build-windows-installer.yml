@@ -5,8 +5,6 @@ permissions:
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
 
 jobs:
   build-installer:
@@ -69,10 +67,3 @@ jobs:
           name: AlarmViewer-windows-exe
           path: dist/AlarmViewer.exe
           if-no-files-found: error
-
-      - name: Attach Windows installer to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.release.tag_name }}
-          files: dist/AlarmViewer-Setup.exe
-          fail_on_unmatched_files: true
