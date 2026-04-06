@@ -17,6 +17,8 @@ on:
       - "state.py"
       - "requirements.txt"
       - "scripts/pyinstaller_entry.py"
+      - "assets/app_icon.ico"
+      - "assets/app_icon.png"
       - ".github/workflows/build-windows-exe.yml"
 
 jobs:
@@ -46,6 +48,8 @@ jobs:
             --onefile `
             --windowed `
             --name AlarmViewer `
+            --icon assets/app_icon.ico `
+            --add-data "assets/app_icon.png;assets" `
             --paths . `
             --distpath dist `
             --workpath build `

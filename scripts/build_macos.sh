@@ -37,6 +37,8 @@ pyinstaller \
   --noconfirm \
   --windowed \
   --name "AlarmViewer" \
+  --icon "assets/app_icon.icns" \
+  --add-data "assets/app_icon.png:assets" \
   --paths "." \
   --distpath "dist" \
   --workpath "build" \

@@ -38,6 +38,8 @@ pyinstaller ^
     --onefile ^
     --windowed ^
     --name "AlarmViewer" ^
+    --icon alarm_app\assets\app_icon.ico ^
+    --add-data "alarm_app\assets\app_icon.png;assets" ^
     --paths alarm_app ^
     --distpath alarm_app\dist ^
     --workpath alarm_app\build ^
