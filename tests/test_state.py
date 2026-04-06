@@ -17,6 +17,8 @@ def _isolate_state_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(state_mod, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(state_mod, "CACHE_FILE", tmp_path / "data_cache.parquet")
     monkeypatch.setattr(state_mod, "ALARM_IDS_FILE", tmp_path / "alarm_ids.json")
+    monkeypatch.setattr(state_mod, "AUTH_FILE", tmp_path / "users.json")
+    monkeypatch.setattr(state_mod, "REVIEW_LOG_FILE", tmp_path / "review_log.jsonl")
 
 
 # ── save_state / load_state round-trip ─────────────────────────
@@ -105,6 +107,64 @@ class TestAlarmIds:
         loaded = state_mod.load_alarm_ids()
         assert loaded["power"] == ["100", "200"]
         assert loaded["door"] == ["300", "400"]
+
+
+# ── local auth store ──────────────────────────────────────────
+class TestLocalAuth:
+    def test_upsert_and_verify_user(self):
+        state_mod.upsert_user("alice", "s3cret")
+        users = state_mod.load_users()
+        assert "alice" in users
+        assert state_mod.verify_user("alice", "s3cret") is True
+        assert state_mod.verify_user("alice", "wrong") is False
+        assert state_mod.has_users() is True
+
+    def test_list_usernames_sorted(self):
+        state_mod.upsert_user("zoe", "pw1")
+        state_mod.upsert_user("adam", "pw2")
+        assert state_mod.list_usernames() == ["adam", "zoe"]
+
+
+# ── review log / daily report ────────────────────────────────
+class TestReviewLog:
+    def test_append_and_summarize_by_day(self):
+        state_mod.append_review_event(
+            username="alice",
+            filename="a.xlsx",
+            site_code="0167DE",
+            test_date="2026-01-11",
+            verdict="Accepted",
+            reviewed_at="2026-04-06T08:15:00",
+        )
+        state_mod.append_review_event(
+            username="alice",
+            filename="b.xlsx",
+            site_code="0168DE",
+            test_date="2026-01-12",
+            verdict="Rejected",
+            reviewed_at="2026-04-06T09:30:00",
+        )
+        state_mod.append_review_event(
+            username="bob",
+            filename="c.xlsx",
+            site_code="0169DE",
+            test_date="2026-01-13",
+            verdict="Revise",
+            reviewed_at="2026-04-05T10:00:00",
+        )
+
+        events = state_mod.load_review_events()
+        assert len(events) == 3
+
+        summary = state_mod.summarize_review_events_by_day(events)
+        assert summary[0]["date"] == "2026-04-06"
+        assert summary[0]["tests_reviewed"] == 2
+        assert summary[0]["Accepted"] == 1
+        assert summary[0]["Rejected"] == 1
+        assert summary[0]["users"] == "alice"
+        assert summary[1]["date"] == "2026-04-05"
+        assert summary[1]["Revise"] == 1
+        assert summary[1]["users"] == "bob"
 
 
 # ── compute_file_hashes ───────────────────────────────────────

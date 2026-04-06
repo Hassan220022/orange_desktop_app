@@ -6,7 +6,7 @@ data to detect fraudulent or incorrect test submissions.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import re
 
 import pandas as pd
@@ -308,15 +308,39 @@ def _parse_test_time(raw_time) -> time | None:
     text = str(raw_time).strip()
     if not text or text.lower() == "nan":
         return None
+    text = text.replace("\u00a0", " ").replace("\u202f", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+
+    ampm_normalized = text.replace(".", "")
+
     for fmt in (
         "%H:%M:%S", "%H:%M",
         "%I:%M:%S%p", "%I:%M:%S %p",   # 12-hour with AM/PM (e.g. "12:31:10PM")
         "%I:%M%p", "%I:%M %p",          # 12-hour without seconds
     ):
-        try:
-            return datetime.strptime(text, fmt).time()
-        except ValueError:
-            continue
+        for candidate in (text, ampm_normalized):
+            try:
+                return datetime.strptime(candidate, fmt).time()
+            except ValueError:
+                continue
+
+    # Excel sometimes serializes times as a datetime-like string.
+    try:
+        ts = pd.to_datetime(text, errors="coerce")
+        if not pd.isna(ts):
+            return ts.to_pydatetime().time().replace(microsecond=0)
+    except Exception:
+        pass
+
+    # Excel numeric time fraction fallback (e.g. 0.583333 => 14:00:00).
+    try:
+        numeric = float(text)
+        if 0.0 <= numeric < 1.0:
+            secs = int(round(numeric * 24 * 60 * 60))
+            return (datetime(2000, 1, 1) + timedelta(seconds=secs)).time()
+    except (TypeError, ValueError):
+        pass
+
     return None
 
 
@@ -327,12 +351,69 @@ def _max_reached_discharge_minutes(bdt: BDTData) -> float | None:
         if v is None and a is None:
             continue
         try:
-            mins = float(str(label).split()[0])
+            mins = _parse_discharge_minute_label(label)
         except (ValueError, TypeError, IndexError):
+            continue
+        if mins is None:
             continue
         if mins > max_mins:
             max_mins = mins
     return max_mins if max_mins > 0 else None
+
+
+def _parse_discharge_minute_label(label) -> float | None:
+    """Extract the minute value from a discharge row label."""
+    if label is None:
+        return None
+
+    text = str(label).strip()
+    if not text:
+        return None
+
+    match = re.search(r"(-?\d+(?:\.\d+)?)", text)
+    if not match:
+        return None
+
+    try:
+        return float(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _lithium_cadence_violation(bdt: BDTData) -> str | None:
+    """Return a lithium cadence violation message, or None when valid/not applicable."""
+    readings: list[tuple[int, float, float | None, float | None]] = []
+    threshold_idx: int | None = None
+
+    for idx, (label, voltage, ampere) in enumerate(bdt.discharge_readings):
+        minute = _parse_discharge_minute_label(label)
+        if minute is None:
+            continue
+
+        has_reading = voltage is not None or ampere is not None
+        if not has_reading:
+            continue
+
+        minute_i = int(round(minute))
+        readings.append((idx, minute_i, voltage, ampere))
+        if threshold_idx is None and voltage is not None and voltage <= 47.0:
+            threshold_idx = len(readings) - 1
+
+    if threshold_idx is None:
+        return None
+
+    threshold_minute = readings[threshold_idx][1]
+    expected_minute = threshold_minute + 5
+
+    for _, minute, _, _ in readings[threshold_idx + 1:]:
+        if minute != expected_minute:
+            return (
+                f"Lithium cadence violation after 47V at {threshold_minute} min: "
+                f"expected reading at {expected_minute} min, found {minute} min"
+            )
+        expected_minute += 5
+
+    return None
 
 
 def _rule_2_power_alarm_match(bdt: BDTData,
@@ -372,20 +453,14 @@ def _rule_2_power_alarm_match(bdt: BDTData,
             detail=("Cannot validate timing: no reached minute found in discharge table "
                     "(need at least one row with V or A reading)"),
         )
-    if discharge_minutes > BDT_COMPLETION_MINUTES:
-        return RuleResult(
-            rule_id="R2", rule_name="Power Alarm + Duration",
-            passed=False, verdict="Rejected",
-            detail=(f"Invalid discharge duration ({discharge_minutes:.1f} min): "
-                    f"must not exceed {BDT_COMPLETION_MINUTES} min"),
-        )
 
     start_time = _parse_test_time(bdt.time_in)
     if start_time is None:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm + Duration",
             passed=False, verdict="Revise",
-            detail="Cannot validate alarm timing: invalid time_in (expected HH:MM or HH:MM:SS)",
+            detail=("Cannot validate alarm timing: invalid time_in "
+                    "(expected HH:MM, HH:MM:SS, or AM/PM format)"),
         )
 
     start_ts = test_date + pd.Timedelta(
@@ -482,10 +557,8 @@ def _rule_2_power_alarm_match(bdt: BDTData,
         )
 
     for a in attempts:
-        a["within_limit"] = a["duration_min"] <= BDT_COMPLETION_MINUTES
         a["passed"] = (
-            a["within_limit"]
-            and a["start_diff_min"] <= tol_min
+            a["start_diff_min"] <= tol_min
             and a["end_diff_min"] <= tol_min
             and a["duration_diff_min"] <= tol_min
         )
@@ -505,16 +578,13 @@ def _rule_2_power_alarm_match(bdt: BDTData,
                     f"alarm duration={best['duration_min']:.1f} min vs "
                     f"discharge-table max {discharge_minutes:.1f} min "
                     f"(duration Δ={best['duration_diff_min']:.1f} min, "
-                    f"tolerance ±{tol_min:.0f} min, max {BDT_COMPLETION_MINUTES} min)"),
+                    f"tolerance ±{tol_min:.0f} min)"),
         )
 
     best = min(
         attempts,
         key=lambda a: (a["duration_diff_min"], a["end_diff_min"], a["start_diff_min"]),
     )
-    limit_note = ""
-    if not best["within_limit"]:
-        limit_note = f"; exceeds max {BDT_COMPLETION_MINUTES} min"
     return RuleResult(
         rule_id="R2", rule_name="Power Alarm + Duration",
         passed=False, verdict="Rejected",
@@ -524,14 +594,17 @@ def _rule_2_power_alarm_match(bdt: BDTData,
                 f"end Δ={best['end_diff_min']:.1f} min, "
                 f"duration Δ={best['duration_diff_min']:.1f} min "
                 f"(alarm {best['duration_min']:.1f} min vs discharge-table max "
-                f"{discharge_minutes:.1f} min)"
-                f"{limit_note}"),
+                f"{discharge_minutes:.1f} min)"),
     )
 
 
 def _rule_4_discharge_table(bdt: BDTData,
                              tolerance: float) -> RuleResult:
-    """R4: Backup time matches discharge table calculation."""
+    """R4: Backup time matches discharge table calculation.
+
+    Lithium batteries also must continue with 5-minute readings once the
+    discharge voltage reaches 47V or below.
+    """
     if not bdt.discharge_readings:
         return RuleResult(
             rule_id="R4", rule_name="Discharge Table Match",
@@ -546,6 +619,15 @@ def _rule_4_discharge_table(bdt: BDTData,
             passed=False, verdict="Revise",
             detail="Discharge table is empty — no readings recorded",
         )
+
+    if _is_lithium(bdt.battery_brand):
+        cadence_issue = _lithium_cadence_violation(bdt)
+        if cadence_issue:
+            return RuleResult(
+                rule_id="R4", rule_name="Discharge Table Match",
+                passed=False, verdict="Rejected",
+                detail=cadence_issue,
+            )
 
     reported = bdt.discharge_minutes
     diff_ratio = (abs(reported - last_mins) / last_mins
@@ -1021,4 +1103,84 @@ def _rule_11_summary_checklist(bdt: BDTData) -> RuleResult:
         rule_id="R11", rule_name="Summary Checklist",
         passed=False, verdict="Revise",
         detail=detail,
+    )
+
+
+def _rule_13_photo_date_stamp(bdt: BDTData) -> RuleResult:
+    """R13: Best-effort photo timestamp check against the BDT test date."""
+    if bdt.photos_deferred:
+        return RuleResult(
+            rule_id="R13", rule_name="Photo Date Stamp",
+            passed=None, verdict="N/A",
+            detail="Photo validation deferred; photos not loaded yet",
+        )
+
+    if bdt.test_date is None:
+        return RuleResult(
+            rule_id="R13", rule_name="Photo Date Stamp",
+            passed=False, verdict="Revise",
+            detail="Cannot compare photo timestamps without a test date",
+        )
+
+    test_date = pd.Timestamp(bdt.test_date).normalize().date()
+    if not bdt.photo_slots:
+        return RuleResult(
+            rule_id="R13", rule_name="Photo Date Stamp",
+            passed=None, verdict="N/A",
+            detail="No photo slot metadata available for timestamp validation",
+        )
+
+    filled_slots = [
+        slot for slot in bdt.photo_slots
+        if bool(getattr(slot, "image_data", None))
+    ]
+
+    if not filled_slots:
+        return RuleResult(
+            rule_id="R13", rule_name="Photo Date Stamp",
+            passed=None, verdict="N/A",
+            detail="No photos available for timestamp validation",
+        )
+
+    stamped = []
+    missing = []
+    mismatched = []
+    for slot in filled_slots:
+        captured_at = getattr(slot, "captured_at", None)
+        if not captured_at:
+            missing.append(slot.label)
+            continue
+        captured_date = pd.Timestamp(captured_at).normalize().date()
+        if captured_date != test_date:
+            mismatched.append(f"{slot.label}: {captured_date} != {test_date}")
+        else:
+            stamped.append(slot.label)
+
+    if mismatched:
+        return RuleResult(
+            rule_id="R13", rule_name="Photo Date Stamp",
+            passed=False, verdict="Rejected",
+            detail=("Photo timestamp mismatch against BDT date "
+                    f"{test_date}: " + "; ".join(mismatched[:5])),
+        )
+
+    if stamped and not missing:
+        return RuleResult(
+            rule_id="R13", rule_name="Photo Date Stamp",
+            passed=True, verdict="Accepted",
+            detail=(f"{len(stamped)} stamped photo(s) match the BDT date {test_date}"),
+        )
+
+    if stamped and missing:
+        return RuleResult(
+            rule_id="R13", rule_name="Photo Date Stamp",
+            passed=False, verdict="Revise",
+            detail=(f"{len(stamped)} photo(s) match the BDT date {test_date}, "
+                    f"but {len(missing)} photo(s) have no embedded timestamp"),
+        )
+
+    return RuleResult(
+        rule_id="R13", rule_name="Photo Date Stamp",
+        passed=False, verdict="Revise",
+        detail="No embedded photo timestamps found; cannot verify stamp date",
     )

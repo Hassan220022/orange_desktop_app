@@ -3,7 +3,7 @@ Constants — schema maps, display columns, app metadata.
 """
 
 APP_NAME    = "Alarm Viewer"
-APP_VERSION = "1.0.0"
+APP_VERSION = "0.1.5"
 
 # ── Huawei schema ────────────────────────────────────────────────
 SCHEMA_1_MAP = {
@@ -90,7 +90,7 @@ BDT_DEFAULT_TOLERANCE = 0.15   # 15%
 BDT_DEFAULT_HEALTH_PCT = 0.80  # 80% default battery health
 BDT_DISCHARGE_CURRENT_TOLERANCE_A = 1.0
 BDT_STRING_AMPERE_TOLERANCE_A = 3.0
-BDT_POWER_TIMING_TOLERANCE_MIN = 10
+BDT_POWER_TIMING_TOLERANCE_MIN = 15
 BDT_COMPLETION_MINUTES = 180
 BDT_END_VOLTAGE_MIN = 45.0
 BDT_END_VOLTAGE_MAX = 47.0

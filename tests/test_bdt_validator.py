@@ -1,4 +1,4 @@
-"""Comprehensive tests for alarm_app.bdt_validator (R1-R10)."""
+"""Comprehensive tests for alarm_app.bdt_validator active rule behavior."""
 
 from datetime import datetime
 
@@ -17,6 +17,7 @@ from alarm_app.bdt_validator import (
     _rule_9_discharge_current_tolerance,
     _rule_10_door_alarm_match,
     _rule_11_summary_checklist,
+    _rule_13_photo_date_stamp,
     _theoretical_backup_minutes,
     validate_bdt,
 )
@@ -24,8 +25,13 @@ from alarm_app.bdt_validator import (
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 
-def _slot(label: str, category: str | None, image_data: bytes | None) -> PhotoSlot:
-    slot = PhotoSlot(label=label, image_data=image_data)
+def _slot(
+    label: str,
+    category: str | None,
+    image_data: bytes | None,
+    captured_at: datetime | None = None,
+) -> PhotoSlot:
+    slot = PhotoSlot(label=label, image_data=image_data, captured_at=captured_at)
     if category is not None:
         # Parser provides this field in production; attach dynamically for tests.
         setattr(slot, "category", category)
@@ -68,7 +74,12 @@ def _make_bdt(**kwargs) -> BDTData:
         pld_value="",
     )
     defaults.update(kwargs)
-    return BDTData(**defaults)
+    bdt = BDTData(**defaults)
+    if bdt.test_date:
+        for slot in bdt.photo_slots:
+            if getattr(slot, "image_data", None) and getattr(slot, "captured_at", None) is None:
+                setattr(slot, "captured_at", bdt.test_date)
+    return bdt
 
 
 def _make_alarm_df(rows: list[dict]) -> pd.DataFrame:
@@ -176,7 +187,8 @@ class TestValidateBDTOverall:
         result = validate_bdt(bdt, alarm_df)
 
         assert [r.rule_id for r in result.rules] == [
-            "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11"
+            "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9",
+            "R10", "R11"
         ]
         assert result.overall == "Accepted"
 
@@ -357,13 +369,57 @@ class TestR2PowerAlarmMatch:
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
 
+    def test_ampm_with_non_breaking_space_accepted(self):
+        """12-hour AM/PM values can include non-breaking spaces from Excel."""
+        bdt = _make_bdt(
+            time_in="2:00\u00a0PM", time_out="4:00\u00a0PM",
+            discharge_readings=[
+                ("30 min", 52.0, 30.0),
+                ("60 min", 51.0, 30.5),
+                ("90 min", 50.0, 30.8),
+                ("120 min", 46.0, 31.0),
+            ],
+            discharge_minutes=120.0,
+        )
+        alarm_df = _make_alarm_df([
+            _power_alarm(occurred="2026-01-15 14:00:00", cleared="2026-01-15 16:00:00")
+        ])
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+        assert r.verdict == "Accepted"
+
+    def test_excel_datetime_like_time_string_accepted(self):
+        """Excel-exported datetime-like time strings are accepted for Time In."""
+        bdt = _make_bdt(
+            time_in="1900-01-01 14:00:00", time_out="1900-01-01 16:00:00",
+            discharge_readings=[
+                ("30 min", 52.0, 30.0),
+                ("60 min", 51.0, 30.5),
+                ("90 min", 50.0, 30.8),
+                ("120 min", 46.0, 31.0),
+            ],
+            discharge_minutes=120.0,
+        )
+        alarm_df = _make_alarm_df([
+            _power_alarm(occurred="2026-01-15 14:00:00", cleared="2026-01-15 16:00:00")
+        ])
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+        assert r.verdict == "Accepted"
+
     def test_outside_tolerance_rejected(self):
         bdt = _make_bdt(time_in="08:00", time_out="10:00")
         alarm_df = _make_alarm_df([
-            _power_alarm(occurred="2026-01-15 08:11:00", cleared="2026-01-15 10:00:00")
+            _power_alarm(occurred="2026-01-15 08:16:00", cleared="2026-01-15 10:16:00")
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Rejected"
+
+    def test_default_tolerance_15_minutes_accepted(self):
+        bdt = _make_bdt(time_in="08:00", time_out="10:00")
+        alarm_df = _make_alarm_df([
+            _power_alarm(occurred="2026-01-15 08:15:00", cleared="2026-01-15 10:15:00")
+        ])
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+        assert r.verdict == "Accepted"
 
     def test_invalid_test_times_revise(self):
         bdt = _make_bdt(time_in="invalid", time_out="10:00")
@@ -422,7 +478,7 @@ class TestR2PowerAlarmMatch:
         assert r.verdict == "Rejected"
         assert "duration" in r.detail.lower()
 
-    def test_reject_when_max_reached_exceeds_180_minutes(self):
+    def test_duration_over_180_minutes_no_longer_auto_rejected(self):
         bdt = _make_bdt(
             discharge_readings=[
                 ("30 min", 52.0, 30.0),
@@ -430,12 +486,14 @@ class TestR2PowerAlarmMatch:
                 ("180 min", 48.7, 29.8),
                 ("210 min", 48.6, 29.7),
             ],
-            discharge_minutes=120.0,
+            discharge_minutes=210.0,
         )
-        alarm_df = _make_alarm_df([_power_alarm()])
+        alarm_df = _make_alarm_df([
+            _power_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 11:30:00")
+        ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
-        assert r.verdict == "Rejected"
-        assert "must not exceed 180 min" in r.detail
+        assert r.verdict == "Accepted"
+        assert "210.0 min" in r.detail
 
     def test_revise_when_no_reached_discharge_minute_found(self):
         bdt = _make_bdt(
@@ -568,6 +626,41 @@ class TestR4DischargeTable:
         )
         r = _rule_4_discharge_table(bdt, tolerance=0.15)
         assert r.verdict == "Revise"
+
+
+class TestR4LithiumCadence:
+
+    def test_lithium_47v_every_five_minutes_accepted(self):
+        bdt = _make_bdt(
+            battery_brand="Lithium",
+            discharge_readings=[
+                ("5 min", 50.8, 29.9),
+                ("10 min", 49.5, 29.8),
+                ("15 min", 47.0, 29.7),
+                ("20 min", 46.6, 29.6),
+                ("25 min", 46.1, 29.5),
+            ],
+            discharge_minutes=25.0,
+        )
+        r = _rule_4_discharge_table(bdt, tolerance=0.15)
+        assert r.verdict == "Accepted"
+
+    def test_lithium_cadence_violation_rejected(self):
+        bdt = _make_bdt(
+            battery_brand="Lithium",
+            discharge_readings=[
+                ("5 min", 50.8, 29.9),
+                ("10 min", 49.5, 29.8),
+                ("15 min", 47.0, 29.7),
+                ("22 min", 46.6, 29.6),
+                ("27 min", 46.1, 29.5),
+            ],
+            discharge_minutes=27.0,
+        )
+        r = _rule_4_discharge_table(bdt, tolerance=0.15)
+        assert r.verdict == "Rejected"
+        assert "47V" in r.detail
+        assert "5 min" in r.detail
 
 
 # ── R5 Starting I-Battery ───────────────────────────────────────────────
@@ -998,6 +1091,39 @@ class TestR11SummaryChecklist:
         )
         r = _rule_11_summary_checklist(bdt)
         assert r.verdict == "Accepted"
+
+
+class TestR13PhotoDateStamp:
+
+    def test_matching_stamped_photos_accepted(self):
+        slots = [
+            _slot("Rectifier 1", "rectifier", b"img", captured_at=datetime(2026, 1, 15, 8, 0)),
+            _slot("Batteries 1", "batteries", b"img", captured_at=datetime(2026, 1, 15, 8, 5)),
+        ]
+        bdt = _make_bdt(photo_slots=slots)
+        r = _rule_13_photo_date_stamp(bdt)
+        assert r.verdict == "Accepted"
+
+    def test_photo_date_mismatch_rejected(self):
+        slots = [
+            _slot("Rectifier 1", "rectifier", b"img", captured_at=datetime(2026, 1, 14, 8, 0)),
+            _slot("Batteries 1", "batteries", b"img", captured_at=datetime(2026, 1, 15, 8, 5)),
+        ]
+        bdt = _make_bdt(photo_slots=slots)
+        r = _rule_13_photo_date_stamp(bdt)
+        assert r.verdict == "Rejected"
+        assert "mismatch" in r.detail.lower()
+
+    def test_missing_photo_timestamps_revise(self):
+        slots = [
+            _slot("Rectifier 1", "rectifier", b"img", captured_at=datetime(2026, 1, 15, 8, 0)),
+            _slot("Batteries 1", "batteries", b"img", captured_at=datetime(2026, 1, 15, 8, 5)),
+        ]
+        bdt = _make_bdt(photo_slots=slots)
+        bdt.photo_slots[1].captured_at = None
+        r = _rule_13_photo_date_stamp(bdt)
+        assert r.verdict == "Revise"
+        assert "no embedded timestamp" in r.detail.lower()
 
 
 # ── R3 String vs Bus Bar Ampere ────────────────────────────────

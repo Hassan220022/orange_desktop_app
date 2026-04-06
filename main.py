@@ -15,9 +15,6 @@ try:
 except ImportError:  # PyInstaller flat-module runtime fallback
     from constants import APP_NAME, APP_VERSION
     from viewer import AlarmViewer
-except ImportError:  # PyInstaller flat-module runtime fallback
-    from constants import APP_NAME, APP_VERSION
-    from viewer import AlarmViewer
 
 
 def main():

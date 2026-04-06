@@ -17,7 +17,8 @@ Alarm Viewer lets telecom engineers load CSV/XLSX alarm exports, filter them by 
 - **Bulk file loading** -- recursive directory scan with parallel parsing via `ThreadPoolExecutor`
 - **Advanced filtering** -- text search, date range, vendor/network/category dropdowns, duration range, and Google Sheets-style per-column filter popups
 - **Backup-time analysis** -- matches Power and Down alarms per site to compute battery hold time, with summary statistics (avg, min, max) and CSV/Excel export
-- **BDT validation** -- parses Battery Discharge Test Excel files and cross-references against alarm data using 11 automated rules (photos by required categories, power timing match, duration match, discharge table match, starting I-Battery ampere, completion/end-voltage rule, V/A inverse relation, sizing-vs-actual applicability check, discharge current tolerance, door alarm condition, and summary checklist consistency)
+- **BDT validation** -- parses Battery Discharge Test Excel files and cross-references against alarm data using 11 automated rules across alarm, discharge, and summary validations
+- **Daily review report** -- counts reviewed BDT files by day from the local review ledger
 - **Session persistence** -- saves UI state (filters, window geometry) and DataFrame cache to `~/.alarm_viewer/` for instant restore on next launch
 - **Site Down detection** -- flags Power alarms where a Down alarm occurred within the same outage window
 - **Alarm ID configuration** -- custom alarm ID lists for Power/Down/Door classification beyond filename-based detection
@@ -241,6 +242,7 @@ make run
 4. **Backup-time analysis** -- click the "Backup Time" button to compute battery hold times across all loaded Power and Down alarms. Results open in a dedicated dialog with summary statistics and export.
 5. **BDT validation** -- switch to the BDT tab, load Battery Discharge Test `.xlsx` files, and validate them against the loaded alarm data. Each file is checked against 11 rules with per-rule verdicts. If a weekly summary workbook (for example, `Weekly Battery Update.xlsx`) is present beside the BDT files, R11 also cross-checks against that workbook by **Short Code + Test Date**.
 6. **Export** -- export the current filtered view or backup-time results to Excel. BDT export writes one summary sheet (`BDT 2025-2026`) in the same 53-column layout used by the weekly summary file, with normalized week/date/unit formatting.
+7. **Reporting** -- open the daily review report from the BDT tab or top bar.
 
 ### Alarm Classification
 
@@ -310,15 +312,18 @@ QTableView display
 | Rule | Name                  | Description                                                   |
 | ---- | --------------------- | ------------------------------------------------------------- |
 | R1   | Photos                | Required photo categories (rectifier and batteries) are present |
-| R2   | Power Alarm + Duration | Starts at Power alarm occurrence and ends at either Power clear or Down alarm; duration source is the max reached minute in the discharge table (last row with real V/A), and start/end + duration must match within ±5 minutes (max 180 min) |
+| R2   | Power Alarm + Duration | Rejects when summary duration exists without a Power alarm; otherwise aligns power-alarm duration with BDT duration using a default ±15 minute tolerance (configurable) |
+| R3   | String vs Bus Bar Ampere | Uses `E = bus bar ampere - sum(string amperes)` and accepts only when `-3 <= E <= 0` |
 | R4   | Discharge Table Match | Reported backup time matches discharge readings               |
 | R5   | Starting I-Battery ampere | Starting battery current is approximately 0 A (`|I| < 0.5A`) |
 | R6   | End Voltage / Completion | Accepted when discharge is `>= 180` min OR end voltage is `45.0--47.0 V` |
 | R7   | V/A Inverse           | Voltage and ampere show inverse correlation during discharge  |
-| R8   | Sizing vs Actual      | Lithium-only applicability check (`health 95--100%`, `actual < 180`) with ±15 min diff threshold |
+| R8   | Sizing vs Actual      | Validates expected backup duration from battery sizing against measured duration using the configured tolerance |
 | R9   | Discharge Current Tolerance | Discharge current remains within ±1 A of baseline reading |
 | R10  | Door Alarm Condition  | Door alarm detected for same site on test date               |
 | R11  | Summary Checklist     | Cross-checks Short Code/PLD/rectifier-battery-discharge values against Summary sheet or external weekly summary workbook |
+
+History comparison is shown in the **TEST HISTORY COMPARISON** panel in the details view and does not participate in rule scoring.
 
 ### Performance Optimizations
 

@@ -20,6 +20,7 @@ class PhotoSlot:
     image_data: bytes | None = None  # raw JPEG/PNG bytes, None if empty
     image_ext: str = ""              # "jpeg" or "png"
     category: str = "other"
+    captured_at: datetime | None = None  # EXIF/embedded timestamp when available
 
 
 @dataclass
@@ -137,6 +138,137 @@ _BRAND_KEYWORDS = (
     "sacred sun", "ritar", "vision", "coslight", "byd",
     "pylontech", "gel", "agm", "vrla", "opzv", "opzs",
 )
+
+
+def _parse_exif_datetime(text: str) -> datetime | None:
+    """Parse the EXIF DateTime* string format used by JPEG metadata."""
+    if not text:
+        return None
+    clean = _safe_str(text)
+    if not clean:
+        return None
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(clean[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _read_tiff_value(buf: bytes, endian: str, typ: int, count: int, value_bytes: bytes) -> str | None:
+    """Read the handful of TIFF value formats we care about for EXIF dates."""
+    if typ != 2:  # ASCII
+        return None
+
+    if count <= 4:
+        raw = value_bytes[:count]
+    else:
+        offset = int.from_bytes(value_bytes, endian)
+        if offset < 0 or offset >= len(buf):
+            return None
+        raw = buf[offset:offset + count]
+
+    return _safe_str(raw.split(b"\x00", 1)[0].decode("utf-8", errors="ignore"))
+
+
+def _parse_jpeg_exif_datetime(image_data: bytes) -> datetime | None:
+    """Extract DateTimeOriginal/DateTime metadata from a JPEG EXIF block."""
+    if not image_data or not image_data.startswith(b"\xff\xd8"):
+        return None
+
+    idx = 2
+    while idx + 4 <= len(image_data):
+        if image_data[idx] != 0xFF:
+            idx += 1
+            continue
+
+        marker = image_data[idx + 1]
+        idx += 2
+
+        if marker in (0xD8, 0xD9):  # SOI / EOI
+            continue
+        if marker == 0xDA:  # Start of scan
+            break
+        if idx + 2 > len(image_data):
+            break
+
+        seg_len = int.from_bytes(image_data[idx:idx + 2], "big")
+        seg_start = idx + 2
+        seg_end = seg_start + seg_len - 2
+        if seg_end > len(image_data):
+            break
+
+        if marker == 0xE1 and image_data[seg_start:seg_start + 6] == b"Exif\x00\x00":
+            tiff = image_data[seg_start + 6:seg_end]
+            if len(tiff) < 8:
+                return None
+
+            endian_tag = tiff[:2]
+            if endian_tag == b"II":
+                endian = "little"
+                u16 = lambda off: int.from_bytes(tiff[off:off + 2], endian)
+                u32 = lambda off: int.from_bytes(tiff[off:off + 4], endian)
+            elif endian_tag == b"MM":
+                endian = "big"
+                u16 = lambda off: int.from_bytes(tiff[off:off + 2], endian)
+                u32 = lambda off: int.from_bytes(tiff[off:off + 4], endian)
+            else:
+                return None
+
+            if u16(2) != 42:
+                return None
+
+            def _parse_ifd(start_off: int) -> dict[int, tuple[int, int, bytes]]:
+                if start_off < 0 or start_off + 2 > len(tiff):
+                    return {}
+                count = u16(start_off)
+                entries: dict[int, tuple[int, int, bytes]] = {}
+                pos = start_off + 2
+                for _ in range(count):
+                    if pos + 12 > len(tiff):
+                        break
+                    tag = u16(pos)
+                    typ = u16(pos + 2)
+                    cnt = u32(pos + 4)
+                    value_bytes = tiff[pos + 8:pos + 12]
+                    entries[tag] = (typ, cnt, value_bytes)
+                    pos += 12
+                return entries
+
+            ifd0 = _parse_ifd(u32(4))
+            exif_ifd = {}
+            pointer = ifd0.get(0x8769)
+            if pointer and pointer[0] == 4 and pointer[1] >= 1:
+                exif_offset = int.from_bytes(pointer[2], endian)
+                exif_ifd = _parse_ifd(exif_offset)
+
+            candidates = [
+                ifd0.get(0x0132),  # DateTime
+                exif_ifd.get(0x9003),  # DateTimeOriginal
+                exif_ifd.get(0x9004),  # DateTimeDigitized
+            ]
+            for entry in candidates:
+                if not entry:
+                    continue
+                text = _read_tiff_value(tiff, endian, entry[0], int(entry[1]), entry[2])
+                parsed = _parse_exif_datetime(text or "")
+                if parsed is not None:
+                    return parsed
+
+        idx = seg_end
+
+    return None
+
+
+def _extract_photo_capture_datetime(image_data: bytes | None, image_ext: str = "") -> datetime | None:
+    """Best-effort photo timestamp extraction from embedded image bytes."""
+    if not image_data:
+        return None
+
+    ext = str(image_ext or "").lower()
+    if ext in {"jpg", "jpeg"}:
+        return _parse_jpeg_exif_datetime(image_data)
+    return None
 
 
 def _parse_battery_info(max_column, cell_fn, data: BDTData):
@@ -899,6 +1031,7 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int]:
                 image_data=img_data,
                 image_ext=img_ext,
                 category=_BAND_CATEGORIES.get(idx // _COLS_PER_BAND, "other"),
+                captured_at=None,
             ))
 
         wb.close()
