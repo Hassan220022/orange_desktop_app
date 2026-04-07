@@ -16,7 +16,6 @@ import pytest
 from alarm_app.bdt_parser import (
     BDTData,
     PhotoSlot,
-    _extract_photo_capture_datetime,
     _parse_battery_info,
     _parse_test_date,
     _resolve_bdt_sheet_name,
@@ -747,7 +746,6 @@ class TestBDTDataDefaults:
         assert slot.image_data is None
         assert slot.image_ext == ""
         assert slot.category == "other"
-        assert slot.captured_at is None
 
 
 class TestResolveBdtSheetName:
@@ -978,34 +976,3 @@ class TestNewBDTFields:
         assert result.num_batteries is None
         assert result.pld_value == ""
 
-
-def _jpeg_with_exif_datetime(text: str) -> bytes:
-    dt_bytes = text.encode("ascii") + b"\x00"
-    tiff = bytearray()
-    tiff.extend(b"II")
-    tiff.extend((42).to_bytes(2, "little"))
-    tiff.extend((8).to_bytes(4, "little"))
-    tiff.extend((1).to_bytes(2, "little"))
-    tiff.extend((0x8769).to_bytes(2, "little"))
-    tiff.extend((4).to_bytes(2, "little"))
-    tiff.extend((1).to_bytes(4, "little"))
-    tiff.extend((26).to_bytes(4, "little"))
-    tiff.extend((0).to_bytes(4, "little"))
-    tiff.extend((1).to_bytes(2, "little"))
-    tiff.extend((0x9003).to_bytes(2, "little"))
-    tiff.extend((2).to_bytes(2, "little"))
-    tiff.extend(len(dt_bytes).to_bytes(4, "little"))
-    tiff.extend((44).to_bytes(4, "little"))
-    tiff.extend((0).to_bytes(4, "little"))
-    tiff.extend(dt_bytes)
-
-    payload = b"Exif\x00\x00" + bytes(tiff)
-    segment_len = len(payload) + 2
-    return b"\xff\xd8" + b"\xff\xe1" + segment_len.to_bytes(2, "big") + payload + b"\xff\xd9"
-
-
-class TestPhotoTimestampExtraction:
-    def test_jpeg_exif_datetime_is_extracted(self):
-        image = _jpeg_with_exif_datetime("2026:01:15 08:00:00")
-        result = _extract_photo_capture_datetime(image, "jpg")
-        assert result == datetime.datetime(2026, 1, 15, 8, 0, 0)

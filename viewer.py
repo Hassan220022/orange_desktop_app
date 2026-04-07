@@ -3,6 +3,7 @@ AlarmViewer — main window.
 All UI construction and slot logic lives here.
 """
 
+import getpass
 import os
 import re
 from datetime import datetime
@@ -211,232 +212,6 @@ class RestoreThread(QThread):
             self.error.emit(str(e))
 
 
-class CredentialDialog(QDialog):
-    """Reusable username/password dialog for login and user setup."""
-
-    def __init__(
-        self,
-        title: str,
-        *,
-        username: str = "",
-        allow_username: bool = True,
-        require_confirm: bool = False,
-        message: str = "",
-        parent=None,
-    ):
-        super().__init__(parent)
-        self._allow_username = allow_username
-        self._require_confirm = require_confirm
-        self._username = username.strip()
-        self._message = message
-        self.setWindowTitle(title)
-        self.setModal(True)
-        self._build()
-
-    def _build(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(10)
-
-        if self._message:
-            lbl = QLabel(self._message)
-            lbl.setWordWrap(True)
-            lbl.setStyleSheet("color:#6c7086; font-size:11px;")
-            lay.addWidget(lbl)
-
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(8)
-
-        row = 0
-        if self._allow_username:
-            user_lbl = QLabel("Username")
-            self._edit_user = QLineEdit(self._username)
-            self._edit_user.setPlaceholderText("Enter username")
-            grid.addWidget(user_lbl, row, 0)
-            grid.addWidget(self._edit_user, row, 1)
-            row += 1
-        else:
-            user_lbl = QLabel("Username")
-            user_val = QLabel(self._username)
-            user_val.setStyleSheet("color:#cdd6f4;")
-            grid.addWidget(user_lbl, row, 0)
-            grid.addWidget(user_val, row, 1)
-            row += 1
-
-        pwd_lbl = QLabel("Password")
-        self._edit_pwd = QLineEdit()
-        self._edit_pwd.setEchoMode(QLineEdit.Password)
-        self._edit_pwd.setPlaceholderText("Enter password")
-        grid.addWidget(pwd_lbl, row, 0)
-        grid.addWidget(self._edit_pwd, row, 1)
-        row += 1
-
-        self._edit_confirm = None
-        if self._require_confirm:
-            confirm_lbl = QLabel("Confirm")
-            self._edit_confirm = QLineEdit()
-            self._edit_confirm.setEchoMode(QLineEdit.Password)
-            self._edit_confirm.setPlaceholderText("Repeat password")
-            grid.addWidget(confirm_lbl, row, 0)
-            grid.addWidget(self._edit_confirm, row, 1)
-
-        lay.addLayout(grid)
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        btn_ok = QPushButton("OK")
-        btn_ok.setObjectName("btn_search")
-        btn_ok.clicked.connect(self._accept)
-        btn_cancel = QPushButton("Cancel")
-        btn_cancel.setObjectName("btn_clear")
-        btn_cancel.clicked.connect(self.reject)
-        btn_row.addWidget(btn_ok)
-        btn_row.addWidget(btn_cancel)
-        lay.addLayout(btn_row)
-
-    def username(self) -> str:
-        if self._allow_username:
-            return self._edit_user.text().strip()
-        return self._username
-
-    def password(self) -> str:
-        return self._edit_pwd.text()
-
-    def _accept(self):
-        username = self.username()
-        password = self.password()
-        if self._allow_username and not username:
-            QMessageBox.warning(self, "Missing Username", "Username is required.")
-            return
-        if not password:
-            QMessageBox.warning(self, "Missing Password", "Password is required.")
-            return
-        if self._require_confirm and self._edit_confirm is not None:
-            if password != self._edit_confirm.text():
-                QMessageBox.warning(
-                    self, "Password Mismatch",
-                    "Password and confirmation must match.")
-                return
-        self.accept()
-
-
-class UserAdminDialog(QDialog):
-    """Simple local user manager for desktop login accounts."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("User Management")
-        self.setMinimumSize(520, 360)
-        self.setModal(True)
-        self._build()
-        self._refresh()
-
-    def _build(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 16, 16, 16)
-        lay.setSpacing(10)
-
-        note = QLabel(
-            "Create local username/password accounts for desktop access.\n"
-            "Changes take effect on the next login.")
-        note.setWordWrap(True)
-        note.setStyleSheet("color:#6c7086; font-size:11px;")
-        lay.addWidget(note)
-
-        self._tbl = QTableWidget(0, 3)
-        self._tbl.setHorizontalHeaderLabels(["Username", "Created", "Updated"])
-        self._tbl.setSelectionBehavior(QTableWidget.SelectRows)
-        self._tbl.setSelectionMode(QTableWidget.SingleSelection)
-        self._tbl.setEditTriggers(QTableWidget.NoEditTriggers)
-        self._tbl.verticalHeader().setVisible(False)
-        self._tbl.horizontalHeader().setStretchLastSection(True)
-        lay.addWidget(self._tbl, 1)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        btn_add = QPushButton("Add")
-        btn_add.setObjectName("btn_search")
-        btn_add.clicked.connect(self._add_user)
-        btn_reset = QPushButton("Reset Password")
-        btn_reset.setObjectName("btn_dir")
-        btn_reset.clicked.connect(self._reset_password)
-        btn_del = QPushButton("Delete")
-        btn_del.setObjectName("btn_clear")
-        btn_del.clicked.connect(self._delete_user)
-        btn_close = QPushButton("Close")
-        btn_close.clicked.connect(self.accept)
-        btn_row.addWidget(btn_add)
-        btn_row.addWidget(btn_reset)
-        btn_row.addWidget(btn_del)
-        btn_row.addStretch()
-        btn_row.addWidget(btn_close)
-        lay.addLayout(btn_row)
-
-    def _refresh(self):
-        users = state.load_users()
-        self._tbl.setRowCount(len(users))
-        for row, username in enumerate(sorted(users.keys(), key=str.lower)):
-            rec = users[username]
-            self._tbl.setItem(row, 0, QTableWidgetItem(username))
-            self._tbl.setItem(row, 1, QTableWidgetItem(str(rec.get("created_at", ""))))
-            self._tbl.setItem(row, 2, QTableWidgetItem(str(rec.get("updated_at", ""))))
-
-    def _selected_username(self) -> str:
-        items = self._tbl.selectedItems()
-        if not items:
-            return ""
-        return self._tbl.item(items[0].row(), 0).text().strip()
-
-    def _add_user(self):
-        dlg = CredentialDialog(
-            "Add User",
-            message="Enter a new username and password.",
-            require_confirm=True,
-            parent=self,
-        )
-        if dlg.exec_() != QDialog.Accepted:
-            return
-        try:
-            state.upsert_user(dlg.username(), dlg.password())
-        except ValueError as exc:
-            QMessageBox.warning(self, "Cannot Save User", str(exc))
-            return
-        self._refresh()
-
-    def _reset_password(self):
-        username = self._selected_username()
-        if not username:
-            QMessageBox.information(self, "Reset Password", "Select a user first.")
-            return
-        dlg = CredentialDialog(
-            "Reset Password",
-            username=username,
-            allow_username=False,
-            require_confirm=True,
-            message=f"Set a new password for {username}.",
-            parent=self,
-        )
-        if dlg.exec_() != QDialog.Accepted:
-            return
-        state.upsert_user(username, dlg.password())
-        self._refresh()
-
-    def _delete_user(self):
-        username = self._selected_username()
-        if not username:
-            QMessageBox.information(self, "Delete User", "Select a user first.")
-            return
-        if QMessageBox.question(
-            self,
-            "Delete User",
-            f"Delete user '{username}'?",
-        ) != QMessageBox.Yes:
-            return
-        state.delete_user(username)
-        self._refresh()
-
-
 class DailyReviewReportDialog(QDialog):
     """Aggregate the number of reviewed BDT files by day."""
 
@@ -593,9 +368,9 @@ class AlarmIdConfigDialog(QDialog):
 
 
 class AlarmViewer(QMainWindow):
-    def __init__(self, current_user: str = "Unknown"):
+    def __init__(self):
         super().__init__()
-        self._current_user = current_user or "Unknown"
+        self._current_user = getpass.getuser() or "desktop"
         self._full_df    = pd.DataFrame()
         self._file_infos: list[dict] = []
         self._loader     = None
@@ -2463,10 +2238,6 @@ class AlarmViewer(QMainWindow):
             self._reviewed_bdt_keys.add(key)
         except Exception:
             pass
-
-    def _show_user_admin(self):
-        dlg = UserAdminDialog(self)
-        dlg.exec_()
 
     def _show_daily_review_report(self):
         dlg = DailyReviewReportDialog(self)

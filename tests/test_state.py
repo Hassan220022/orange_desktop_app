@@ -17,7 +17,6 @@ def _isolate_state_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(state_mod, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(state_mod, "CACHE_FILE", tmp_path / "data_cache.parquet")
     monkeypatch.setattr(state_mod, "ALARM_IDS_FILE", tmp_path / "alarm_ids.json")
-    monkeypatch.setattr(state_mod, "AUTH_FILE", tmp_path / "users.json")
     monkeypatch.setattr(state_mod, "REVIEW_LOG_FILE", tmp_path / "review_log.jsonl")
 
 
@@ -107,22 +106,6 @@ class TestAlarmIds:
         loaded = state_mod.load_alarm_ids()
         assert loaded["power"] == ["100", "200"]
         assert loaded["door"] == ["300", "400"]
-
-
-# ── local auth store ──────────────────────────────────────────
-class TestLocalAuth:
-    def test_upsert_and_verify_user(self):
-        state_mod.upsert_user("alice", "s3cret")
-        users = state_mod.load_users()
-        assert "alice" in users
-        assert state_mod.verify_user("alice", "s3cret") is True
-        assert state_mod.verify_user("alice", "wrong") is False
-        assert state_mod.has_users() is True
-
-    def test_list_usernames_sorted(self):
-        state_mod.upsert_user("zoe", "pw1")
-        state_mod.upsert_user("adam", "pw2")
-        assert state_mod.list_usernames() == ["adam", "zoe"]
 
 
 # ── review log / daily report ────────────────────────────────

@@ -17,7 +17,6 @@ from alarm_app.bdt_validator import (
     _rule_9_discharge_current_tolerance,
     _rule_10_door_alarm_match,
     _rule_11_summary_checklist,
-    _rule_13_photo_date_stamp,
     _theoretical_backup_minutes,
     validate_bdt,
 )
@@ -29,9 +28,8 @@ def _slot(
     label: str,
     category: str | None,
     image_data: bytes | None,
-    captured_at: datetime | None = None,
 ) -> PhotoSlot:
-    slot = PhotoSlot(label=label, image_data=image_data, captured_at=captured_at)
+    slot = PhotoSlot(label=label, image_data=image_data)
     if category is not None:
         # Parser provides this field in production; attach dynamically for tests.
         setattr(slot, "category", category)
@@ -74,12 +72,7 @@ def _make_bdt(**kwargs) -> BDTData:
         pld_value="",
     )
     defaults.update(kwargs)
-    bdt = BDTData(**defaults)
-    if bdt.test_date:
-        for slot in bdt.photo_slots:
-            if getattr(slot, "image_data", None) and getattr(slot, "captured_at", None) is None:
-                setattr(slot, "captured_at", bdt.test_date)
-    return bdt
+    return BDTData(**defaults)
 
 
 def _make_alarm_df(rows: list[dict]) -> pd.DataFrame:
@@ -1091,39 +1084,6 @@ class TestR11SummaryChecklist:
         )
         r = _rule_11_summary_checklist(bdt)
         assert r.verdict == "Accepted"
-
-
-class TestR13PhotoDateStamp:
-
-    def test_matching_stamped_photos_accepted(self):
-        slots = [
-            _slot("Rectifier 1", "rectifier", b"img", captured_at=datetime(2026, 1, 15, 8, 0)),
-            _slot("Batteries 1", "batteries", b"img", captured_at=datetime(2026, 1, 15, 8, 5)),
-        ]
-        bdt = _make_bdt(photo_slots=slots)
-        r = _rule_13_photo_date_stamp(bdt)
-        assert r.verdict == "Accepted"
-
-    def test_photo_date_mismatch_rejected(self):
-        slots = [
-            _slot("Rectifier 1", "rectifier", b"img", captured_at=datetime(2026, 1, 14, 8, 0)),
-            _slot("Batteries 1", "batteries", b"img", captured_at=datetime(2026, 1, 15, 8, 5)),
-        ]
-        bdt = _make_bdt(photo_slots=slots)
-        r = _rule_13_photo_date_stamp(bdt)
-        assert r.verdict == "Rejected"
-        assert "mismatch" in r.detail.lower()
-
-    def test_missing_photo_timestamps_revise(self):
-        slots = [
-            _slot("Rectifier 1", "rectifier", b"img", captured_at=datetime(2026, 1, 15, 8, 0)),
-            _slot("Batteries 1", "batteries", b"img", captured_at=datetime(2026, 1, 15, 8, 5)),
-        ]
-        bdt = _make_bdt(photo_slots=slots)
-        bdt.photo_slots[1].captured_at = None
-        r = _rule_13_photo_date_stamp(bdt)
-        assert r.verdict == "Revise"
-        assert "no embedded timestamp" in r.detail.lower()
 
 
 # ── R3 String vs Bus Bar Ampere ────────────────────────────────
