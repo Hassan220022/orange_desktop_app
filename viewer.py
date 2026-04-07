@@ -35,6 +35,11 @@ try:
     from .bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
     from .bdt_validator import validate_bdt, ValidationResult
     from .bdt_export import build_bdt_export_sheets
+    from .site_report import (
+        read_site_sheet,
+        build_site_alarm_report,
+        collect_site_sheet_keys,
+    )
     from . import state
 except ImportError:
     from constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
@@ -47,6 +52,11 @@ except ImportError:
     from bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
     from bdt_validator import validate_bdt, ValidationResult
     from bdt_export import build_bdt_export_sheets
+    from site_report import (
+        read_site_sheet,
+        build_site_alarm_report,
+        collect_site_sheet_keys,
+    )
     import state
 
 
@@ -376,6 +386,11 @@ class AlarmViewer(QMainWindow):
         self._loader     = None
         self._col_filters: dict[str, set | None] = {}  # col -> selected values
         self._both_pd_active = False  # "Both P+D" filter flag
+        self._uploaded_site_df: pd.DataFrame | None = None
+        self._uploaded_site_sheet_name = ""
+        self._uploaded_site_id_column = ""
+        self._uploaded_site_keys: set[str] = set()
+        self._uploaded_site_path = ""
         self._last_bdt_health_pct: float | None = None
         app = QApplication.instance()
         self._base_app_font = QFont(app.font()) if app else QFont()
@@ -1187,6 +1202,20 @@ class AlarmViewer(QMainWindow):
         self._btn_backup.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._btn_backup.clicked.connect(self._show_backup_times)
         row3.addWidget(self._btn_backup)
+
+        self._btn_site_sheet = QPushButton("Upload Site Sheet")
+        self._btn_site_sheet.setObjectName("btn_dir")
+        self._btn_site_sheet.setMinimumWidth(0)
+        self._btn_site_sheet.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self._btn_site_sheet.clicked.connect(self._upload_site_sheet)
+        row3.addWidget(self._btn_site_sheet)
+
+        self._btn_site_report = QPushButton("Generate Site Report")
+        self._btn_site_report.setObjectName("btn_export")
+        self._btn_site_report.setMinimumWidth(0)
+        self._btn_site_report.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self._btn_site_report.clicked.connect(self._export_site_sheet_report)
+        row3.addWidget(self._btn_site_report)
 
         self._btn_both = QPushButton("Both P+D")
         self._btn_both.setObjectName("btn_both")
@@ -2380,7 +2409,7 @@ class AlarmViewer(QMainWindow):
         # Ensure datetime columns are proper dtype
         for col in ("occurred_on", "cleared_on"):
             if col in df.columns:
-                df[col] = pd.to_datetime(df[col], errors="coerce")
+                df[col] = pd.to_datetime(df[col], errors="coerce", format="mixed")
 
         alarm_ids = state.load_alarm_ids()
         df = classify_by_alarm_id(df, alarm_ids)
@@ -2926,11 +2955,8 @@ class AlarmViewer(QMainWindow):
         self._refresh_stats(df)
         self._reset_date_range(df)
 
-        # Apply the ≥15 min filter if enabled on initial load
-        view = df
-        if self._chk_mindur.isChecked() and "_duration_secs" in df.columns:
-            view = df[df["_duration_secs"] >= self._spn_mindur.value() * 60]
-
+        # Respect the full current UI filter state immediately after load.
+        view = self._apply_filters(df)
         self._populate(view)
         self._refresh_stats(view)
         n = len(view)
@@ -2945,6 +2971,10 @@ class AlarmViewer(QMainWindow):
 
     def _apply_filters(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply current UI filters to *df* and return the subset."""
+        if self._uploaded_site_keys and "site_id" in df.columns:
+            site_keys = df["site_id"].map(lambda value: "".join(ch for ch in str(value).strip().upper() if ch.isalnum()) if pd.notna(value) else "")
+            df = df[site_keys.isin(self._uploaded_site_keys)]
+
         # Site ID — supports multiple comma-separated terms
         raw = self._edit_site.text().strip()
         if raw:
@@ -3110,6 +3140,125 @@ class AlarmViewer(QMainWindow):
         self._btn_backup.setEnabled(True)
         QMessageBox.critical(self, "Backup Time Error", msg)
         self._sbar.showMessage("Backup time computation failed")
+
+    def _upload_site_sheet(self):
+        if self._full_df.empty:
+            QMessageBox.information(
+                self, "No Data", "Load alarm data first.")
+            return
+
+        in_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Site Sheet",
+            self._edit_dir.text().strip() or str(Path.home()),
+            "Spreadsheet Files (*.xlsx *.xls *.csv)",
+        )
+        if not in_path:
+            return
+
+        try:
+            self._btn_site_sheet.setEnabled(False)
+            self._sbar.showMessage("Reading site sheet …")
+            site_df, sheet_name, site_col = read_site_sheet(in_path, self._full_df)
+            site_keys = collect_site_sheet_keys(site_df, site_col)
+            if not site_keys:
+                raise ValueError("The uploaded site sheet does not contain any usable site IDs.")
+        except Exception as exc:
+            self._btn_site_sheet.setEnabled(True)
+            QMessageBox.critical(self, "Site Sheet Error", str(exc))
+            self._sbar.showMessage("Site sheet upload failed")
+            return
+
+        self._btn_site_sheet.setEnabled(True)
+        self._uploaded_site_df = site_df.copy()
+        self._uploaded_site_sheet_name = sheet_name
+        self._uploaded_site_id_column = site_col
+        self._uploaded_site_keys = site_keys
+        self._uploaded_site_path = in_path
+        self._search()
+        QMessageBox.information(
+            self,
+            "Site Sheet Loaded",
+            "The alarm table is now limited to the uploaded site sheet.\n\n"
+            f"Source sheet: {sheet_name}\n"
+            f"Matched by column: {site_col}\n"
+            f"Uploaded site rows: {len(site_df)}\n"
+            f"Unique site IDs: {len(site_keys)}\n\n"
+            "Now apply any extra filters you want, then click Generate Site Report.",
+        )
+        self._sbar.showMessage(
+            f"Loaded site sheet scope: {len(site_keys):,} site IDs from {os.path.basename(in_path)}")
+
+    def _export_site_sheet_report(self):
+        if self._full_df.empty:
+            QMessageBox.information(
+                self, "No Data", "Load alarm data first.")
+            return
+        if self._uploaded_site_df is None or not self._uploaded_site_keys:
+            QMessageBox.information(
+                self, "No Site Sheet", "Upload a site sheet first.")
+            return
+
+        filtered_alarms = self._apply_filters(self._full_df)
+
+        try:
+            report_df = build_site_alarm_report(
+                self._uploaded_site_df,
+                self._uploaded_site_id_column,
+                filtered_alarms,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Site Sheet Error", str(exc))
+            self._sbar.showMessage("Site sheet export failed")
+            return
+
+        default_name = f"site_alarm_report_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        out_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Site Alarm Report",
+            os.path.join(os.path.dirname(self._uploaded_site_path or ""), default_name),
+            "Excel Files (*.xlsx)",
+        )
+        if not out_path:
+            self._sbar.showMessage("Site sheet export cancelled")
+            return
+
+        self._site_sheet_context = {
+            "sheet_name": self._uploaded_site_sheet_name,
+            "site_column": self._uploaded_site_id_column,
+            "row_count": len(report_df),
+            "alarm_count": len(filtered_alarms),
+            "site_scope_count": len(self._uploaded_site_keys),
+        }
+        export_sheet_name = (self._uploaded_site_sheet_name or "Sheet1")[:31]
+        self._site_sheet_export_thread = ExportThread(
+            {export_sheet_name: report_df},
+            out_path,
+        )
+        self._site_sheet_export_thread.progress.connect(
+            lambda _v, m: self._sbar.showMessage(m))
+        self._site_sheet_export_thread.finished.connect(self._on_site_sheet_export_done)
+        self._site_sheet_export_thread.error.connect(self._on_site_sheet_export_error)
+        self._site_sheet_export_thread.start()
+
+    def _on_site_sheet_export_done(self, path: str):
+        ctx = getattr(self, "_site_sheet_context", {}) or {}
+        QMessageBox.information(
+            self,
+            "Site Report Exported",
+            "Saved report with appended alarm columns.\n\n"
+            f"Source sheet: {ctx.get('sheet_name', '--')}\n"
+            f"Matched by column: {ctx.get('site_column', '--')}\n"
+            f"Uploaded site scope: {ctx.get('site_scope_count', 0)}\n"
+            f"Filtered alarms used: {ctx.get('alarm_count', 0)}\n"
+            f"Rows exported: {ctx.get('row_count', 0)}\n"
+            f"File: {path}",
+        )
+        self._sbar.showMessage(f"Site alarm report exported -> {path}")
+
+    def _on_site_sheet_export_error(self, msg: str):
+        QMessageBox.critical(self, "Site Report Export Failed", msg)
+        self._sbar.showMessage("Site sheet export failed")
 
     def _export(self):
         if self._model.rowCount() == 0:
