@@ -22,6 +22,35 @@ REVIEW_LOG_FILE = STATE_DIR / "review_log.jsonl"
 OUTBOX_FILE = STATE_DIR / "sync_outbox.jsonl"
 SYNC_CHECKPOINT_FILE = STATE_DIR / "sync_checkpoint.json"
 DEVICE_ID_FILE = STATE_DIR / "device_id.txt"
+FEATURE_FLAG_KEYS = ("sync_on", "cloud_read_on", "bootstrap_on")
+DEFAULT_FEATURE_FLAGS = {
+    "sync_on": False,
+    "cloud_read_on": False,
+    "bootstrap_on": False,
+}
+
+
+def _coerce_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off", ""}:
+            return False
+    return bool(value)
+
+
+def load_feature_flags(source: dict | None = None) -> dict[str, bool]:
+    """Return normalized desktop feature flags from persisted state."""
+    data = source if isinstance(source, dict) else (load_state() or {})
+    out: dict[str, bool] = {}
+    for key in FEATURE_FLAG_KEYS:
+        out[key] = _coerce_bool(data.get(key, DEFAULT_FEATURE_FLAGS[key]))
+    return out
 
 
 def save_state(state_dict: dict):

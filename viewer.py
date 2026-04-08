@@ -35,6 +35,7 @@ try:
     from .bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
     from .bdt_validator import validate_bdt, ValidationResult
     from .bdt_export import build_bdt_export_sheets
+    from .sync_worker import LocalSyncWorker
     from .site_report import (
         read_site_sheet,
         build_site_alarm_report,
@@ -52,6 +53,7 @@ except ImportError:
     from bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
     from bdt_validator import validate_bdt, ValidationResult
     from bdt_export import build_bdt_export_sheets
+    from sync_worker import LocalSyncWorker
     from site_report import (
         read_site_sheet,
         build_site_alarm_report,
@@ -392,6 +394,8 @@ class AlarmViewer(QMainWindow):
         self._uploaded_site_keys: set[str] = set()
         self._uploaded_site_path = ""
         self._last_bdt_health_pct: float | None = None
+        self._sync_flags = state.load_feature_flags()
+        self._sync_worker: LocalSyncWorker | None = None
         app = QApplication.instance()
         self._base_app_font = QFont(app.font()) if app else QFont()
         self._base_app_font_size = self._base_app_font.pointSizeF()
@@ -404,6 +408,7 @@ class AlarmViewer(QMainWindow):
         self._setup_zoom_shortcuts()
         self.setStyleSheet(STYLE)
         self._restore_ui_state()
+        self._start_sync_worker_if_enabled()
 
     # ── UI construction ──────────────────────────────────────────
     def _build_ui(self):
@@ -2290,6 +2295,9 @@ class AlarmViewer(QMainWindow):
             "directory": self._edit_dir.text(),
             "file_paths": file_paths,
             "file_hashes": state.compute_file_hashes(file_paths),
+            "sync_on": self._sync_flags.get("sync_on", False),
+            "cloud_read_on": self._sync_flags.get("cloud_read_on", False),
+            "bootstrap_on": self._sync_flags.get("bootstrap_on", False),
             "site_filter": self._edit_site.text(),
             "date_enabled": self._chk_date.isChecked(),
             "date_from": self._d_from.date().toString("yyyy-MM-dd"),
@@ -2312,7 +2320,9 @@ class AlarmViewer(QMainWindow):
         """Restore UI settings from state.json and kick off cache load."""
         s = state.load_state()
         if s is None:
+            self._sync_flags = state.load_feature_flags({})
             return
+        self._sync_flags = state.load_feature_flags(s)
 
         # Window geometry
         geo = s.get("window_geometry")
@@ -2448,6 +2458,29 @@ class AlarmViewer(QMainWindow):
         self._sbar.showMessage(
             f"Session restored — {len(view):,} of {len(df):,} records")
 
+    def _start_sync_worker_if_enabled(self):
+        should_run = (
+            self._sync_flags.get("sync_on", False)
+            or self._sync_flags.get("bootstrap_on", False)
+        )
+        if not should_run or self._sync_worker is not None:
+            return
+        try:
+            self._sync_worker = LocalSyncWorker()
+            self._sync_worker.start()
+        except Exception:
+            self._sync_worker = None
+
+    def _stop_sync_worker(self):
+        worker = self._sync_worker
+        self._sync_worker = None
+        if worker is None:
+            return
+        try:
+            worker.stop(timeout=2.0)
+        except Exception:
+            pass
+
     def closeEvent(self, event):
         """Always warn before closing."""
         dlg = QDialog(self, Qt.FramelessWindowHint)
@@ -2556,6 +2589,8 @@ class AlarmViewer(QMainWindow):
         if dlg.exec_() != QDialog.Accepted:
             event.ignore()
             return
+
+        self._stop_sync_worker()
 
         # Save session state before closing
         try:

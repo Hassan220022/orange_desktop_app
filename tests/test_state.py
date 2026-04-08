@@ -268,3 +268,24 @@ class TestSyncOutboxAndCheckpoint:
         d2 = state_mod.get_or_create_device_id()
         assert d1
         assert d1 == d2
+
+
+class TestFeatureFlags:
+    def test_load_feature_flags_defaults(self):
+        assert state_mod.load_feature_flags() == {
+            "sync_on": False,
+            "cloud_read_on": False,
+            "bootstrap_on": False,
+        }
+
+    def test_load_feature_flags_from_state_dict(self):
+        flags = state_mod.load_feature_flags({
+            "sync_on": "true",
+            "cloud_read_on": 0,
+            "bootstrap_on": "yes",
+        })
+        assert flags == {
+            "sync_on": True,
+            "cloud_read_on": False,
+            "bootstrap_on": True,
+        }
