@@ -1058,24 +1058,34 @@ class AlarmViewer(QMainWindow):
         # ── Row 1b: Date range with toggle + quick picks ──
         row_date = QHBoxLayout(); row_date.setSpacing(8)
 
-        self._chk_date = QCheckBox("Date")
-        self._chk_date.setChecked(True)
-        self._chk_date.setToolTip("Enable / disable date range filter")
-        self._chk_date.setStyleSheet(
+        date_toggle_style = (
             "QCheckBox { color:#7f849c; font-size:12px; "
             "background:transparent; spacing:5px; } "
             "QCheckBox::indicator { width:16px; height:16px; "
             "border-radius:4px; border:1px solid #3a3a52; "
             "background:#1a1a2a; } "
             "QCheckBox::indicator:checked { "
-            "background:#1a2744; border-color:#89b4fa; }")
+            "background:#1a2744; border-color:#89b4fa; }"
+        )
+
+        self._chk_date = QCheckBox("Date")
+        self._chk_date.setChecked(True)
+        self._chk_date.setToolTip("Enable / disable date filtering")
+        self._chk_date.setStyleSheet(date_toggle_style)
         self._chk_date.toggled.connect(self._toggle_date_filter)
         row_date.addWidget(self._chk_date)
 
-        lbl_from = QLabel("From")
-        lbl_from.setStyleSheet(
+        self._chk_date_range = QCheckBox("Range")
+        self._chk_date_range.setChecked(True)
+        self._chk_date_range.setToolTip("Include the From-To range in date search")
+        self._chk_date_range.setStyleSheet(date_toggle_style)
+        self._chk_date_range.toggled.connect(self._toggle_date_mode_controls)
+        row_date.addWidget(self._chk_date_range)
+
+        self._lbl_from = QLabel("From")
+        self._lbl_from.setStyleSheet(
             "color:#7f849c; font-size:12px; background:transparent;")
-        row_date.addWidget(lbl_from)
+        row_date.addWidget(self._lbl_from)
 
         self._d_from = QDateEdit(calendarPopup=True)
         self._d_from.setDate(QDate(2025, 12, 1))
@@ -1084,10 +1094,10 @@ class AlarmViewer(QMainWindow):
         self._style_calendar(self._d_from)
         row_date.addWidget(self._d_from)
 
-        lbl_to = QLabel("To")
-        lbl_to.setStyleSheet(
+        self._lbl_to = QLabel("To")
+        self._lbl_to.setStyleSheet(
             "color:#7f849c; font-size:12px; background:transparent;")
-        row_date.addWidget(lbl_to)
+        row_date.addWidget(self._lbl_to)
 
         self._d_to = QDateEdit(calendarPopup=True)
         self._d_to.setDate(QDate.currentDate())
@@ -1096,7 +1106,10 @@ class AlarmViewer(QMainWindow):
         self._style_calendar(self._d_to)
         row_date.addWidget(self._d_to)
 
-        row_date.addWidget(self._vline())
+        self._date_quick_widgets = []
+        quick_divider = self._vline()
+        row_date.addWidget(quick_divider)
+        self._date_quick_widgets.append(quick_divider)
 
         # Quick-pick buttons
         for label, days, obj_name in [
@@ -1110,9 +1123,54 @@ class AlarmViewer(QMainWindow):
             btn.clicked.connect(
                 lambda checked, d=days: self._quick_date(d))
             row_date.addWidget(btn)
+            self._date_quick_widgets.append(btn)
 
         row_date.addStretch()
         gl.addLayout(row_date)
+
+        # ── Row 1c: specific day picks (single or multi-day) ──
+        row_days = QHBoxLayout(); row_days.setSpacing(8)
+
+        self._chk_date_days = QCheckBox("Specific days")
+        self._chk_date_days.setChecked(False)
+        self._chk_date_days.setToolTip("Include one or more exact days in date search")
+        self._chk_date_days.setStyleSheet(date_toggle_style)
+        self._chk_date_days.toggled.connect(self._toggle_date_mode_controls)
+        row_days.addWidget(self._chk_date_days)
+
+        self._lbl_day = QLabel("Day")
+        self._lbl_day.setStyleSheet(
+            "color:#7f849c; font-size:12px; background:transparent;")
+        row_days.addWidget(self._lbl_day)
+
+        self._d_day = QDateEdit(calendarPopup=True)
+        self._d_day.setDate(QDate.currentDate())
+        self._d_day.setDisplayFormat("yyyy-MM-dd")
+        self._d_day.setMinimumWidth(130)
+        self._style_calendar(self._d_day)
+        row_days.addWidget(self._d_day)
+
+        self._btn_add_day = QPushButton("Add")
+        self._btn_add_day.setObjectName("btn_small")
+        self._btn_add_day.clicked.connect(self._add_selected_day)
+        row_days.addWidget(self._btn_add_day)
+
+        self._edit_days = QLineEdit()
+        self._edit_days.setPlaceholderText("yyyy-mm-dd, yyyy-mm-dd")
+        self._edit_days.setToolTip("Comma/space separated list of exact days")
+        self._edit_days.setMinimumWidth(220)
+        self._edit_days.returnPressed.connect(self._search)
+        row_days.addWidget(self._edit_days, 1)
+
+        self._btn_clear_days = QPushButton("Clear")
+        self._btn_clear_days.setObjectName("btn_small")
+        self._btn_clear_days.clicked.connect(self._clear_selected_days)
+        row_days.addWidget(self._btn_clear_days)
+
+        row_days.addStretch()
+        gl.addLayout(row_days)
+
+        self._toggle_date_filter(self._chk_date.isChecked())
 
         # ── Row 2: combo filters ─────────────────────────────
         row2 = QHBoxLayout(); row2.setSpacing(10)
@@ -2300,8 +2358,12 @@ class AlarmViewer(QMainWindow):
             "bootstrap_on": self._sync_flags.get("bootstrap_on", False),
             "site_filter": self._edit_site.text(),
             "date_enabled": self._chk_date.isChecked(),
+            "date_use_range": self._chk_date_range.isChecked(),
+            "date_use_days": self._chk_date_days.isChecked(),
             "date_from": self._d_from.date().toString("yyyy-MM-dd"),
             "date_to": self._d_to.date().toString("yyyy-MM-dd"),
+            "date_day": self._d_day.date().toString("yyyy-MM-dd"),
+            "date_days": self._edit_days.text().strip(),
             "category": self._cb_cat.currentIndex(),
             "network": self._cb_net.currentIndex(),
             "vendor": self._cb_vnd.currentIndex(),
@@ -2348,6 +2410,24 @@ class AlarmViewer(QMainWindow):
             d = QDate.fromString(s["date_to"], "yyyy-MM-dd")
             if d.isValid():
                 self._d_to.setDate(d)
+        use_range = s.get("date_use_range")
+        use_days = s.get("date_use_days")
+        if use_range is not None:
+            self._chk_date_range.setChecked(use_range)
+        if use_days is not None:
+            self._chk_date_days.setChecked(use_days)
+        if use_range is None and use_days is None and "day_only" in s:
+            self._chk_date_range.setChecked(not s["day_only"])
+            self._chk_date_days.setChecked(s["day_only"])
+        if s.get("date_day"):
+            d = QDate.fromString(s["date_day"], "yyyy-MM-dd")
+            if d.isValid():
+                self._d_day.setDate(d)
+        if s.get("date_days"):
+            self._edit_days.setText(str(s["date_days"]))
+        elif s.get("day_only") and s.get("date_day"):
+            self._edit_days.setText(str(s["date_day"]))
+        self._toggle_date_mode_controls()
 
         # Combo filters
         if "category" in s:
@@ -2727,27 +2807,76 @@ class AlarmViewer(QMainWindow):
             if pd.notna(mn):
                 qmn = QDate(mn.year, mn.month, mn.day)
                 self._d_from.setMinimumDate(qmn)
+                self._d_day.setMinimumDate(qmn)
                 self._d_from.setDate(qmn)
             if pd.notna(mx):
                 qmx = QDate(mx.year, mx.month, mx.day)
                 self._d_to.setMaximumDate(qmx)
+                self._d_day.setMaximumDate(qmx)
                 self._d_to.setDate(qmx)
+                self._d_day.setDate(qmx)
 
     def _toggle_date_filter(self, enabled: bool):
-        self._d_from.setEnabled(enabled)
-        self._d_to.setEnabled(enabled)
+        self._chk_date_range.setEnabled(enabled)
+        self._chk_date_days.setEnabled(enabled)
+        self._toggle_date_mode_controls()
+
+    def _toggle_date_mode_controls(self):
+        date_enabled = self._chk_date.isChecked()
+        use_range = date_enabled and self._chk_date_range.isChecked()
+        use_days = date_enabled and self._chk_date_days.isChecked()
+        self._lbl_from.setEnabled(use_range)
+        self._d_from.setEnabled(use_range)
+        self._lbl_to.setEnabled(use_range)
+        self._d_to.setEnabled(use_range)
+        for widget in self._date_quick_widgets:
+            widget.setEnabled(use_range)
+        self._lbl_day.setEnabled(use_days)
+        self._d_day.setEnabled(use_days)
+        self._btn_add_day.setEnabled(use_days)
+        self._edit_days.setEnabled(use_days)
+        self._btn_clear_days.setEnabled(use_days)
+
+    @staticmethod
+    def _parse_manual_days(raw: str) -> tuple[set[pd.Timestamp], list[str]]:
+        days: set[pd.Timestamp] = set()
+        invalid: list[str] = []
+        tokens = [t for t in re.split(r"[\s,;]+", raw.strip()) if t]
+        for token in tokens:
+            parsed = pd.to_datetime(token, errors="coerce")
+            if pd.isna(parsed):
+                invalid.append(token)
+                continue
+            days.add(pd.Timestamp(parsed).normalize())
+        return days, invalid
+
+    def _set_manual_days_text(self, days: set[pd.Timestamp]):
+        ordered = sorted(days)
+        self._edit_days.setText(
+            ", ".join(d.strftime("%Y-%m-%d") for d in ordered))
+
+    def _add_selected_day(self):
+        days, invalid = self._parse_manual_days(self._edit_days.text())
+        days.add(pd.Timestamp(self._d_day.date().toPyDate()).normalize())
+        self._set_manual_days_text(days)
+        if invalid:
+            self._sbar.showMessage("Ignored invalid day value(s) while adding day", 2500)
+
+    def _clear_selected_days(self):
+        self._edit_days.clear()
 
     def _quick_date(self, days: int):
         """Set date range to a quick preset. days=-1 means 'All'."""
         self._chk_date.setChecked(True)
+        if not self._chk_date_range.isChecked():
+            self._chk_date_range.setChecked(True)
+        today = QDate.currentDate()
         if days < 0 and not self._full_df.empty:
             self._reset_date_range(self._full_df)
         elif days == 0:
-            today = QDate.currentDate()
             self._d_from.setDate(today)
             self._d_to.setDate(today)
         else:
-            today = QDate.currentDate()
             self._d_from.setDate(today.addDays(-days))
             self._d_to.setDate(today)
 
@@ -3025,15 +3154,33 @@ class AlarmViewer(QMainWindow):
                             ).str.contains(tu, na=False)
                 df = df[mask]
 
-        # Date range — only if checkbox is ON
+        # Date filter (range and/or specific days)
         if self._chk_date.isChecked() and "occurred_on" in df.columns:
-            fd = pd.Timestamp(self._d_from.date().toPyDate())
-            td = pd.Timestamp(self._d_to.date().toPyDate()) + pd.Timedelta(
-                hours=23, minutes=59, seconds=59)
-            notna = df["occurred_on"].notna()
-            df = df[notna
-                    & (df["occurred_on"] >= fd)
-                    & (df["occurred_on"] <= td)]
+            occurred = df["occurred_on"]
+            if not pd.api.types.is_datetime64_any_dtype(occurred):
+                occurred = pd.to_datetime(occurred, errors="coerce")
+
+            date_masks: list[pd.Series] = []
+            if self._chk_date_range.isChecked():
+                fd = pd.Timestamp(self._d_from.date().toPyDate())
+                td = pd.Timestamp(self._d_to.date().toPyDate()) + pd.Timedelta(
+                    hours=23, minutes=59, seconds=59)
+                date_masks.append((occurred >= fd) & (occurred <= td))
+
+            if self._chk_date_days.isChecked():
+                manual_days, invalid = self._parse_manual_days(self._edit_days.text())
+                if invalid:
+                    self._sbar.showMessage("Ignored invalid day value(s) in specific days filter", 2500)
+                if manual_days:
+                    date_masks.append(occurred.dt.normalize().isin(manual_days))
+                else:
+                    date_masks.append(pd.Series(False, index=df.index))
+
+            if date_masks:
+                date_mask = date_masks[0]
+                for extra in date_masks[1:]:
+                    date_mask |= extra
+                df = df[occurred.notna() & date_mask]
 
         # Category
         cat = self._cb_cat.currentText()
@@ -3120,6 +3267,9 @@ class AlarmViewer(QMainWindow):
         self._cb_net.setCurrentIndex(0)
         self._cb_vnd.setCurrentIndex(0)
         self._chk_date.setChecked(True)
+        self._chk_date_range.setChecked(True)
+        self._chk_date_days.setChecked(False)
+        self._edit_days.clear()
         self._both_pd_active = False
         self._btn_both.setStyleSheet("")  # reset to default theme style
         self._col_filters.clear()
