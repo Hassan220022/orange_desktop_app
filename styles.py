@@ -531,35 +531,66 @@ QTabBar::tab:hover:!selected {
     color: #cdd6f4;
 }
 
-/* ── BDT Detail Panel ──────────────────────────────────────── */
+/* ── BDT Detail Panel — Command Console aesthetic ─────────── */
 QWidget#bdt_detail_panel {
-    background: #0f0f1a;
+    background: #0d0d17;
 }
 QFrame#bdt_info_frame {
-    background: #0f0f1a;
-    border: 1px solid #2a2a3e;
-    border-radius: 6px;
-    padding: 8px;
+    background: #10101c;
+    border: 1px solid #1c1c2c;
+    border-radius: 8px;
+    padding: 4px;
 }
 QLabel#bdt_info_key {
     color: #6c7086;
-    font-size: 11px;
-    font-weight: 700;
+    font-size: 10px;
+    font-weight: 600;
     letter-spacing: 0.5px;
+    text-transform: uppercase;
     background: transparent;
+    padding: 2px 0;
 }
 QLabel#bdt_info_val {
     color: #cdd6f4;
     font-size: 12px;
+    font-weight: 600;
+    font-family: 'SF Mono', 'Consolas', 'Cascadia Code', monospace;
     background: transparent;
+    padding: 2px 0;
 }
 QLabel#bdt_section_title {
-    color: #89b4fa;
-    font-size: 12px;
+    color: #6c7086;
+    font-size: 9px;
     font-weight: 700;
-    letter-spacing: 0.8px;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
     background: transparent;
-    padding: 4px 0;
+    padding: 6px 0 4px 0;
+}
+QLabel#bdt_empty_hint {
+    color: #45475a;
+    font-size: 10px;
+    font-style: italic;
+    background: transparent;
+    padding: 2px 2px 6px 2px;
+}
+
+/* "PREVIOUS TEST — yyyy-MM-dd" separator inside the photo scroll.
+   Stronger weight and an accent-colored top border so the user
+   instantly sees where a historical test starts. */
+QLabel#bdt_history_separator {
+    color: #fab387;
+    background: #1a1528;
+    border: 1px solid #2e2538;
+    border-top: 2px solid #fab387;
+    border-radius: 6px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    padding: 8px 12px;
+    margin-top: 14px;
+    margin-bottom: 4px;
 }
 
 /* ── BDT Photo Gallery ────────────────────────────────────── */
@@ -567,6 +598,13 @@ QScrollArea#bdt_photo_scroll {
     background: #0f0f1a;
     border: 1px solid #2a2a3e;
     border-radius: 6px;
+}
+QScrollArea#bdt_info_scroll {
+    background: transparent;
+    border: none;
+}
+QScrollArea#bdt_info_scroll > QWidget > QWidget {
+    background: transparent;
 }
 QWidget#bdt_photo_container {
     background: #0f0f1a;
@@ -595,5 +633,285 @@ QLabel#bdt_photo_missing_label {
     font-size: 11px;
     font-weight: 600;
     background: transparent;
+}
+
+/* ═══════════════════════════════════════════════════════════════ */
+/*  FILTER PANEL — Command Console aesthetic                       */
+/*  Info-dense NOC look: thin borders, accent rails, uppercase     */
+/*  section caps, phosphor focus glow.                             */
+/* ═══════════════════════════════════════════════════════════════ */
+
+/* Outer panel — replaces the old GroupBox */
+QFrame#filter_panel {
+    background: #0d0d17;
+    border: 1px solid #1e1e2e;
+    border-top: 1px solid #232336;
+    border-radius: 10px;
+}
+
+/* Tiny uppercase section cap label ("SITE", "CLASSIFICATION"…) */
+QLabel#filter_section {
+    color: #6c7086;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    background: transparent;
+    padding: 0 0 2px 0;
+}
+QLabel#filter_section_active {
+    color: #89b4fa;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    background: transparent;
+    padding: 0 0 2px 0;
+}
+
+/* Subtle grouping container — no heavy box, just a darker tint */
+QFrame#filter_group {
+    background: #10101c;
+    border: 1px solid #1c1c2c;
+    border-radius: 8px;
+}
+QFrame#filter_group_date {
+    background: #10101c;
+    border: 1px solid #1c1c2c;
+    border-left: 2px solid #45475a;
+    border-radius: 8px;
+}
+
+/* Vertical accent rail — 2px stripe that marks a group as "active" */
+QFrame#filter_rail {
+    background: #2a2a3e;
+    border: none;
+    max-width: 2px;
+    min-width: 2px;
+    border-radius: 1px;
+}
+QFrame#filter_rail_active {
+    background: #89b4fa;
+    border: none;
+    max-width: 2px;
+    min-width: 2px;
+    border-radius: 1px;
+}
+
+/* Inline label inside a group — muted, small, fixed weight */
+QLabel#filter_inline {
+    color: #7f849c;
+    font-size: 11px;
+    font-weight: 500;
+    background: transparent;
+    padding: 0 2px;
+}
+
+/* Refined inputs — darker surface, thin border, phosphor focus glow */
+QLineEdit#filter_input {
+    background: #0a0a14;
+    border: 1px solid #20202e;
+    border-radius: 6px;
+    padding: 7px 11px;
+    color: #cdd6f4;
+    font-size: 13px;
+    font-weight: 500;
+    selection-background-color: #1e2a4a;
+    selection-color: #cdd6f4;
+    min-height: 26px;
+}
+QLineEdit#filter_input:hover {
+    border-color: #2a2a3e;
+    background: #0c0c18;
+}
+QLineEdit#filter_input:focus {
+    border-color: #89b4fa;
+    background: #0e0e1c;
+}
+QLineEdit#filter_input:disabled {
+    background: #0a0a14;
+    color: #45475a;
+    border-color: #1a1a28;
+}
+
+/* Compact combo */
+QComboBox#filter_combo {
+    background: #0a0a14;
+    border: 1px solid #20202e;
+    border-radius: 6px;
+    padding: 6px 10px;
+    padding-right: 24px;
+    color: #cdd6f4;
+    font-size: 12px;
+    font-weight: 600;
+    min-height: 26px;
+}
+QComboBox#filter_combo:hover {
+    border-color: #2a2a3e;
+    background: #0c0c18;
+}
+QComboBox#filter_combo:focus, QComboBox#filter_combo:on {
+    border-color: #89b4fa;
+    background: #0e0e1c;
+}
+QComboBox#filter_combo::drop-down {
+    border: none;
+    width: 20px;
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+}
+
+/* Compact date picker inside filter panel */
+QDateEdit#filter_date {
+    background: #0a0a14;
+    border: 1px solid #20202e;
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: #cdd6f4;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: 'SF Mono', 'Consolas', 'Cascadia Code', monospace;
+    min-height: 26px;
+}
+QDateEdit#filter_date:hover {
+    border-color: #2a2a3e;
+    background: #0c0c18;
+}
+QDateEdit#filter_date:focus {
+    border-color: #89b4fa;
+    background: #0e0e1c;
+}
+QDateEdit#filter_date:disabled {
+    background: #0a0a14;
+    color: #45475a;
+    border-color: #1a1a28;
+}
+
+/* Numeric spin inside filter panel */
+QSpinBox#filter_spin {
+    background: #0a0a14;
+    border: 1px solid #20202e;
+    border-radius: 6px;
+    padding: 6px 8px;
+    color: #cdd6f4;
+    font-size: 12px;
+    font-weight: 700;
+    font-family: 'SF Mono', 'Consolas', 'Cascadia Code', monospace;
+    min-height: 26px;
+}
+QSpinBox#filter_spin:focus {
+    border-color: #89b4fa;
+    background: #0e0e1c;
+}
+QSpinBox#filter_spin:disabled {
+    color: #45475a;
+    border-color: #1a1a28;
+}
+
+/* Toggle-style checkbox — larger, accent fill when checked */
+QCheckBox#filter_toggle {
+    color: #a6adc8;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    background: transparent;
+    spacing: 7px;
+    padding: 2px 0;
+}
+QCheckBox#filter_toggle:disabled {
+    color: #45475a;
+}
+QCheckBox#filter_toggle::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    border: 1px solid #2a2a3e;
+    background: #0a0a14;
+}
+QCheckBox#filter_toggle::indicator:hover {
+    border-color: #454560;
+}
+QCheckBox#filter_toggle::indicator:checked {
+    background: #89b4fa;
+    border: 1px solid #89b4fa;
+    image: none;
+}
+QCheckBox#filter_toggle::indicator:disabled {
+    background: #0a0a14;
+    border-color: #1a1a28;
+}
+
+/* Pill-shaped quick-pick button */
+QPushButton#btn_pill {
+    background: #0a0a14;
+    color: #7f849c;
+    border: 1px solid #20202e;
+    border-radius: 12px;
+    padding: 5px 14px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    min-width: 0;
+    min-height: 22px;
+}
+QPushButton#btn_pill:hover {
+    background: #141424;
+    color: #89b4fa;
+    border-color: #3a4a7a;
+}
+QPushButton#btn_pill:pressed {
+    background: #1a2744;
+    color: #89b4fa;
+    border-color: #89b4fa;
+}
+QPushButton#btn_pill:disabled {
+    background: #0a0a14;
+    color: #35354a;
+    border-color: #1a1a28;
+}
+
+/* "Add" accent button for specific-days input */
+QPushButton#btn_pill_accent {
+    background: #1a2744;
+    color: #89b4fa;
+    border: 1px solid #2a4070;
+    border-radius: 6px;
+    padding: 5px 14px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    min-height: 22px;
+}
+QPushButton#btn_pill_accent:hover {
+    background: #1f3258;
+    color: #b4d0fa;
+    border-color: #89b4fa;
+}
+QPushButton#btn_pill_accent:disabled {
+    background: #0a0a14;
+    color: #35354a;
+    border-color: #1a1a28;
+}
+
+/* Ghost clear button */
+QPushButton#btn_ghost {
+    background: transparent;
+    color: #6c7086;
+    border: 1px solid #20202e;
+    border-radius: 6px;
+    padding: 5px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    min-height: 22px;
+}
+QPushButton#btn_ghost:hover {
+    color: #f38ba8;
+    border-color: #5a2030;
+    background: #1a0f14;
+}
+QPushButton#btn_ghost:disabled {
+    color: #35354a;
+    border-color: #1a1a28;
 }
 """

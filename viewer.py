@@ -62,6 +62,68 @@ except ImportError:
     import state
 
 
+def compute_date_mask(
+    occurred: pd.Series,
+    *,
+    use_range: bool,
+    from_date,
+    to_date,
+    use_days: bool,
+    manual_days,
+) -> pd.Series | None:
+    """Return a boolean mask combining the range and specific-days filters.
+
+    Parameters
+    ----------
+    occurred : pd.Series
+        Datetime-like series of alarm occurrence timestamps.
+    use_range : bool
+        Whether the From/To range filter is active.
+    from_date, to_date : date-like
+        Inclusive range boundaries. ``to_date`` is treated as inclusive through
+        23:59:59 of that day. Accepts anything ``pd.Timestamp`` can parse.
+    use_days : bool
+        Whether the specific-days filter is active.
+    manual_days : iterable of pd.Timestamp (or date-like)
+        Exact days to include when ``use_days`` is True. Each value is
+        normalized to midnight before comparison.
+
+    Returns
+    -------
+    pd.Series or None
+        Boolean mask aligned to ``occurred``'s index. Returns ``None`` when
+        neither sub-filter is active (caller should treat that as a no-op).
+        NaT rows are always masked out when a mask is returned.
+    """
+    # Ensure we work with a Series (callers may pass a DatetimeIndex).
+    if not isinstance(occurred, pd.Series):
+        occurred = pd.Series(occurred)
+    if not pd.api.types.is_datetime64_any_dtype(occurred):
+        occurred = pd.to_datetime(occurred, errors="coerce")
+
+    masks: list[pd.Series] = []
+
+    if use_range:
+        fd = pd.Timestamp(from_date)
+        td = pd.Timestamp(to_date) + pd.Timedelta(
+            hours=23, minutes=59, seconds=59)
+        masks.append((occurred >= fd) & (occurred <= td))
+
+    if use_days:
+        normalized = {pd.Timestamp(d).normalize() for d in (manual_days or [])}
+        if normalized:
+            masks.append(occurred.dt.normalize().isin(normalized))
+        else:
+            masks.append(pd.Series(False, index=occurred.index))
+
+    if not masks:
+        return None
+
+    combined = masks[0]
+    for extra in masks[1:]:
+        combined = combined | extra
+    return combined & occurred.notna()
+
 
 class ColumnFilterPopup(QDialog):
     """Google-Sheets-style column filter popup with sort + value checkboxes."""
@@ -549,67 +611,80 @@ class AlarmViewer(QMainWindow):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(8)
+        lay.setSpacing(10)
 
-        # ── Top bar (uses sidebar directory) ─────────────
-        top = QHBoxLayout()
-        top.setSpacing(10)
+        # ── Header control strip (Command Console grouped row) ──
+        def _make_group(title: str, object_name: str = "filter_group"):
+            frame = QFrame()
+            frame.setObjectName(object_name)
+            v = QVBoxLayout(frame)
+            v.setContentsMargins(12, 8, 12, 10)
+            v.setSpacing(5)
+            cap = QLabel(title)
+            cap.setObjectName("filter_section")
+            v.addWidget(cap)
+            inner = QHBoxLayout()
+            inner.setSpacing(8)
+            v.addLayout(inner)
+            return frame, inner
 
+        def _inline_label(text: str) -> QLabel:
+            lbl = QLabel(text)
+            lbl.setObjectName("filter_inline")
+            return lbl
+
+        header_row = QHBoxLayout()
+        header_row.setSpacing(10)
+
+        # — ACTION group (Validate button)
+        action_group, action_row = _make_group("ACTION")
         btn_validate = QPushButton("Validate")
         btn_validate.setObjectName("btn_search")
+        btn_validate.setCursor(Qt.PointingHandCursor)
         btn_validate.setMinimumWidth(0)
         btn_validate.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         btn_validate.clicked.connect(self._run_validation)
-        top.addWidget(btn_validate)
+        action_row.addWidget(btn_validate)
+        header_row.addWidget(action_group)
 
-        top.addWidget(self._vline())
+        # — PARAMETERS group (tolerance + health)
+        params_group, params_row = _make_group("PARAMETERS")
 
-        lbl_tol = QLabel("Tolerance")
-        lbl_tol.setStyleSheet(
-            "color:#7f849c; font-size:12px; background:transparent;")
-        top.addWidget(lbl_tol)
-
+        params_row.addWidget(_inline_label("Tolerance"))
         self._spn_tolerance = QSpinBox()
+        self._spn_tolerance.setObjectName("filter_spin")
         self._spn_tolerance.setRange(10, 20)
         self._spn_tolerance.setValue(15)
-        self._spn_tolerance.setSuffix("%")
-        self._spn_tolerance.setFixedWidth(70)
-        top.addWidget(self._spn_tolerance)
+        self._spn_tolerance.setSuffix(" %")
+        self._spn_tolerance.setFixedWidth(82)
+        params_row.addWidget(self._spn_tolerance)
 
-        top.addWidget(self._vline())
-
-        lbl_health = QLabel("Health %")
-        lbl_health.setStyleSheet(
-            "color:#7f849c; font-size:12px; background:transparent;")
-        top.addWidget(lbl_health)
-
+        params_row.addWidget(_inline_label("Health"))
         self._spn_health = QSpinBox()
+        self._spn_health.setObjectName("filter_spin")
         self._spn_health.setRange(50, 100)
         self._spn_health.setValue(80)
-        self._spn_health.setSuffix("%")
-        self._spn_health.setFixedWidth(70)
-        top.addWidget(self._spn_health)
+        self._spn_health.setSuffix(" %")
+        self._spn_health.setFixedWidth(82)
+        params_row.addWidget(self._spn_health)
 
-        top.addStretch()
-        lay.addLayout(top)
+        header_row.addWidget(params_group)
 
-        # ── Search bar ────────────────────────────────────
-        search_row = QHBoxLayout()
-        search_row.setSpacing(8)
-
-        lbl_search = QLabel("🔍")
-        lbl_search.setStyleSheet(
-            "color:#7f849c; font-size:14px; background:transparent;")
-        search_row.addWidget(lbl_search)
-
+        # — SEARCH group (expanding)
+        search_group, search_row_inner = _make_group("SEARCH")
         self._bdt_search = QLineEdit()
+        self._bdt_search.setObjectName("filter_input")
         self._bdt_search.setPlaceholderText(
-            "Search by site ID or date (e.g. ABC123, 2025-01-12, 2025)…")
+            "Search by site ID or date  —  e.g.  ABC123, 2025-01-12, 2025")
         self._bdt_search.setClearButtonEnabled(True)
+        self._bdt_search.setMinimumWidth(220)
+        self._bdt_search.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._bdt_search.textChanged.connect(self._filter_bdt_table)
-        search_row.addWidget(self._bdt_search)
+        search_row_inner.addWidget(self._bdt_search)
+        header_row.addWidget(search_group, 1)
 
-        lay.addLayout(search_row)
+        lay.addLayout(header_row)
 
         # ── Vertical splitter: results table + detail panel ──
         self._bdt_splitter = QSplitter(Qt.Vertical)
@@ -693,6 +768,7 @@ class AlarmViewer(QMainWindow):
 
         # ═══ LEFT — info grid + discharge table ═══
         left = QWidget()
+        left.setMinimumWidth(260)
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(0, 0, 0, 0)
         left_lay.setSpacing(6)
@@ -735,7 +811,23 @@ class AlarmViewer(QMainWindow):
             grid.addWidget(v, row_idx, 1)
             self._bdt_info_labels[key] = v
 
-        left_lay.addWidget(info_frame)
+        # Push the grid rows to the top of the frame so a tall scroll
+        # area doesn't leave a huge empty strip below the last field.
+        grid.setRowStretch(len(info_fields), 1)
+
+        # Wrap the info grid in a scroll area so the File Info section
+        # can shrink and scroll internally instead of hogging all the
+        # left-column space. The stretch factor below (added to
+        # left_lay) makes it share vertical room evenly with the
+        # Discharge Readings table.
+        info_scroll = QScrollArea()
+        info_scroll.setObjectName("bdt_info_scroll")
+        info_scroll.setWidget(info_frame)
+        info_scroll.setWidgetResizable(True)
+        info_scroll.setFrameShape(QFrame.NoFrame)
+        info_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        info_scroll.setMinimumHeight(140)
+        left_lay.addWidget(info_scroll, 1)
 
         btn_open_bdt = QPushButton("Open BDT File")
         btn_open_bdt.setObjectName("btn_search")
@@ -750,7 +842,8 @@ class AlarmViewer(QMainWindow):
         lbl_dis.setObjectName("bdt_section_title")
         left_lay.addWidget(lbl_dis)
 
-        # Discharge table
+        # Discharge table — shares vertical space equally with the
+        # File Info scroll area (both added with stretch=1 above/below).
         self._bdt_discharge_table = QTableWidget(0, 3)
         self._bdt_discharge_table.setHorizontalHeaderLabels(
             ["Time", "Voltage (V)", "Ampere (A)"])
@@ -761,6 +854,7 @@ class AlarmViewer(QMainWindow):
         self._bdt_discharge_table.setAlternatingRowColors(True)
         self._bdt_discharge_table.verticalHeader().setVisible(False)
         self._bdt_discharge_table.verticalHeader().setDefaultSectionSize(24)
+        self._bdt_discharge_table.setMinimumHeight(140)
         dis_hdr = self._bdt_discharge_table.horizontalHeader()
         dis_hdr.resizeSection(0, 110)
         dis_hdr.resizeSection(1, 100)
@@ -771,6 +865,7 @@ class AlarmViewer(QMainWindow):
 
         # ═══ CENTER — validation rules ═══
         center = QWidget()
+        center.setMinimumWidth(320)
         center_lay = QVBoxLayout(center)
         center_lay.setContentsMargins(0, 0, 0, 0)
         center_lay.setSpacing(6)
@@ -779,7 +874,9 @@ class AlarmViewer(QMainWindow):
         lbl_rules.setObjectName("bdt_section_title")
         center_lay.addWidget(lbl_rules)
 
-        # Rules table
+        # Rules table — THE primary content of the detail panel, so it
+        # always claims the leftover vertical space (stretch=1) and has a
+        # real minimum height so empty history sections can't squish it.
         self._bdt_rules_table = QTableWidget(0, 4)
         self._bdt_rules_table.setHorizontalHeaderLabels(
             ["Rule", "Name", "Verdict", "Detail"])
@@ -790,6 +887,7 @@ class AlarmViewer(QMainWindow):
         self._bdt_rules_table.setAlternatingRowColors(True)
         self._bdt_rules_table.verticalHeader().setVisible(False)
         self._bdt_rules_table.verticalHeader().setDefaultSectionSize(24)
+        self._bdt_rules_table.setMinimumHeight(200)
         rules_hdr = self._bdt_rules_table.horizontalHeader()
         rules_hdr.resizeSection(0, 50)
         rules_hdr.resizeSection(1, 140)
@@ -805,14 +903,18 @@ class AlarmViewer(QMainWindow):
         self._bdt_parse_errors_lbl.setVisible(False)
         center_lay.addWidget(self._bdt_parse_errors_lbl)
 
-        # ── Door Alarm History ──────────────────────────────────
-        lbl_door = QLabel("DOOR ALARM HISTORY")
-        lbl_door.setObjectName("section_label")
-        lbl_door.setStyleSheet("font-weight: bold; font-size: 11px; color: #89dceb; margin-top: 12px;")
-        center_lay.addWidget(lbl_door)
+        # ── Door Alarm History ─────────────────────────────────────
+        # Kept visually minimal when empty — section cap + single-line
+        # placeholder. Only expands to a real table when door alarms
+        # actually exist, so the Validation Rules section above keeps
+        # the vertical real estate.
+        self._bdt_door_section_label = QLabel("DOOR ALARM HISTORY")
+        self._bdt_door_section_label.setObjectName("bdt_section_title")
+        center_lay.addWidget(self._bdt_door_section_label)
 
         self._bdt_door_table = QTableWidget(0, 4)
-        self._bdt_door_table.setHorizontalHeaderLabels(["Site", "Occurred", "Cleared", "Alarm Name"])
+        self._bdt_door_table.setHorizontalHeaderLabels(
+            ["Site", "Occurred", "Cleared", "Alarm Name"])
         self._bdt_door_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._bdt_door_table.setSelectionBehavior(QTableWidget.SelectRows)
         self._bdt_door_table.setAlternatingRowColors(True)
@@ -822,17 +924,22 @@ class AlarmViewer(QMainWindow):
         self._bdt_door_table.setColumnWidth(1, 150)
         self._bdt_door_table.setColumnWidth(2, 150)
         self._bdt_door_table.horizontalHeader().setStretchLastSection(True)
-        self._bdt_door_table.setMinimumHeight(80)
+        self._bdt_door_table.setMaximumHeight(160)
+        self._bdt_door_table.setVisible(False)
         center_lay.addWidget(self._bdt_door_table)
 
-        # ── Test History Comparison ────────────────────────────
-        lbl_hist = QLabel("TEST HISTORY COMPARISON")
-        lbl_hist.setObjectName("section_label")
-        lbl_hist.setStyleSheet("font-weight: bold; font-size: 11px; color: #cba6f7; margin-top: 12px;")
-        center_lay.addWidget(lbl_hist)
+        self._bdt_door_empty = QLabel("—  no door alarms for this test date")
+        self._bdt_door_empty.setObjectName("bdt_empty_hint")
+        center_lay.addWidget(self._bdt_door_empty)
+
+        # ── Test History Comparison ────────────────────────────────
+        self._bdt_hist_section_label = QLabel("TEST HISTORY COMPARISON")
+        self._bdt_hist_section_label.setObjectName("bdt_section_title")
+        center_lay.addWidget(self._bdt_hist_section_label)
 
         self._bdt_history_table = QTableWidget(0, 3)
-        self._bdt_history_table.setHorizontalHeaderLabels(["Field", "Previous", "Current"])
+        self._bdt_history_table.setHorizontalHeaderLabels(
+            ["Field", "Previous", "Current"])
         self._bdt_history_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._bdt_history_table.setSelectionBehavior(QTableWidget.SelectRows)
         self._bdt_history_table.setAlternatingRowColors(True)
@@ -841,18 +948,21 @@ class AlarmViewer(QMainWindow):
         self._bdt_history_table.setColumnWidth(0, 130)
         self._bdt_history_table.setColumnWidth(1, 130)
         self._bdt_history_table.horizontalHeader().setStretchLastSection(True)
-        self._bdt_history_table.setMinimumHeight(80)
+        self._bdt_history_table.setMaximumHeight(200)
+        self._bdt_history_table.setVisible(False)
         center_lay.addWidget(self._bdt_history_table)
 
-        self._bdt_history_label = QLabel("")
+        self._bdt_history_label = QLabel(
+            "—  no previous test history found")
+        self._bdt_history_label.setObjectName("bdt_empty_hint")
         self._bdt_history_label.setWordWrap(True)
-        self._bdt_history_label.setStyleSheet("color: #6c7086; font-size: 10px;")
         center_lay.addWidget(self._bdt_history_label)
 
         self._bdt_detail_splitter.addWidget(center)
 
         # ═══ RIGHT — photo gallery ═══
         right = QWidget()
+        right.setMinimumWidth(560)
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(6)
@@ -931,8 +1041,27 @@ class AlarmViewer(QMainWindow):
 
         self._bdt_detail_splitter.addWidget(right)
 
-        # Set initial proportions (left:center:right = 1:1:2)
-        self._bdt_detail_splitter.setSizes([280, 420, 400])
+        # Initial proportions favor photos (left:center:right ≈ 1:1.4:2.8)
+        self._bdt_detail_splitter.setSizes([260, 360, 720])
+        # On window resize, give photos most of the new space.
+        self._bdt_detail_splitter.setStretchFactor(0, 0)  # file info
+        self._bdt_detail_splitter.setStretchFactor(1, 1)  # rules
+        self._bdt_detail_splitter.setStretchFactor(2, 3)  # photos
+        # Hold a reference to the photo scroll so we can size thumbnails
+        # against its viewport width when laying out.
+        self._bdt_photo_scroll = scroll
+
+        # Debounced re-layout on splitter drag so thumbnails grow / shrink
+        # to fit the new column width.
+        from PyQt5.QtCore import QTimer
+        self._bdt_photo_relayout_timer = QTimer(self)
+        self._bdt_photo_relayout_timer.setSingleShot(True)
+        self._bdt_photo_relayout_timer.setInterval(120)
+        self._bdt_photo_relayout_timer.timeout.connect(
+            self._relayout_bdt_photos_if_needed)
+        self._bdt_photo_last_viewport_w = 0
+        self._bdt_detail_splitter.splitterMoved.connect(
+            lambda *_: self._bdt_photo_relayout_timer.start())
 
         outer.addWidget(self._bdt_detail_splitter)
 
@@ -1027,219 +1156,240 @@ class AlarmViewer(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(8)
 
-        grp = QGroupBox("Search & Filter")
-        grp.setStyleSheet(
-            "QGroupBox { font-size:11px; font-weight:600; color:#45475a; "
-            "border:1px solid #1e1e2e; border-radius:8px; "
-            "margin-top:4px; padding-top:10px; } "
-            "QGroupBox::title { subcontrol-origin:margin; "
-            "left:10px; color:#45475a; }")
+        # ──────────────────────────────────────────────────────────
+        # Filter panel — "Command Console" design
+        # Info-dense NOC terminal look: group containers, uppercase
+        # section caps, pill-shaped quick picks, phosphor focus.
+        # ──────────────────────────────────────────────────────────
+        grp = QFrame()
+        grp.setObjectName("filter_panel")
         gl = QVBoxLayout(grp)
-        gl.setContentsMargins(14, 8, 14, 10)
-        gl.setSpacing(8)
+        gl.setContentsMargins(14, 12, 14, 12)
+        gl.setSpacing(10)
 
-        # ── Row 1: Site ID ────────────────────────────────────
-        row1 = QHBoxLayout(); row1.setSpacing(10)
+        def _make_group(title: str, object_name: str = "filter_group"):
+            """Return (outer_frame, inner_hbox) for a captioned filter group."""
+            frame = QFrame()
+            frame.setObjectName(object_name)
+            v = QVBoxLayout(frame)
+            v.setContentsMargins(12, 8, 12, 10)
+            v.setSpacing(5)
+            cap = QLabel(title)
+            cap.setObjectName("filter_section")
+            v.addWidget(cap)
+            inner = QHBoxLayout()
+            inner.setSpacing(8)
+            v.addLayout(inner)
+            return frame, inner
 
-        lbl_site = QLabel("Site ID")
-        lbl_site.setStyleSheet(
-            "color:#7f849c; font-size:12px; background:transparent; "
-            "min-width:42px;")
-        row1.addWidget(lbl_site)
+        def _inline_label(text: str) -> QLabel:
+            lbl = QLabel(text)
+            lbl.setObjectName("filter_inline")
+            return lbl
 
+        # ── Row 1: Site · Classification · Duration ────────────────
+        row1 = QHBoxLayout()
+        row1.setSpacing(10)
+
+        # — SITE group (flex)
+        site_group, site_row = _make_group("SITE ID")
         self._edit_site = QLineEdit()
+        self._edit_site.setObjectName("filter_input")
         self._edit_site.setPlaceholderText(
-            "Comma-separated  (e.g. 3420, 0813, KONA)")
+            "Comma-separated  —  e.g.  3420, 0813, KONA")
+        self._edit_site.setMinimumWidth(200)
+        self._edit_site.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._edit_site.returnPressed.connect(self._search)
-        row1.addWidget(self._edit_site, 3)
+        site_row.addWidget(self._edit_site)
+        row1.addWidget(site_group, 1)
 
-        gl.addLayout(row1)
-
-        # ── Row 1b: Date range with toggle + quick picks ──
-        row_date = QHBoxLayout(); row_date.setSpacing(8)
-
-        date_toggle_style = (
-            "QCheckBox { color:#7f849c; font-size:12px; "
-            "background:transparent; spacing:5px; } "
-            "QCheckBox::indicator { width:16px; height:16px; "
-            "border-radius:4px; border:1px solid #3a3a52; "
-            "background:#1a1a2a; } "
-            "QCheckBox::indicator:checked { "
-            "background:#1a2744; border-color:#89b4fa; }"
-        )
-
-        self._chk_date = QCheckBox("Date")
-        self._chk_date.setChecked(True)
-        self._chk_date.setToolTip("Enable / disable date filtering")
-        self._chk_date.setStyleSheet(date_toggle_style)
-        self._chk_date.toggled.connect(self._toggle_date_filter)
-        row_date.addWidget(self._chk_date)
-
-        self._chk_date_range = QCheckBox("Range")
-        self._chk_date_range.setChecked(True)
-        self._chk_date_range.setToolTip("Include the From-To range in date search")
-        self._chk_date_range.setStyleSheet(date_toggle_style)
-        self._chk_date_range.toggled.connect(self._toggle_date_mode_controls)
-        row_date.addWidget(self._chk_date_range)
-
-        self._lbl_from = QLabel("From")
-        self._lbl_from.setStyleSheet(
-            "color:#7f849c; font-size:12px; background:transparent;")
-        row_date.addWidget(self._lbl_from)
-
-        self._d_from = QDateEdit(calendarPopup=True)
-        self._d_from.setDate(QDate(2025, 12, 1))
-        self._d_from.setDisplayFormat("yyyy-MM-dd")
-        self._d_from.setMinimumWidth(130)
-        self._style_calendar(self._d_from)
-        row_date.addWidget(self._d_from)
-
-        self._lbl_to = QLabel("To")
-        self._lbl_to.setStyleSheet(
-            "color:#7f849c; font-size:12px; background:transparent;")
-        row_date.addWidget(self._lbl_to)
-
-        self._d_to = QDateEdit(calendarPopup=True)
-        self._d_to.setDate(QDate.currentDate())
-        self._d_to.setDisplayFormat("yyyy-MM-dd")
-        self._d_to.setMinimumWidth(130)
-        self._style_calendar(self._d_to)
-        row_date.addWidget(self._d_to)
-
-        self._date_quick_widgets = []
-        quick_divider = self._vline()
-        row_date.addWidget(quick_divider)
-        self._date_quick_widgets.append(quick_divider)
-
-        # Quick-pick buttons
-        for label, days, obj_name in [
-            ("Today", 0, "btn_small"),
-            ("7d", 7, "btn_small"),
-            ("30d", 30, "btn_small"),
-            ("All", -1, "btn_small"),
-        ]:
-            btn = QPushButton(label)
-            btn.setObjectName(obj_name)
-            btn.clicked.connect(
-                lambda checked, d=days: self._quick_date(d))
-            row_date.addWidget(btn)
-            self._date_quick_widgets.append(btn)
-
-        row_date.addStretch()
-        gl.addLayout(row_date)
-
-        # ── Row 1c: specific day picks (single or multi-day) ──
-        row_days = QHBoxLayout(); row_days.setSpacing(8)
-
-        self._chk_date_days = QCheckBox("Specific days")
-        self._chk_date_days.setChecked(False)
-        self._chk_date_days.setToolTip("Include one or more exact days in date search")
-        self._chk_date_days.setStyleSheet(date_toggle_style)
-        self._chk_date_days.toggled.connect(self._toggle_date_mode_controls)
-        row_days.addWidget(self._chk_date_days)
-
-        self._lbl_day = QLabel("Day")
-        self._lbl_day.setStyleSheet(
-            "color:#7f849c; font-size:12px; background:transparent;")
-        row_days.addWidget(self._lbl_day)
-
-        self._d_day = QDateEdit(calendarPopup=True)
-        self._d_day.setDate(QDate.currentDate())
-        self._d_day.setDisplayFormat("yyyy-MM-dd")
-        self._d_day.setMinimumWidth(130)
-        self._style_calendar(self._d_day)
-        row_days.addWidget(self._d_day)
-
-        self._btn_add_day = QPushButton("Add")
-        self._btn_add_day.setObjectName("btn_small")
-        self._btn_add_day.clicked.connect(self._add_selected_day)
-        row_days.addWidget(self._btn_add_day)
-
-        self._edit_days = QLineEdit()
-        self._edit_days.setPlaceholderText("yyyy-mm-dd, yyyy-mm-dd")
-        self._edit_days.setToolTip("Comma/space separated list of exact days")
-        self._edit_days.setMinimumWidth(220)
-        self._edit_days.returnPressed.connect(self._search)
-        row_days.addWidget(self._edit_days, 1)
-
-        self._btn_clear_days = QPushButton("Clear")
-        self._btn_clear_days.setObjectName("btn_small")
-        self._btn_clear_days.clicked.connect(self._clear_selected_days)
-        row_days.addWidget(self._btn_clear_days)
-
-        row_days.addStretch()
-        gl.addLayout(row_days)
-
-        self._toggle_date_filter(self._chk_date.isChecked())
-
-        # ── Row 2: combo filters ─────────────────────────────
-        row2 = QHBoxLayout(); row2.setSpacing(10)
-
-        lbl_cat = QLabel("Category")
-        lbl_cat.setStyleSheet(
-            "color:#7f849c; font-size:12px; background:transparent;")
-        row2.addWidget(lbl_cat)
+        # — CLASSIFICATION group (fixed)
+        class_group, class_row = _make_group("CLASSIFICATION")
 
         self._cb_cat = QComboBox()
+        self._cb_cat.setObjectName("filter_combo")
         self._cb_cat.addItems(["All", "Power", "Down", "Door"])
-        self._cb_cat.setMinimumWidth(88)
-        row2.addWidget(self._cb_cat)
-
-        lbl_net = QLabel("Network")
-        lbl_net.setStyleSheet(
-            "color:#7f849c; font-size:12px; background:transparent;")
-        row2.addWidget(lbl_net)
+        self._cb_cat.setFixedWidth(100)
+        self._cb_cat.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        class_row.addWidget(_inline_label("Category"))
+        class_row.addWidget(self._cb_cat)
 
         self._cb_net = QComboBox()
+        self._cb_net.setObjectName("filter_combo")
         self._cb_net.addItems(["All", "2G", "3G", "4G", "5G"])
-        self._cb_net.setMinimumWidth(72)
-        row2.addWidget(self._cb_net)
-
-        lbl_vnd = QLabel("Vendor")
-        lbl_vnd.setStyleSheet(
-            "color:#7f849c; font-size:12px; background:transparent;")
-        row2.addWidget(lbl_vnd)
+        self._cb_net.setFixedWidth(78)
+        self._cb_net.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        class_row.addWidget(_inline_label("Network"))
+        class_row.addWidget(self._cb_net)
 
         self._cb_vnd = QComboBox()
+        self._cb_vnd.setObjectName("filter_combo")
         self._cb_vnd.addItems(["All", "HUAWEI", "Nokia"])
-        self._cb_vnd.setMinimumWidth(88)
-        row2.addWidget(self._cb_vnd)
+        self._cb_vnd.setFixedWidth(100)
+        self._cb_vnd.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        class_row.addWidget(_inline_label("Vendor"))
+        class_row.addWidget(self._cb_vnd)
 
-        row2.addWidget(self._vline())
+        row1.addWidget(class_group)
 
-        self._chk_mindur = QCheckBox("≥")
+        # — DURATION group (fixed)
+        dur_group, dur_row = _make_group("MIN DURATION")
+
+        self._chk_mindur = QCheckBox("Active")
+        self._chk_mindur.setObjectName("filter_toggle")
         self._chk_mindur.setChecked(True)
         self._chk_mindur.setToolTip(
             "Hide alarms shorter than the specified duration")
-        self._chk_mindur.setStyleSheet(
-            "QCheckBox { color:#7f849c; font-size:12px; "
-            "background:transparent; spacing:5px; } "
-            "QCheckBox::indicator { width:16px; height:16px; "
-            "border-radius:4px; border:1px solid #3a3a52; "
-            "background:#1a1a2a; } "
-            "QCheckBox::indicator:checked { "
-            "background:#1a2744; border-color:#89b4fa; "
-            "image:none; } "
-            "QCheckBox::indicator:checked::after { "
-            "color:#89b4fa; }")
-        row2.addWidget(self._chk_mindur)
+        dur_row.addWidget(self._chk_mindur)
 
         self._spn_mindur = QSpinBox()
+        self._spn_mindur.setObjectName("filter_spin")
         self._spn_mindur.setRange(0, 1440)
         self._spn_mindur.setValue(15)
         self._spn_mindur.setSuffix(" min")
         self._spn_mindur.setToolTip("Minimum duration in minutes")
-        self._spn_mindur.setFixedWidth(80)
-        row2.addWidget(self._spn_mindur)
+        self._spn_mindur.setFixedWidth(92)
+        dur_row.addWidget(self._spn_mindur)
 
-        gl.addLayout(row2)
+        row1.addWidget(dur_group)
 
-        # ── Row 3: action buttons (kept separate for responsive layout) ──
-        row3 = QHBoxLayout(); row3.setSpacing(8)
-        row3.addStretch()
+        gl.addLayout(row1)
+
+        # ── Row 2: DATE FILTER group (spans full width) ────────────
+        date_frame = QFrame()
+        date_frame.setObjectName("filter_group_date")
+        date_v = QVBoxLayout(date_frame)
+        date_v.setContentsMargins(12, 8, 12, 10)
+        date_v.setSpacing(7)
+
+        # Header row: cap label + master Date toggle
+        date_head = QHBoxLayout()
+        date_head.setSpacing(10)
+        date_cap = QLabel("DATE FILTER")
+        date_cap.setObjectName("filter_section")
+        date_head.addWidget(date_cap)
+
+        self._chk_date = QCheckBox("Enabled")
+        self._chk_date.setObjectName("filter_toggle")
+        self._chk_date.setChecked(True)
+        self._chk_date.setToolTip("Enable / disable date filtering")
+        self._chk_date.toggled.connect(self._toggle_date_filter)
+        date_head.addWidget(self._chk_date)
+        date_head.addStretch(1)
+        date_v.addLayout(date_head)
+
+        # Range sub-row
+        range_row = QHBoxLayout()
+        range_row.setSpacing(8)
+
+        self._chk_date_range = QCheckBox("Range")
+        self._chk_date_range.setObjectName("filter_toggle")
+        self._chk_date_range.setChecked(True)
+        self._chk_date_range.setToolTip(
+            "Include the From-To range in date search")
+        self._chk_date_range.toggled.connect(self._toggle_date_mode_controls)
+        range_row.addWidget(self._chk_date_range)
+
+        self._lbl_from = _inline_label("From")
+        range_row.addWidget(self._lbl_from)
+        self._d_from = QDateEdit(calendarPopup=True)
+        self._d_from.setObjectName("filter_date")
+        self._d_from.setDate(QDate(2025, 12, 1))
+        self._d_from.setDisplayFormat("yyyy-MM-dd")
+        self._d_from.setFixedWidth(128)
+        self._style_calendar(self._d_from)
+        range_row.addWidget(self._d_from)
+
+        self._lbl_to = _inline_label("To")
+        range_row.addWidget(self._lbl_to)
+        self._d_to = QDateEdit(calendarPopup=True)
+        self._d_to.setObjectName("filter_date")
+        self._d_to.setDate(QDate.currentDate())
+        self._d_to.setDisplayFormat("yyyy-MM-dd")
+        self._d_to.setFixedWidth(128)
+        self._style_calendar(self._d_to)
+        range_row.addWidget(self._d_to)
+
+        range_row.addStretch(1)
+
+        # Quick-pick pills
+        self._date_quick_widgets = []
+        for label, days in (("TODAY", 0), ("7D", 7),
+                            ("30D", 30), ("ALL", -1)):
+            btn = QPushButton(label)
+            btn.setObjectName("btn_pill")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            btn.clicked.connect(
+                lambda _checked, d=days: self._quick_date(d))
+            range_row.addWidget(btn)
+            self._date_quick_widgets.append(btn)
+
+        date_v.addLayout(range_row)
+
+        # Specific days sub-row
+        days_row = QHBoxLayout()
+        days_row.setSpacing(8)
+
+        self._chk_date_days = QCheckBox("Specific days")
+        self._chk_date_days.setObjectName("filter_toggle")
+        self._chk_date_days.setChecked(False)
+        self._chk_date_days.setToolTip(
+            "Include one or more exact days in date search")
+        self._chk_date_days.toggled.connect(self._toggle_date_mode_controls)
+        days_row.addWidget(self._chk_date_days)
+
+        self._lbl_day = _inline_label("Day")
+        days_row.addWidget(self._lbl_day)
+        self._d_day = QDateEdit(calendarPopup=True)
+        self._d_day.setObjectName("filter_date")
+        self._d_day.setDate(QDate.currentDate())
+        self._d_day.setDisplayFormat("yyyy-MM-dd")
+        self._d_day.setFixedWidth(128)
+        self._style_calendar(self._d_day)
+        days_row.addWidget(self._d_day)
+
+        self._btn_add_day = QPushButton("+ Add")
+        self._btn_add_day.setObjectName("btn_pill_accent")
+        self._btn_add_day.setCursor(Qt.PointingHandCursor)
+        self._btn_add_day.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._btn_add_day.clicked.connect(self._add_selected_day)
+        days_row.addWidget(self._btn_add_day)
+
+        self._edit_days = QLineEdit()
+        self._edit_days.setObjectName("filter_input")
+        self._edit_days.setPlaceholderText(
+            "yyyy-mm-dd, yyyy-mm-dd, ...")
+        self._edit_days.setToolTip(
+            "Comma/space separated list of exact days")
+        self._edit_days.setMinimumWidth(200)
+        self._edit_days.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._edit_days.returnPressed.connect(self._search)
+        days_row.addWidget(self._edit_days, 1)
+
+        self._btn_clear_days = QPushButton("× Clear")
+        self._btn_clear_days.setObjectName("btn_ghost")
+        self._btn_clear_days.setCursor(Qt.PointingHandCursor)
+        self._btn_clear_days.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._btn_clear_days.clicked.connect(self._clear_selected_days)
+        days_row.addWidget(self._btn_clear_days)
+
+        date_v.addLayout(days_row)
+
+        gl.addWidget(date_frame)
+
+        self._toggle_date_filter(self._chk_date.isChecked())
+
+        # ── Row 3: Action buttons ─────────────────────────────────
+        row3 = QHBoxLayout()
+        row3.setSpacing(8)
+        row3.addStretch(1)
 
         btn_search = QPushButton("Search")
         btn_search.setObjectName("btn_search")
+        btn_search.setCursor(Qt.PointingHandCursor)
         btn_search.setMinimumWidth(0)
         btn_search.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         btn_search.clicked.connect(self._search)
@@ -1247,6 +1397,7 @@ class AlarmViewer(QMainWindow):
 
         btn_cl = QPushButton("Clear")
         btn_cl.setObjectName("btn_clear")
+        btn_cl.setCursor(Qt.PointingHandCursor)
         btn_cl.setMinimumWidth(0)
         btn_cl.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         btn_cl.clicked.connect(self._clear_filters)
@@ -1254,6 +1405,7 @@ class AlarmViewer(QMainWindow):
 
         self._btn_export = QPushButton("Export XLSX")
         self._btn_export.setObjectName("btn_export")
+        self._btn_export.setCursor(Qt.PointingHandCursor)
         self._btn_export.setMinimumWidth(0)
         self._btn_export.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._btn_export.clicked.connect(self._export)
@@ -1261,6 +1413,7 @@ class AlarmViewer(QMainWindow):
 
         self._btn_backup = QPushButton("Backup Time")
         self._btn_backup.setObjectName("btn_backup")
+        self._btn_backup.setCursor(Qt.PointingHandCursor)
         self._btn_backup.setMinimumWidth(0)
         self._btn_backup.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._btn_backup.clicked.connect(self._show_backup_times)
@@ -1268,6 +1421,7 @@ class AlarmViewer(QMainWindow):
 
         self._btn_site_sheet = QPushButton("Upload Site Sheet")
         self._btn_site_sheet.setObjectName("btn_dir")
+        self._btn_site_sheet.setCursor(Qt.PointingHandCursor)
         self._btn_site_sheet.setMinimumWidth(0)
         self._btn_site_sheet.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._btn_site_sheet.clicked.connect(self._upload_site_sheet)
@@ -1275,6 +1429,7 @@ class AlarmViewer(QMainWindow):
 
         self._btn_site_report = QPushButton("Generate Site Report")
         self._btn_site_report.setObjectName("btn_export")
+        self._btn_site_report.setCursor(Qt.PointingHandCursor)
         self._btn_site_report.setMinimumWidth(0)
         self._btn_site_report.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._btn_site_report.clicked.connect(self._export_site_sheet_report)
@@ -1282,6 +1437,7 @@ class AlarmViewer(QMainWindow):
 
         self._btn_both = QPushButton("Both P+D")
         self._btn_both.setObjectName("btn_both")
+        self._btn_both.setCursor(Qt.PointingHandCursor)
         self._btn_both.setMinimumWidth(0)
         self._btn_both.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         self._btn_both.setToolTip(
@@ -1740,9 +1896,15 @@ class AlarmViewer(QMainWindow):
             except Exception:
                 pass  # Graceful fallback if alarm data unavailable
 
+        # Collapse the door section to its empty-hint when there's no data,
+        # so Validation Rules above doesn't get squished by an empty table.
+        has_doors = self._bdt_door_table.rowCount() > 0
+        self._bdt_door_table.setVisible(has_doors)
+        self._bdt_door_empty.setVisible(not has_doors)
+
         # ── Populate test history comparison ──────────────────
         self._bdt_history_table.setRowCount(0)
-        self._bdt_history_label.setText("")
+        self._bdt_history_label.setText("—  no previous test history found")
         if bdt and bdt.test_date and bdt.site_code:
             try:
                 try:
@@ -1785,12 +1947,17 @@ class AlarmViewer(QMainWindow):
                                 f"<span style='color:#a6e3a1;'>No critical changes vs {prev.test_date}</span>")
                     else:
                         self._bdt_history_label.setText(
-                            "<span style='color:#6c7086;'>No previous test history found</span>")
+                            "—  no previous test history found")
             except ImportError:
                 self._bdt_history_label.setText(
-                    "<span style='color:#6c7086;'>History module not available</span>")
+                    "—  history module not available")
             except Exception:
                 pass
+
+        # Collapse the history section to its empty-hint when there's no
+        # previous record — keeps the Validation Rules table tall.
+        has_history = self._bdt_history_table.rowCount() > 0
+        self._bdt_history_table.setVisible(has_history)
 
         # ── Photos (lazy-load if skipped during batch validation) ──
         if bdt:
@@ -1946,36 +2113,66 @@ class AlarmViewer(QMainWindow):
         ("Charging / Disconnect",  16,  4),
     ]
 
-    def _populate_bdt_photos(self, bdt: BDTData | None):
-        """Fill the photo gallery grid with band headings matching the BDT template."""
-        # Clear existing widgets
-        while self._bdt_photo_grid.count():
-            item = self._bdt_photo_grid.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
+    # Responsive thumbnail sizing bounds.
+    _PHOTO_THUMB_MIN = 140
+    _PHOTO_THUMB_MAX = 260
 
-        if not bdt or not bdt.photo_slots:
-            lbl = QLabel("No photo data")
-            lbl.setObjectName("bdt_photo_label")
-            lbl.setAlignment(Qt.AlignCenter)
-            self._bdt_photo_grid.addWidget(lbl, 0, 0)
+    def _relayout_bdt_photos_if_needed(self):
+        """Re-run _populate_bdt_photos if the photo scroll viewport width
+        has changed materially since the last layout."""
+        if not hasattr(self, "_bdt_photo_scroll"):
             return
+        try:
+            new_w = self._bdt_photo_scroll.viewport().width()
+        except Exception:
+            return
+        last = getattr(self, "_bdt_photo_last_viewport_w", 0)
+        # Only re-layout if the width change would shift the thumbnail size.
+        if abs(new_w - last) < 24:
+            return
+        self._bdt_photo_last_viewport_w = new_w
+        bdt = getattr(self, "_current_bdt_photos", None)
+        if bdt is not None:
+            self._populate_bdt_photos(bdt)
 
-        grid_row = 0
-        max_cols = 4  # widest band has 4 columns
+    def _compute_photo_thumb_width(self) -> int:
+        """Return the thumbnail width that fits the widest band in the
+        current photo scroll viewport (safely clamped)."""
+        try:
+            viewport = self._bdt_photo_scroll.viewport().width()
+        except Exception:
+            viewport = 0
+        if viewport <= 0:
+            viewport = max(560, self._bdt_photo_scroll.width()
+                           if hasattr(self, "_bdt_photo_scroll") else 560)
+        # Widest band has max 4 columns, so photos must fit 4 × thumb + gaps.
+        # But rectifier/batteries use 3 — we optimize for the typical case.
+        typical_cols = 3
+        # Grid spacing (8) × (typical_cols - 1) + container padding (8) +
+        # card padding (8) × typical_cols.
+        chrome = 8 * (typical_cols - 1) + 8 + 8 * typical_cols
+        available = viewport - chrome
+        width = available // typical_cols
+        return max(self._PHOTO_THUMB_MIN,
+                   min(self._PHOTO_THUMB_MAX, int(width)))
 
+    def _render_bdt_photo_bands(
+        self,
+        bdt: BDTData,
+        thumb_w: int,
+        start_row: int,
+        max_cols: int = 4,
+    ) -> int:
+        """Render one BDT's photo bands into _bdt_photo_grid starting at
+        start_row. Returns the next free grid_row after rendering."""
+        grid_row = start_row
         for band_name, start_idx, band_cols in self._PHOTO_BANDS:
-            # Band heading
             heading = QLabel(band_name.upper())
-            heading.setStyleSheet(
-                "font-weight: bold; font-size: 11px; color: #89b4fa; "
-                "padding: 6px 0 2px 0; border-bottom: 1px solid #313244;")
+            heading.setObjectName("bdt_section_title")
             heading.setAlignment(Qt.AlignLeft)
             self._bdt_photo_grid.addWidget(heading, grid_row, 0, 1, max_cols)
             grid_row += 1
 
-            # Photo cards for this band
             for ci in range(band_cols):
                 slot_idx = start_idx + ci
                 if slot_idx >= len(bdt.photo_slots):
@@ -1993,17 +2190,17 @@ class AlarmViewer(QMainWindow):
                     pix = QPixmap()
                     pix.loadFromData(slot.image_data)
                     thumb = pix.scaledToWidth(
-                        200, Qt.SmoothTransformation)
+                        thumb_w, Qt.SmoothTransformation)
                     img_lbl = QLabel()
                     img_lbl.setPixmap(thumb)
                     img_lbl.setAlignment(Qt.AlignCenter)
                     card_lay.addWidget(img_lbl)
-                    # Click to view full size
                     _data = slot.image_data
                     _label = slot.label
                     card.mousePressEvent = lambda _, d=_data, l=_label: self._show_photo_fullsize(d, l)
                 else:
                     card.setObjectName("bdt_photo_missing")
+                    card.setMinimumHeight(int(thumb_w * 0.66))
                     na_lbl = QLabel("Not Available")
                     na_lbl.setObjectName("bdt_photo_missing_label")
                     na_lbl.setAlignment(Qt.AlignCenter)
@@ -2018,6 +2215,78 @@ class AlarmViewer(QMainWindow):
                 self._bdt_photo_grid.addWidget(card, grid_row, ci)
 
             grid_row += 1
+
+        return grid_row
+
+    def _populate_bdt_photos(self, bdt: BDTData | None):
+        """Fill the photo gallery grid with the current BDT's photos, then
+        append every older sibling test for the same site beneath it,
+        newest-first, each under its own 'PREVIOUS TEST — yyyy-MM-dd'
+        separator. Siblings come from the currently loaded validation
+        batch via _comparison_candidates_for_site."""
+        # Clear existing widgets
+        while self._bdt_photo_grid.count():
+            item = self._bdt_photo_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+
+        # Remember the current BDT so splitter/window resizes can re-layout.
+        self._current_bdt_photos = bdt
+        try:
+            self._bdt_photo_last_viewport_w = (
+                self._bdt_photo_scroll.viewport().width())
+        except Exception:
+            pass
+
+        if not bdt or not bdt.photo_slots:
+            lbl = QLabel("No photo data")
+            lbl.setObjectName("bdt_photo_label")
+            lbl.setAlignment(Qt.AlignCenter)
+            self._bdt_photo_grid.addWidget(lbl, 0, 0)
+            return
+
+        thumb_w = self._compute_photo_thumb_width()
+        max_cols = 4  # widest band has 4 columns
+
+        # ── Current test ──────────────────────────────────────
+        grid_row = self._render_bdt_photo_bands(
+            bdt, thumb_w, start_row=0, max_cols=max_cols)
+
+        # ── Older sibling tests for the same site, newest-first ─
+        # _comparison_candidates_for_site already sorts desc by test_date
+        # and excludes the current BDT.
+        try:
+            siblings = self._comparison_candidates_for_site(bdt)
+        except Exception:
+            siblings = []
+
+        current_ts = bdt.test_date
+        older = [
+            s for s in siblings
+            if s.test_date and current_ts and s.test_date < current_ts
+        ]
+
+        for sibling in older:
+            # Lazy-load photos from the sibling .xlsx (no-op if already loaded)
+            try:
+                load_bdt_photos(sibling)
+            except Exception:
+                continue
+            if not sibling.photo_slots:
+                continue
+
+            # Separator heading — full width, distinct style
+            sep_date = (sibling.test_date.strftime("%Y-%m-%d")
+                        if sibling.test_date else "unknown date")
+            sep = QLabel(f"◂  PREVIOUS TEST    {sep_date}")
+            sep.setObjectName("bdt_history_separator")
+            sep.setAlignment(Qt.AlignLeft)
+            self._bdt_photo_grid.addWidget(sep, grid_row, 0, 1, max_cols)
+            grid_row += 1
+
+            grid_row = self._render_bdt_photo_bands(
+                sibling, thumb_w, start_row=grid_row, max_cols=max_cols)
 
     _COMPARE_KEY_CATEGORIES = {"rectifier", "batteries", "modules"}
 
@@ -3156,31 +3425,28 @@ class AlarmViewer(QMainWindow):
 
         # Date filter (range and/or specific days)
         if self._chk_date.isChecked() and "occurred_on" in df.columns:
-            occurred = df["occurred_on"]
-            if not pd.api.types.is_datetime64_any_dtype(occurred):
-                occurred = pd.to_datetime(occurred, errors="coerce")
+            use_range = self._chk_date_range.isChecked()
+            use_days = self._chk_date_days.isChecked()
 
-            date_masks: list[pd.Series] = []
-            if self._chk_date_range.isChecked():
-                fd = pd.Timestamp(self._d_from.date().toPyDate())
-                td = pd.Timestamp(self._d_to.date().toPyDate()) + pd.Timedelta(
-                    hours=23, minutes=59, seconds=59)
-                date_masks.append((occurred >= fd) & (occurred <= td))
-
-            if self._chk_date_days.isChecked():
-                manual_days, invalid = self._parse_manual_days(self._edit_days.text())
+            manual_days: set[pd.Timestamp] = set()
+            if use_days:
+                manual_days, invalid = self._parse_manual_days(
+                    self._edit_days.text())
                 if invalid:
-                    self._sbar.showMessage("Ignored invalid day value(s) in specific days filter", 2500)
-                if manual_days:
-                    date_masks.append(occurred.dt.normalize().isin(manual_days))
-                else:
-                    date_masks.append(pd.Series(False, index=df.index))
+                    self._sbar.showMessage(
+                        "Ignored invalid day value(s) in specific days filter",
+                        2500)
 
-            if date_masks:
-                date_mask = date_masks[0]
-                for extra in date_masks[1:]:
-                    date_mask |= extra
-                df = df[occurred.notna() & date_mask]
+            mask = compute_date_mask(
+                df["occurred_on"],
+                use_range=use_range,
+                from_date=self._d_from.date().toPyDate(),
+                to_date=self._d_to.date().toPyDate(),
+                use_days=use_days,
+                manual_days=manual_days,
+            )
+            if mask is not None:
+                df = df[mask]
 
         # Category
         cat = self._cb_cat.currentText()
