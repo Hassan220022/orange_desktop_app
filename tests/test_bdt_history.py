@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from alarm_app.bdt_history import (
@@ -13,6 +14,8 @@ from alarm_app.bdt_history import (
     save_test_record,
     load_previous_test,
     compare_tests,
+    save_validation_run,
+    compute_alarm_input_sha256,
     HISTORY_DIR,
 )
 
@@ -37,6 +40,8 @@ def history_dir(tmp_path, monkeypatch):
     """Redirect HISTORY_DIR to a temp directory."""
     import alarm_app.bdt_history as mod
     monkeypatch.setattr(mod, "HISTORY_DIR", tmp_path)
+    monkeypatch.setattr(mod, "PM_RUNS_DIR", tmp_path / "_pm_runs")
+    monkeypatch.setattr(mod, "PM_RULE_RESULTS_DIR", tmp_path / "_pm_rule_results")
     return tmp_path
 
 
@@ -155,3 +160,102 @@ class TestCompareTests:
         comp = compare_tests(bdt, prev)
         assert comp.has_critical_change is False
         assert any("Battery Voltage" in d for d in comp.differences)
+
+
+class TestValidationRunPersistence:
+    @staticmethod
+    def _make_validation_result(verdict="Accepted"):
+        class _Rule:
+            def __init__(self, rid):
+                self.rule_id = rid
+                self.rule_name = f"Rule {rid}"
+                self.verdict = verdict
+                self.detail = f"detail-{rid}"
+                self.passed = True
+
+        class _Res:
+            overall = verdict
+            rules = [_Rule(f"R{i}") for i in range(1, 12)]
+
+        return _Res()
+
+    def test_save_validation_run_persists_metadata_and_rule_rows(self, history_dir):
+        bdt = _FakeBDT(site_code="0167DE", test_date=datetime(2026, 1, 11))
+        result = self._make_validation_result()
+        alarm_df = pd.DataFrame(
+            [{
+                "site_id": "0167DE",
+                "alarm_name": "Power alarm",
+                "alarm_id": "1001",
+                "occurred_on": "2026-01-11 08:00:00",
+                "cleared_on": "2026-01-11 10:00:00",
+            }]
+        )
+
+        run = save_validation_run(
+            bdt_data=bdt,
+            validation_result=result,
+            alarm_df=alarm_df,
+            params={"tolerance": 0.15, "health_pct": 0.80},
+        )
+
+        assert run is not None
+        assert run["site_code"] == "0167DE"
+        assert run["rule_count"] == 11
+        assert run["is_complete_rule_set"] is True
+
+        import alarm_app.bdt_history as mod
+        run_path = mod.PM_RUNS_DIR / f"{run['idempotency_key']}.json"
+        assert run_path.exists()
+
+        rule_rows_path = mod.PM_RULE_RESULTS_DIR / f"{run['run_id']}.jsonl"
+        assert rule_rows_path.exists()
+        rows = [json.loads(line) for line in rule_rows_path.read_text().splitlines() if line.strip()]
+        assert len(rows) == 11
+        assert rows[0]["run_id"] == run["run_id"]
+
+    def test_save_validation_run_is_idempotent_for_same_inputs(self, history_dir):
+        bdt = _FakeBDT(site_code="0167DE", test_date=datetime(2026, 1, 11))
+        result = self._make_validation_result()
+        alarm_df = pd.DataFrame([{"site_id": "0167DE", "occurred_on": "2026-01-11 09:00:00"}])
+
+        first = save_validation_run(
+            bdt_data=bdt,
+            validation_result=result,
+            alarm_df=alarm_df,
+            params={"tolerance": 0.15, "health_pct": 0.80},
+        )
+        second = save_validation_run(
+            bdt_data=bdt,
+            validation_result=result,
+            alarm_df=alarm_df,
+            params={"tolerance": 0.15, "health_pct": 0.80},
+        )
+
+        assert first is not None and second is not None
+        assert first["idempotency_key"] == second["idempotency_key"]
+        assert first["run_id"] == second["run_id"]
+
+        import alarm_app.bdt_history as mod
+        run_files = list(mod.PM_RUNS_DIR.glob("*.json"))
+        rules_files = list(mod.PM_RULE_RESULTS_DIR.glob("*.jsonl"))
+        assert len(run_files) == 1
+        assert len(rules_files) == 1
+
+    def test_compute_alarm_input_sha256_deterministic(self):
+        df_a = pd.DataFrame(
+            [
+                {"site_id": "0167DE", "alarm_id": "2", "occurred_on": "2026-01-11 10:00:00"},
+                {"site_id": "0167DE", "alarm_id": "1", "occurred_on": "2026-01-11 09:00:00"},
+            ]
+        )
+        df_b = pd.DataFrame(
+            [
+                {"site_id": "0167DE", "alarm_id": "1", "occurred_on": "2026-01-11 09:00:00"},
+                {"site_id": "0167DE", "alarm_id": "2", "occurred_on": "2026-01-11 10:00:00"},
+            ]
+        )
+
+        h1 = compute_alarm_input_sha256(df_a, "0167DE", "2026-01-11")
+        h2 = compute_alarm_input_sha256(df_b, "0167DE", "2026-01-11")
+        assert h1 == h2

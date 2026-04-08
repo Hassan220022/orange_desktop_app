@@ -12,7 +12,10 @@ Optimisations:
 
 import os
 import traceback
+import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from uuid import uuid4
 
 import pandas as pd
 import numpy as np
@@ -21,8 +24,10 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 try:
     from .constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
+    from . import state
 except ImportError:
     from constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
+    import state
 
 _EXTS = frozenset((".csv", ".xlsx", ".xls"))
 _ENCODINGS = ("utf-8-sig", "latin-1")          # utf-8-sig covers plain utf-8 too
@@ -535,6 +540,56 @@ def _secs_to_hhmmss(s) -> str:
     return f"{h:02d}:{m:02d}:{sec:02d}"
 
 
+_ROW_HASH_COLUMNS = (
+    "site_id",
+    "alarm_name",
+    "alarm_id",
+    "network_type",
+    "vendor",
+    "occurred_on",
+    "cleared_on",
+    "duration",
+    "clearance_status",
+    "alarm_source",
+    "alarm_category",
+)
+
+
+def _canonical_hash_value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return ""
+        return value.isoformat(sep=" ", timespec="seconds")
+    if pd.isna(value):
+        return ""
+    return str(value).strip().lower()
+
+
+def _row_sha256(row: pd.Series) -> str:
+    payload = {
+        col: _canonical_hash_value(row.get(col, ""))
+        for col in _ROW_HASH_COLUMNS
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def deduplicate_alarm_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Drop duplicate canonical rows using deterministic row hash."""
+    if df is None or df.empty:
+        return df, 0
+
+    marked = df.copy()
+    marked["_row_hash"] = marked.apply(_row_sha256, axis=1)
+    before = len(marked)
+    deduped = marked.drop_duplicates(subset=["_row_hash"], keep="first")
+    dropped = before - len(deduped)
+    deduped = deduped.drop(columns=["_row_hash"])
+    return deduped, dropped
+
+
 # ─────────────────────────────────────────────────────────────────
 # Background loader thread
 # ─────────────────────────────────────────────────────────────────
@@ -558,6 +613,7 @@ class LoaderThread(QThread):
         try:
             dfs: list[pd.DataFrame] = []
             total = len(self.file_infos)
+            file_paths = [info.get("path", "") for info in self.file_infos if info.get("path")]
 
             # Sort largest-first so big files start immediately
             ordered = sorted(
@@ -632,10 +688,46 @@ class LoaderThread(QThread):
                 # Normalize duration display to HH:MM:SS strings
                 combined["duration"] = combined["_duration_secs"].apply(_secs_to_hhmmss)
 
+            combined, dropped_duplicates = deduplicate_alarm_rows(combined)
+
+            # Durable sync journal entries (local outbox) for future cloud migration.
+            try:
+                file_hashes = state.compute_file_hashes(file_paths)
+                for fp, file_sha in file_hashes.items():
+                    state.append_outbox_event(
+                        entity_type="uploaded_file",
+                        entity_local_id=fp,
+                        op="upsert",
+                        entity_hash=file_sha,
+                        payload={
+                            "filename": os.path.basename(fp),
+                            "file_sha256": file_sha,
+                        },
+                    )
+
+                batch_payload = {
+                    "rows": int(len(combined)),
+                    "file_count": int(len(file_hashes)),
+                    "dropped_duplicates": int(dropped_duplicates),
+                }
+                batch_hash = hashlib.sha256(
+                    json.dumps(batch_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                state.append_outbox_event(
+                    entity_type="alarm_record_batch",
+                    entity_local_id=str(uuid4()),
+                    op="upsert",
+                    entity_hash=batch_hash,
+                    payload=batch_payload,
+                )
+            except Exception:
+                pass
+
             self.progress.emit(100, "Done!")
+            duplicate_msg = f"; dropped {dropped_duplicates:,} duplicate row(s)" if dropped_duplicates else ""
             self.finished.emit(
                 combined,
-                f"Loaded {len(combined):,} records from {len(dfs)} file(s)",
+                f"Loaded {len(combined):,} records from {len(dfs)} file(s){duplicate_msg}",
             )
         except Exception:
             self.error.emit(traceback.format_exc())
@@ -774,10 +866,33 @@ class BDTValidationThread(QThread):
                     # Persist test record for historical comparison
                     try:
                         try:
-                            from .bdt_history import save_test_record
+                            from .bdt_history import save_test_record, save_validation_run
                         except ImportError:
-                            from bdt_history import save_test_record
+                            from bdt_history import save_test_record, save_validation_run
                         save_test_record(bdt_data, result.overall)
+
+                        run_data = save_validation_run(
+                            bdt_data=bdt_data,
+                            validation_result=result,
+                            alarm_df=self._alarm_df,
+                            params={
+                                "tolerance": self._tolerance,
+                                "health_pct": self._health_pct,
+                            },
+                        )
+                        if run_data:
+                            state.append_outbox_event(
+                                entity_type="pm_run",
+                                entity_local_id=run_data["run_id"],
+                                op="upsert",
+                                entity_hash=run_data["idempotency_key"],
+                                payload={
+                                    "site_code": run_data["site_code"],
+                                    "test_date": run_data["test_date"],
+                                    "overall_verdict": run_data["overall_verdict"],
+                                    "rule_count": run_data["rule_count"],
+                                },
+                            )
                     except Exception:
                         pass  # history saving is best-effort
 

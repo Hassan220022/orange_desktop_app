@@ -22,6 +22,7 @@ from alarm_app.parsers import (
     _load_external_summary_lookup,
     _match_external_summary_row,
     parse_alarm_file,
+    deduplicate_alarm_rows,
     classify_by_alarm_id,
     compute_site_down_flag,
 )
@@ -786,6 +787,46 @@ class TestComputeSiteDownFlag:
         result = compute_site_down_flag(df)
         power_row = result[result["alarm_category"] == "Power"].iloc[0]
         assert power_row["site_down_flag"] == "Yes"
+
+
+class TestDeduplicateAlarmRows:
+    def test_drops_duplicates_by_canonical_row_content(self):
+        df = pd.DataFrame([
+            {
+                "site_id": "0167DE",
+                "alarm_name": "Power",
+                "alarm_id": "1001",
+                "network_type": "4G",
+                "vendor": "Huawei",
+                "occurred_on": pd.Timestamp("2026-01-11 08:00:00"),
+                "cleared_on": pd.Timestamp("2026-01-11 09:00:00"),
+                "duration": "01:00:00",
+                "clearance_status": "Cleared",
+                "alarm_source": "Node-A",
+                "site_down_flag": "No",
+                "alarm_category": "Power",
+                "file_source": "a.csv",
+            },
+            {
+                "site_id": "0167DE",
+                "alarm_name": "Power",
+                "alarm_id": "1001",
+                "network_type": "4G",
+                "vendor": "Huawei",
+                "occurred_on": pd.Timestamp("2026-01-11 08:00:00"),
+                "cleared_on": pd.Timestamp("2026-01-11 09:00:00"),
+                "duration": "01:00:00",
+                "clearance_status": "Cleared",
+                "alarm_source": "Node-A",
+                "site_down_flag": "No",
+                "alarm_category": "Power",
+                "file_source": "b.csv",
+            },
+        ], columns=ALL_INTERNAL_COLS)
+
+        deduped, dropped = deduplicate_alarm_rows(df)
+        assert dropped == 1
+        assert len(deduped) == 1
 
 
 # ═══════════════════════════════════════════════════════════════════

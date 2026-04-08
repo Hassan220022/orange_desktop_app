@@ -11,6 +11,7 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
 
@@ -18,6 +19,9 @@ STATE_DIR  = Path.home() / ".alarm_viewer"
 STATE_FILE = STATE_DIR / "state.json"
 CACHE_FILE = STATE_DIR / "data_cache.parquet"
 REVIEW_LOG_FILE = STATE_DIR / "review_log.jsonl"
+OUTBOX_FILE = STATE_DIR / "sync_outbox.jsonl"
+SYNC_CHECKPOINT_FILE = STATE_DIR / "sync_checkpoint.json"
+DEVICE_ID_FILE = STATE_DIR / "device_id.txt"
 
 
 def save_state(state_dict: dict):
@@ -166,12 +170,12 @@ def save_alarm_ids(ids: dict):
 
 # ── File hash change detection ───────────────────────────
 def compute_file_hashes(file_paths: list[str]) -> dict[str, str]:
-    """Return {path: md5_hex} for each file that exists."""
+    """Return {path: sha256_hex} for each file that exists."""
     hashes = {}
     for fp in file_paths:
         try:
             if os.path.isfile(fp):
-                h = hashlib.md5()
+                h = hashlib.sha256()
                 with open(fp, "rb") as f:
                     for chunk in iter(lambda: f.read(8192), b""):
                         h.update(chunk)
@@ -190,3 +194,134 @@ def files_changed(saved_hashes: dict[str, str],
         return True
     current = compute_file_hashes(file_paths)
     return current != saved_hashes
+
+
+def get_or_create_device_id() -> str:
+    """Return stable local device ID used for sync event provenance."""
+    try:
+        if DEVICE_ID_FILE.exists():
+            existing = DEVICE_ID_FILE.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+    except Exception:
+        pass
+
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    device_id = str(uuid4())
+    try:
+        DEVICE_ID_FILE.write_text(device_id, encoding="utf-8")
+    except Exception:
+        pass
+    return device_id
+
+
+def append_outbox_event(
+    *,
+    entity_type: str,
+    entity_local_id: str,
+    op: str,
+    entity_hash: str,
+    payload: dict,
+    origin_device_id: str | None = None,
+    event_id: str | None = None,
+    created_at: str | None = None,
+) -> dict:
+    """Append one sync event to durable local outbox journal."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    event = {
+        "event_id": event_id or str(uuid4()),
+        "origin_device_id": origin_device_id or get_or_create_device_id(),
+        "entity_type": str(entity_type or ""),
+        "entity_local_id": str(entity_local_id or ""),
+        "op": str(op or "upsert"),
+        "entity_hash": str(entity_hash or ""),
+        "payload": payload or {},
+        "created_at": created_at or datetime.now().isoformat(),
+    }
+    with OUTBOX_FILE.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(event, default=str) + "\n")
+    return event
+
+
+def load_pending_outbox(limit: int | None = None) -> list[dict]:
+    """Return pending outbox events that are not yet marked synced."""
+    rows: list[dict] = []
+    try:
+        if not OUTBOX_FILE.exists():
+            return rows
+        for line in OUTBOX_FILE.read_text(encoding="utf-8").splitlines():
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                item = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(item, dict) and not item.get("synced_at"):
+                rows.append(item)
+                if limit is not None and limit > 0 and len(rows) >= limit:
+                    break
+    except Exception:
+        return []
+    return rows
+
+
+def save_sync_checkpoint(cursor: str, last_ack_at: str | None = None) -> None:
+    """Persist durable sync checkpoint cursor."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "cursor": str(cursor or ""),
+        "last_ack_at": last_ack_at or datetime.now().isoformat(),
+        "updated_at": datetime.now().isoformat(),
+    }
+    SYNC_CHECKPOINT_FILE.write_text(
+        json.dumps(payload, indent=2, default=str),
+        encoding="utf-8",
+    )
+
+
+def load_sync_checkpoint() -> dict | None:
+    """Load durable sync checkpoint cursor metadata."""
+    try:
+        if not SYNC_CHECKPOINT_FILE.exists():
+            return None
+        data = json.loads(SYNC_CHECKPOINT_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def mark_outbox_synced(event_ids: list[str], checkpoint_cursor: str | None = None) -> int:
+    """Mark matching outbox events as synced and optionally advance checkpoint."""
+    if not event_ids or not OUTBOX_FILE.exists():
+        return 0
+
+    targets = set(event_ids)
+    updated_rows: list[dict] = []
+    synced_count = 0
+
+    for line in OUTBOX_FILE.read_text(encoding="utf-8").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        try:
+            item = json.loads(raw)
+        except Exception:
+            continue
+        if not isinstance(item, dict):
+            continue
+
+        if item.get("event_id") in targets and not item.get("synced_at"):
+            item["synced_at"] = datetime.now().isoformat()
+            item["sync_status"] = "synced"
+            synced_count += 1
+        updated_rows.append(item)
+
+    with OUTBOX_FILE.open("w", encoding="utf-8") as fh:
+        for item in updated_rows:
+            fh.write(json.dumps(item, default=str) + "\n")
+
+    if checkpoint_cursor:
+        save_sync_checkpoint(checkpoint_cursor)
+
+    return synced_count

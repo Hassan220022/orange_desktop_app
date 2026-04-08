@@ -18,6 +18,9 @@ def _isolate_state_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(state_mod, "CACHE_FILE", tmp_path / "data_cache.parquet")
     monkeypatch.setattr(state_mod, "ALARM_IDS_FILE", tmp_path / "alarm_ids.json")
     monkeypatch.setattr(state_mod, "REVIEW_LOG_FILE", tmp_path / "review_log.jsonl")
+    monkeypatch.setattr(state_mod, "OUTBOX_FILE", tmp_path / "sync_outbox.jsonl")
+    monkeypatch.setattr(state_mod, "SYNC_CHECKPOINT_FILE", tmp_path / "sync_checkpoint.json")
+    monkeypatch.setattr(state_mod, "DEVICE_ID_FILE", tmp_path / "device_id.txt")
 
 
 # ── save_state / load_state round-trip ─────────────────────────
@@ -152,7 +155,7 @@ class TestReviewLog:
 
 # ── compute_file_hashes ───────────────────────────────────────
 class TestComputeFileHashes:
-    def test_returns_md5_for_existing_files(self, tmp_path):
+    def test_returns_sha256_for_existing_files(self, tmp_path):
         f1 = tmp_path / "a.csv"
         f1.write_text("hello", encoding="utf-8")
         f2 = tmp_path / "b.csv"
@@ -161,7 +164,7 @@ class TestComputeFileHashes:
         hashes = state_mod.compute_file_hashes([str(f1), str(f2)])
         assert str(f1) in hashes
         assert str(f2) in hashes
-        assert len(hashes[str(f1)]) == 32  # MD5 hex length
+        assert len(hashes[str(f1)]) == 64  # SHA-256 hex length
         assert hashes[str(f1)] != hashes[str(f2)]
 
     def test_skips_nonexistent_files(self, tmp_path):
@@ -217,3 +220,51 @@ class TestFilesChanged:
         f = tmp_path / "a.csv"
         f.write_text("data", encoding="utf-8")
         assert state_mod.files_changed({}, [str(f)]) is True
+
+
+class TestSyncOutboxAndCheckpoint:
+    def test_append_and_load_pending_outbox(self):
+        event = state_mod.append_outbox_event(
+            entity_type="alarm_record_batch",
+            entity_local_id="batch-1",
+            op="upsert",
+            entity_hash="abc123",
+            payload={"rows": 10},
+        )
+        pending = state_mod.load_pending_outbox()
+        assert len(pending) == 1
+        assert pending[0]["event_id"] == event["event_id"]
+        assert pending[0]["payload"]["rows"] == 10
+
+    def test_mark_outbox_synced_and_checkpoint(self):
+        e1 = state_mod.append_outbox_event(
+            entity_type="uploaded_file",
+            entity_local_id="/tmp/a.csv",
+            op="upsert",
+            entity_hash="hash-a",
+            payload={"file_sha256": "hash-a"},
+        )
+        e2 = state_mod.append_outbox_event(
+            entity_type="uploaded_file",
+            entity_local_id="/tmp/b.csv",
+            op="upsert",
+            entity_hash="hash-b",
+            payload={"file_sha256": "hash-b"},
+        )
+
+        synced = state_mod.mark_outbox_synced([e1["event_id"]], checkpoint_cursor=e1["event_id"])
+        assert synced == 1
+
+        pending = state_mod.load_pending_outbox()
+        assert len(pending) == 1
+        assert pending[0]["event_id"] == e2["event_id"]
+
+        checkpoint = state_mod.load_sync_checkpoint()
+        assert checkpoint is not None
+        assert checkpoint["cursor"] == e1["event_id"]
+
+    def test_get_or_create_device_id_stable(self):
+        d1 = state_mod.get_or_create_device_id()
+        d2 = state_mod.get_or_create_device_id()
+        assert d1
+        assert d1 == d2
