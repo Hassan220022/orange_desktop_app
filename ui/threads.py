@@ -1,0 +1,390 @@
+"""Background worker threads."""
+
+import hashlib
+import json
+import os
+import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from uuid import uuid4
+
+import pandas as pd
+
+from PyQt5.QtCore import QThread, pyqtSignal
+
+from alarm_app.constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
+from alarm_app.core.backup_time import compute_backup_times
+from alarm_app.core.duration import duration_to_secs as _duration_to_secs
+from alarm_app.core.duration import secs_to_hhmmss as _secs_to_hhmmss
+from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
+from alarm_app.data import loaders as _loaders
+from alarm_app.data.loaders import (
+    parse_alarm_file,
+    deduplicate_alarm_rows,
+)
+from alarm_app.data import state
+
+
+# ─────────────────────────────────────────────────────────────────
+# Background loader thread
+# ─────────────────────────────────────────────────────────────────
+class LoaderThread(QThread):
+    """Load selected files in a background thread.
+
+    Signals:
+        progress(int, str)  — percentage + status message
+        finished(DataFrame, str) — merged data + summary message
+        error(str) — traceback on failure
+    """
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(object, str)
+    error    = pyqtSignal(str)
+
+    def __init__(self, file_infos: list[dict]):
+        super().__init__()
+        self.file_infos = file_infos
+
+    def run(self):
+        try:
+            dfs: list[pd.DataFrame] = []
+            total = len(self.file_infos)
+            file_paths = [info.get("path", "") for info in self.file_infos if info.get("path")]
+
+            # Sort largest-first so big files start immediately
+            ordered = sorted(
+                enumerate(self.file_infos),
+                key=lambda t: t[1].get("size_kb", 0),
+                reverse=True,
+            )
+
+            workers = min(total, os.cpu_count() or 1, 6)
+            done_count = 0
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(parse_alarm_file, info): idx
+                    for idx, info in ordered
+                }
+                for future in as_completed(futures):
+                    done_count += 1
+                    idx = futures[future]
+                    info = self.file_infos[idx]
+                    self.progress.emit(
+                        int(done_count / total * 90),
+                        f"[{done_count}/{total}]  {info['filename']}",
+                    )
+                    try:
+                        df = future.result()
+                        if df is not None and not df.empty:
+                            dfs.append(df)
+                    except Exception:
+                        pass  # individual file failures silently skipped
+
+            if not dfs:
+                self.error.emit(
+                    "No readable alarm records found in selected files.")
+                return
+
+            self.progress.emit(95, "Merging records …")
+            combined = pd.concat(dfs, ignore_index=True)
+
+            # Fast vectorised datetime conversion
+            for col in ("occurred_on", "cleared_on"):
+                if col in combined.columns:
+                    combined[col] = pd.to_datetime(
+                        combined[col], errors="coerce", format="mixed")
+
+            if "site_id" in combined.columns:
+                combined["site_id"] = (
+                    combined["site_id"].astype(str).str.strip())
+
+            # Compute duration for records that don't have it (Nokia)
+            if "duration" in combined.columns:
+                missing_dur = combined["duration"].fillna("").astype(str).str.strip().eq("")
+                if missing_dur.any():
+                    has_times = (missing_dur
+                                 & combined["occurred_on"].notna()
+                                 & combined["cleared_on"].notna())
+                    if has_times.any():
+                        td = combined.loc[has_times, "cleared_on"] - combined.loc[has_times, "occurred_on"]
+                        total_secs = td.dt.total_seconds().fillna(0)
+                        h = (total_secs // 3600).astype(int)
+                        m = ((total_secs % 3600) // 60).astype(int)
+                        s = (total_secs % 60).astype(int)
+                        combined.loc[has_times, "duration"] = (
+                            h.astype(str).str.zfill(2) + ":"
+                            + m.astype(str).str.zfill(2) + ":"
+                            + s.astype(str).str.zfill(2))
+
+            # Pre-computed duration seconds for fast filtering
+            # Handles str "HH:MM:SS", datetime.time, and Timestamp objects
+            if "duration" in combined.columns:
+                combined["_duration_secs"] = combined["duration"].apply(_duration_to_secs)
+                # Normalize duration display to HH:MM:SS strings
+                combined["duration"] = combined["_duration_secs"].apply(_secs_to_hhmmss)
+
+            combined, dropped_duplicates = deduplicate_alarm_rows(combined)
+
+            # Durable sync journal entries (local outbox) for future cloud migration.
+            try:
+                file_hashes = state.compute_file_hashes(file_paths)
+                for fp, file_sha in file_hashes.items():
+                    state.append_outbox_event(
+                        entity_type="uploaded_file",
+                        entity_local_id=fp,
+                        op="upsert",
+                        entity_hash=file_sha,
+                        payload={
+                            "filename": os.path.basename(fp),
+                            "file_sha256": file_sha,
+                        },
+                    )
+
+                batch_payload = {
+                    "rows": int(len(combined)),
+                    "file_count": int(len(file_hashes)),
+                    "dropped_duplicates": int(dropped_duplicates),
+                }
+                batch_hash = hashlib.sha256(
+                    json.dumps(batch_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+                state.append_outbox_event(
+                    entity_type="alarm_record_batch",
+                    entity_local_id=str(uuid4()),
+                    op="upsert",
+                    entity_hash=batch_hash,
+                    payload=batch_payload,
+                )
+            except Exception:
+                pass
+
+            self.progress.emit(100, "Done!")
+            duplicate_msg = f"; dropped {dropped_duplicates:,} duplicate row(s)" if dropped_duplicates else ""
+            self.finished.emit(
+                combined,
+                f"Loaded {len(combined):,} records from {len(dfs)} file(s){duplicate_msg}",
+            )
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
+
+# ─────────────────────────────────────────────────────────────────
+# Background export thread
+# ─────────────────────────────────────────────────────────────────
+class ExportThread(QThread):
+    """Write one or more DataFrames to Excel in a background thread.
+
+    Signals:
+        progress(int, str)  — percentage + status message
+        finished(str)       — file path on success
+        error(str)          — error message on failure
+    """
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(str)
+    error    = pyqtSignal(str)
+
+    def __init__(self, df: pd.DataFrame | dict[str, pd.DataFrame], path: str):
+        super().__init__()
+        self._df = df
+        self._path = path
+
+    def run(self):
+        try:
+            self.progress.emit(30, "Writing Excel file …")
+            if isinstance(self._df, dict):
+                with pd.ExcelWriter(self._path, engine="openpyxl") as writer:
+                    total = max(len(self._df), 1)
+                    for idx, (sheet_name, df) in enumerate(self._df.items(), start=1):
+                        frame = df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
+                        frame.to_excel(writer, sheet_name=sheet_name, index=False)
+                        pct = 30 + int(60 * idx / total)
+                        self.progress.emit(min(pct, 95), f"Writing sheet: {sheet_name}")
+            else:
+                self._df.to_excel(self._path, index=False, engine="openpyxl")
+            self.progress.emit(100, "Export complete")
+            self.finished.emit(self._path)
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
+
+# ─────────────────────────────────────────────────────────────────
+# BDT validation thread
+# ─────────────────────────────────────────────────────────────────
+class BDTValidationThread(QThread):
+    """Parse and validate BDT files in a background thread.
+
+    Signals:
+        progress(int, str) — percentage + status message
+        finished(list, dict) — (ValidationResult list, site->BDTData dict)
+        error(str)         — error message on failure
+    """
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(object, object)
+    error    = pyqtSignal(str)
+
+    def __init__(self, bdt_files: list[str], alarm_df,
+                 tolerance: float, health_pct: float):
+        super().__init__()
+        self._files = bdt_files
+        self._alarm_df = alarm_df
+        self._tolerance = tolerance
+        self._health_pct = health_pct
+
+    def run(self):
+        from alarm_app.bdt.parser import parse_bdt_file, load_bdt_photos
+        from alarm_app.bdt.validator import validate_bdt
+        from datetime import datetime
+
+        try:
+            total = len(self._files)
+            results = []
+            by_site: dict[str, list] = {}
+            done = 0
+            summary_lookup = _loaders._load_external_summary_lookup(self._files)
+
+            workers = min(total, os.cpu_count() or 1, 8)
+
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {
+                    pool.submit(parse_bdt_file, fp, skip_photos=True): fp
+                    for fp in self._files
+                }
+                for future in as_completed(futures):
+                    done += 1
+                    fp = futures[future]
+                    fname = os.path.basename(fp)
+                    pct = int(done / total * 90)
+                    self.progress.emit(
+                        pct, f"[{done}/{total}]  {fname}")
+
+                    try:
+                        bdt_data = future.result()
+                    except Exception:
+                        continue
+
+                    # Skip non-template files and hard parser failures to avoid
+                    # polluting validation table with unusable "Unknown" rows.
+                    parse_errors_lc = [str(e).lower() for e in getattr(bdt_data, "errors", [])]
+                    hard_file_error = any(
+                        ("cannot open file" in err) or ("failed to read bdt sheet" in err)
+                        for err in parse_errors_lc
+                    )
+                    no_extractable_data = (
+                        not getattr(bdt_data, "site_code", "")
+                        and not getattr(bdt_data, "test_date", None)
+                        and not getattr(bdt_data, "discharge_readings", [])
+                        and getattr(bdt_data, "start_voltage", None) is None
+                        and getattr(bdt_data, "start_ampere", None) is None
+                    )
+                    if hard_file_error or no_extractable_data:
+                        self.progress.emit(
+                            pct, f"[{done}/{total}]  skipped invalid BDT: {fname}")
+                        continue
+
+                    # R1 photo rule must evaluate actual image availability.
+                    # Bulk parsing may defer photos for speed, so load now.
+                    if getattr(bdt_data, "photos_deferred", False):
+                        load_bdt_photos(bdt_data)
+
+                    if summary_lookup:
+                        matched_summary = _loaders._match_external_summary_row(
+                            bdt_data, summary_lookup)
+                        if matched_summary:
+                            bdt_data.summary_data = matched_summary
+
+                    result = validate_bdt(
+                        bdt_data, self._alarm_df,
+                        self._tolerance, self._health_pct)
+                    results.append(result)
+
+                    # Persist test record for historical comparison
+                    try:
+                        from alarm_app.bdt.history import save_test_record, save_validation_run
+                        save_test_record(bdt_data, result.overall)
+
+                        run_data = save_validation_run(
+                            bdt_data=bdt_data,
+                            validation_result=result,
+                            alarm_df=self._alarm_df,
+                            params={
+                                "tolerance": self._tolerance,
+                                "health_pct": self._health_pct,
+                            },
+                        )
+                        if run_data:
+                            state.append_outbox_event(
+                                entity_type="pm_run",
+                                entity_local_id=run_data["run_id"],
+                                op="upsert",
+                                entity_hash=run_data["idempotency_key"],
+                                payload={
+                                    "site_code": run_data["site_code"],
+                                    "test_date": run_data["test_date"],
+                                    "overall_verdict": run_data["overall_verdict"],
+                                    "rule_count": run_data["rule_count"],
+                                },
+                            )
+                    except Exception:
+                        pass  # history saving is best-effort
+
+                    if bdt_data.site_code:
+                        key = bdt_data.site_code.strip().upper()
+                        by_site.setdefault(key, []).append(bdt_data)
+
+            self.progress.emit(95, "Sorting results…")
+
+            # Sort each site's tests by date (newest first)
+            for key in by_site:
+                by_site[key].sort(
+                    key=lambda b: b.test_date or datetime.min,
+                    reverse=True)
+
+            self.progress.emit(100, "Done!")
+            self.finished.emit(results, by_site)
+
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
+
+# ─────────────────────────────────────────────────────────────────
+# Backup-time computation thread
+# ─────────────────────────────────────────────────────────────────
+class BackupTimeThread(QThread):
+    """Compute backup times in a background thread.
+
+    Signals:
+        progress(int, str)            — percentage + status message
+        finished(DataFrame, str)      — result df + error string ('' on success)
+        error(str)                    — traceback on unexpected failure
+    """
+    progress = pyqtSignal(int, str)
+    finished = pyqtSignal(object, str)
+    error    = pyqtSignal(str)
+
+    def __init__(self, df: pd.DataFrame):
+        super().__init__()
+        self._df = df
+
+    def run(self):
+        try:
+            self.progress.emit(30, "Computing backup times …")
+            result, err = compute_backup_times(self._df)
+            self.progress.emit(100, "Done")
+            self.finished.emit(result, err)
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
+
+# ─────────────────────────────────────────────────────────────────
+# Restore-from-cache thread
+# ─────────────────────────────────────────────────────────────────
+class RestoreThread(QThread):
+    """Load cached DataFrame from Parquet in a background thread."""
+    finished = pyqtSignal(object)  # DataFrame or None
+    error = pyqtSignal(str)
+
+    def run(self):
+        try:
+            df = state.load_dataframe()
+            self.finished.emit(df)
+        except Exception as e:
+            self.error.emit(str(e))

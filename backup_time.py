@@ -2,7 +2,6 @@
 Backup-time computation and dialog.
 """
 
-import traceback
 from datetime import datetime
 
 import pandas as pd
@@ -12,7 +11,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem,
     QFileDialog, QMessageBox, QAbstractItemView, QHeaderView,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor, QFont
 
 try:
@@ -155,29 +154,6 @@ class BackupTimeDialog(QDialog):
 
 
 # ─────────────────────────────────────────────────────────────────
-# Background thread
+# Thread class — moved to ui/threads.py; re-exported for compat
 # ─────────────────────────────────────────────────────────────────
-class BackupTimeThread(QThread):
-    """Compute backup times in a background thread.
-
-    Signals:
-        progress(int, str)            — percentage + status message
-        finished(DataFrame, str)      — result df + error string ('' on success)
-        error(str)                    — traceback on unexpected failure
-    """
-    progress = pyqtSignal(int, str)
-    finished = pyqtSignal(object, str)
-    error    = pyqtSignal(str)
-
-    def __init__(self, df: pd.DataFrame):
-        super().__init__()
-        self._df = df
-
-    def run(self):
-        try:
-            self.progress.emit(30, "Computing backup times …")
-            result, err = compute_backup_times(self._df)
-            self.progress.emit(100, "Done")
-            self.finished.emit(result, err)
-        except Exception:
-            self.error.emit(traceback.format_exc())
+from alarm_app.ui.threads import BackupTimeThread  # noqa: F401

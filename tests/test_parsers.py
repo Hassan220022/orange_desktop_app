@@ -204,10 +204,10 @@ class TestBDTValidationThreadFiltering:
         th.finished.connect(lambda results, by_site: captured.update(
             {"results": results, "by_site": by_site}))
 
-        with patch("alarm_app.parsers._load_external_summary_lookup", return_value=lookup), \
-             patch("alarm_app.bdt_parser.parse_bdt_file", side_effect=fake_parse), \
-             patch("alarm_app.bdt_validator.validate_bdt", side_effect=fake_validate), \
-             patch("alarm_app.bdt_parser.load_bdt_photos", side_effect=lambda b: None):
+        with patch("alarm_app.data.loaders._load_external_summary_lookup", return_value=lookup), \
+             patch("alarm_app.bdt.parser.parse_bdt_file", side_effect=fake_parse), \
+             patch("alarm_app.bdt.validator.validate_bdt", side_effect=fake_validate), \
+             patch("alarm_app.bdt.parser.load_bdt_photos", side_effect=lambda b: None):
             th.run()
 
         assert "results" in captured

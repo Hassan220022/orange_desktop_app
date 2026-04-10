@@ -32,6 +32,7 @@ try:
     from .models import AlarmTableModel
     from .parsers import discover_alarm_files, LoaderThread, ExportThread, classify_by_alarm_id, compute_site_down_flag, BDTValidationThread
     from .backup_time import BackupTimeDialog, BackupTimeThread
+    from .ui.threads import RestoreThread
     from .bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
     from .bdt_validator import validate_bdt, ValidationResult
     from .bdt_export import build_bdt_export_sheets
@@ -51,6 +52,7 @@ except ImportError:
     from models import AlarmTableModel
     from parsers import discover_alarm_files, LoaderThread, ExportThread, classify_by_alarm_id, compute_site_down_flag, BDTValidationThread
     from backup_time import BackupTimeDialog, BackupTimeThread
+    from ui.threads import RestoreThread
     from bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
     from bdt_validator import validate_bdt, ValidationResult
     from bdt_export import build_bdt_export_sheets
@@ -210,19 +212,6 @@ class ColumnFilterPopup(QDialog):
     def _clear(self):
         self.applied.emit(self._col, None)
         self.close()
-
-
-class RestoreThread(QThread):
-    """Load cached DataFrame from Parquet in a background thread."""
-    finished = pyqtSignal(object)  # DataFrame or None
-    error = pyqtSignal(str)
-
-    def run(self):
-        try:
-            df = state.load_dataframe()
-            self.finished.emit(df)
-        except Exception as e:
-            self.error.emit(str(e))
 
 
 class DailyReviewReportDialog(QDialog):
