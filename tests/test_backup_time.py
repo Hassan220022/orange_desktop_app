@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from alarm_app.backup_time import compute_backup_times
+from alarm_app.core.backup_time import compute_backup_times
 
 
 def _make_df(rows):
