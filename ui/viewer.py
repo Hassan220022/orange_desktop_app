@@ -6,6 +6,7 @@ All UI construction and slot logic lives here.
 import getpass
 import os
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -28,7 +29,7 @@ try:
     from ..constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
                              COL_WIDTHS, DISPLAY_COLUMNS,
                              BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
-    from ..styles import STYLE
+    from ..styles import STYLE, STYLE_DARK, STYLE_LIGHT
     from .model import AlarmTableModel
     from .threads import (RestoreThread, LoaderThread, ExportThread,
                           BDTValidationThread, BackupTimeThread)
@@ -55,7 +56,7 @@ except ImportError:
     from alarm_app.constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
                                      COL_WIDTHS, DISPLAY_COLUMNS,
                                      BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
-    from alarm_app.styles import STYLE
+    from alarm_app.styles import STYLE, STYLE_DARK, STYLE_LIGHT
     from alarm_app.ui.model import AlarmTableModel
     from alarm_app.ui.threads import (RestoreThread, LoaderThread, ExportThread,
                                       BDTValidationThread, BackupTimeThread)
@@ -108,9 +109,10 @@ class AlarmViewer(QMainWindow):
         self._zoom_max_pct = 170
         self._zoom_shortcuts: list[QShortcut] = []
         self._font_size_px_re = re.compile(r"(font-size\s*:\s*)(\d+(?:\.\d+)?)px", re.IGNORECASE)
+        self._theme_mode = "auto"  # will be overridden by state restore
         self._build_ui()
         self._setup_zoom_shortcuts()
-        self.setStyleSheet(STYLE)
+        self.setStyleSheet(self._resolve_theme_style())
         self._restore_ui_state()
         self._start_sync_worker_if_enabled()
 
@@ -293,6 +295,11 @@ class AlarmViewer(QMainWindow):
         btn_config.clicked.connect(self._show_alarm_id_config)
         l.addWidget(btn_config)
 
+        self._btn_theme = QPushButton("Theme: Auto")
+        self._btn_theme.setObjectName("btn_theme")
+        self._btn_theme.clicked.connect(self._toggle_theme)
+        l.addWidget(self._btn_theme)
+
         self._lbl_count = QLabel("")
         self._lbl_count.setObjectName("lbl_green")
         l.addWidget(self._lbl_count)
@@ -418,6 +425,7 @@ class AlarmViewer(QMainWindow):
             "sort_order": sort_order,
             "window_geometry": [geo.x(), geo.y(), geo.width(), geo.height()],
             "ui_zoom_pct": self._app_zoom_pct,
+            "theme_mode": self._theme_mode,
         }
         state.save_state(d)
 
@@ -435,6 +443,10 @@ class AlarmViewer(QMainWindow):
             self.setGeometry(*geo)
         if "ui_zoom_pct" in s:
             self._set_app_zoom(s["ui_zoom_pct"])
+
+        if "theme_mode" in s:
+            self._theme_mode = s["theme_mode"]
+            self._update_theme_button_label()
 
         # Directory & site filter
         if s.get("directory"):
@@ -1001,10 +1013,51 @@ class AlarmViewer(QMainWindow):
             sc.activated.connect(self._zoom_reset)
             self._zoom_shortcuts.append(sc)
 
+    # ── Theme switching ───────────────────────────────────────────
+    def _detect_os_theme(self) -> str:
+        """Detect OS dark/light mode. Returns 'dark' or 'light'."""
+        try:
+            result = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if result.returncode == 0 and "dark" in result.stdout.lower():
+                return "dark"
+        except Exception:
+            pass
+        return "light"
+
+    def _resolve_theme_style(self) -> str:
+        """Return the QSS string for the current theme mode."""
+        mode = self._theme_mode
+        if mode == "auto":
+            mode = self._detect_os_theme()
+        if mode == "dark":
+            return STYLE_DARK
+        return STYLE_LIGHT
+
+    def _set_theme(self, mode: str):
+        """Switch theme. mode is 'auto', 'dark', or 'light'."""
+        self._theme_mode = mode
+        for widget in self.findChildren(QWidget):
+            widget.setProperty("_zoom_base_style", None)
+        self._set_app_zoom(self._app_zoom_pct)
+
+    def _toggle_theme(self):
+        """Cycle through: auto -> dark -> light -> auto."""
+        cycle = {"auto": "dark", "dark": "light", "light": "auto"}
+        new_mode = cycle[self._theme_mode]
+        self._set_theme(new_mode)
+        self._update_theme_button_label()
+
+    def _update_theme_button_label(self):
+        labels = {"auto": "Theme: Auto", "dark": "Theme: Dark", "light": "Theme: Light"}
+        self._btn_theme.setText(labels.get(self._theme_mode, "Theme: Auto"))
+
     def _set_app_zoom(self, pct: int):
         pct = max(self._zoom_min_pct, min(self._zoom_max_pct, int(pct)))
         self._app_zoom_pct = pct
-        self.setStyleSheet(self._scale_font_sizes(STYLE, pct))
+        self.setStyleSheet(self._scale_font_sizes(self._resolve_theme_style(), pct))
         for widget in self.findChildren(QWidget):
             base_ss = widget.property("_zoom_base_style")
             if base_ss is None:

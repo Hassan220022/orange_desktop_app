@@ -1,9 +1,9 @@
 """
-Stylesheet — Catppuccin Mocha-inspired professional dark theme.
+Stylesheets — Catppuccin Mocha (dark) and Latte (light) themes.
 Kept in a separate module so the main window code stays clean.
 """
 
-STYLE = """
+STYLE_DARK = """
 /* ── Base ──────────────────────────────────────────────────── */
 QMainWindow, QDialog {
     background: #13131f;
@@ -915,3 +915,9 @@ QPushButton#btn_ghost:disabled {
     border-color: #1a1a28;
 }
 """
+
+# Backwards-compatible alias
+STYLE = STYLE_DARK
+
+# Stub: the real STYLE_LIGHT will be added by a parallel agent.
+STYLE_LIGHT = STYLE_DARK
