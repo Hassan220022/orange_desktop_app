@@ -27,23 +27,41 @@ def _safe_val(value):
 
 def bulk_upsert_alarms(session: Session, df: pd.DataFrame,
                        file_id: int | None = None) -> tuple[int, int]:
-    """Insert alarm rows with dedup. Returns (inserted, skipped)."""
-    inserted = 0
-    skipped = 0
+    """Insert alarm rows with dedup. Returns (inserted, skipped).
 
-    for _, row in df.iterrows():
-        row_dict = row.to_dict()
-        row_hash = compute_row_hash(row_dict)
-        _log.debug("Row hash computed: %s", row_hash[:12])
+    Uses batch hash computation and a single query to fetch existing
+    hashes, then bulk-inserts only new rows. Much faster than per-row
+    SELECT for large datasets.
+    """
+    if df.empty:
+        return 0, 0
 
-        existing = session.query(AlarmRecord.id).filter_by(
-            row_hash=row_hash
-        ).first()
-        if existing:
-            skipped += 1
+    # 1. Compute all row hashes in one pass
+    hashes = df.apply(lambda row: compute_row_hash(row.to_dict()), axis=1)
+    _log.debug("Computed %d row hashes", len(hashes))
+
+    # 2. Fetch existing hashes in one query
+    unique_hashes = set(hashes)
+    existing_hashes: set[str] = set()
+    batch_size = 500
+    hash_list = list(unique_hashes)
+    for i in range(0, len(hash_list), batch_size):
+        chunk = hash_list[i:i + batch_size]
+        rows = (
+            session.query(AlarmRecord.row_hash)
+            .filter(AlarmRecord.row_hash.in_(chunk))
+            .all()
+        )
+        existing_hashes.update(r[0] for r in rows)
+
+    # 3. Bulk-insert only new rows
+    new_records = []
+    for idx, row_hash in enumerate(hashes):
+        if row_hash in existing_hashes:
             continue
-
-        record = AlarmRecord(
+        existing_hashes.add(row_hash)  # prevent dupes within same batch
+        row_dict = df.iloc[idx].to_dict()
+        new_records.append(AlarmRecord(
             row_hash=row_hash,
             file_id=file_id,
             site_id=_safe_val(row_dict.get("site_id")),
@@ -63,12 +81,16 @@ def bulk_upsert_alarms(session: Session, df: pd.DataFrame,
             clearance_status=_safe_val(row_dict.get("clearance_status")),
             additional_info=_safe_val(row_dict.get("additional_info")),
             site_down=bool(row_dict.get("site_down", False)),
-        )
-        session.add(record)
-        inserted += 1
+        ))
 
+    if new_records:
+        session.add_all(new_records)
     session.commit()
-    _log.info("Alarms upserted: inserted=%d, skipped=%d", inserted, skipped)
+
+    inserted = len(new_records)
+    skipped = len(hashes) - inserted
+    _log.info("Alarms upserted: inserted=%d, skipped=%d (of %d total rows)",
+              inserted, skipped, len(hashes))
     return inserted, skipped
 
 
