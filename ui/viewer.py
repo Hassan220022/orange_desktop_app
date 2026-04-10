@@ -36,6 +36,7 @@ try:
     from .dialogs import ColumnFilterPopup, DailyReviewReportDialog, AlarmIdConfigDialog
     from .panels.search_panel import SearchPanel
     from .panels.left_panel import LeftPanel
+    from .panels.bdt_validation_panel import BdtValidationPanel
     from ..bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
     from ..bdt_validator import validate_bdt, ValidationResult
     from ..bdt_export import build_bdt_export_sheets
@@ -59,6 +60,7 @@ except ImportError:
     from ui.dialogs import ColumnFilterPopup, DailyReviewReportDialog, AlarmIdConfigDialog
     from ui.panels.search_panel import SearchPanel
     from ui.panels.left_panel import LeftPanel
+    from ui.panels.bdt_validation_panel import BdtValidationPanel
     from bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
     from bdt_validator import validate_bdt, ValidationResult
     from bdt_export import build_bdt_export_sheets
@@ -86,7 +88,11 @@ class AlarmViewer(QMainWindow):
         self._uploaded_site_id_column = ""
         self._uploaded_site_keys: set[str] = set()
         self._uploaded_site_path = ""
+        self._bdt_results: list = []
+        self._bdt_by_site: dict = {}
+        self._current_bdt = None
         self._last_bdt_health_pct: float | None = None
+        self._reviewed_bdt_keys: set = set()
         self._sync_flags = state.load_feature_flags()
         self._sync_worker: LocalSyncWorker | None = None
         app = QApplication.instance()
@@ -206,8 +212,21 @@ class AlarmViewer(QMainWindow):
         self._tabs.addTab(alarms_tab, "Alarms")
 
         # Tab 2: Test Validation
-        validation_tab = self._make_validation_tab()
-        self._tabs.addTab(validation_tab, "Test Validation")
+        self._bdt_validation_panel = BdtValidationPanel(self)
+        # Bridge: existing code references self._xxx etc.
+        self._spn_tolerance = self._bdt_validation_panel.spn_tolerance
+        self._spn_health = self._bdt_validation_panel.spn_health
+        self._bdt_search = self._bdt_validation_panel.bdt_search
+        self._bdt_table = self._bdt_validation_panel.bdt_table
+        self._bdt_splitter = self._bdt_validation_panel.bdt_splitter
+        self._bdt_summary = self._bdt_validation_panel.bdt_summary
+        self._btn_bdt_export = self._bdt_validation_panel.btn_bdt_export
+        self._btn_bdt_report = self._bdt_validation_panel.btn_bdt_report
+        # Wire the detail panel into the validation tab splitter
+        self._bdt_detail_panel = self._make_bdt_detail_panel()
+        self._bdt_validation_panel.set_detail_panel(self._bdt_detail_panel)
+        self._bdt_validation_panel.row_selected.connect(self._populate_bdt_detail)
+        self._tabs.addTab(self._bdt_validation_panel, "Test Validation")
 
         rl.addWidget(self._tabs, 1)
 
@@ -255,7 +274,8 @@ class AlarmViewer(QMainWindow):
 
         btn_review = QPushButton("Daily Report")
         btn_review.setObjectName("btn_dir")
-        btn_review.clicked.connect(self._show_daily_review_report)
+        btn_review.clicked.connect(
+            lambda: DailyReviewReportDialog(self).exec_())
         l.addWidget(btn_review)
 
         l.addStretch()
@@ -268,154 +288,6 @@ class AlarmViewer(QMainWindow):
         self._lbl_count = QLabel("")
         self._lbl_count.setObjectName("lbl_green")
         l.addWidget(self._lbl_count)
-
-        return w
-
-    # ── validation tab ────────────────────────────────────────────
-    def _make_validation_tab(self):
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(10)
-
-        # ── Header control strip (Command Console grouped row) ──
-        def _make_group(title: str, object_name: str = "filter_group"):
-            frame = QFrame()
-            frame.setObjectName(object_name)
-            v = QVBoxLayout(frame)
-            v.setContentsMargins(12, 8, 12, 10)
-            v.setSpacing(5)
-            cap = QLabel(title)
-            cap.setObjectName("filter_section")
-            v.addWidget(cap)
-            inner = QHBoxLayout()
-            inner.setSpacing(8)
-            v.addLayout(inner)
-            return frame, inner
-
-        def _inline_label(text: str) -> QLabel:
-            lbl = QLabel(text)
-            lbl.setObjectName("filter_inline")
-            return lbl
-
-        header_row = QHBoxLayout()
-        header_row.setSpacing(10)
-
-        # — ACTION group (Validate button)
-        action_group, action_row = _make_group("ACTION")
-        btn_validate = QPushButton("Validate")
-        btn_validate.setObjectName("btn_search")
-        btn_validate.setCursor(Qt.PointingHandCursor)
-        btn_validate.setMinimumWidth(0)
-        btn_validate.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        btn_validate.clicked.connect(self._run_validation)
-        action_row.addWidget(btn_validate)
-        header_row.addWidget(action_group)
-
-        # — PARAMETERS group (tolerance + health)
-        params_group, params_row = _make_group("PARAMETERS")
-
-        params_row.addWidget(_inline_label("Tolerance"))
-        self._spn_tolerance = QSpinBox()
-        self._spn_tolerance.setObjectName("filter_spin")
-        self._spn_tolerance.setRange(10, 20)
-        self._spn_tolerance.setValue(15)
-        self._spn_tolerance.setSuffix(" %")
-        self._spn_tolerance.setFixedWidth(82)
-        params_row.addWidget(self._spn_tolerance)
-
-        params_row.addWidget(_inline_label("Health"))
-        self._spn_health = QSpinBox()
-        self._spn_health.setObjectName("filter_spin")
-        self._spn_health.setRange(50, 100)
-        self._spn_health.setValue(80)
-        self._spn_health.setSuffix(" %")
-        self._spn_health.setFixedWidth(82)
-        params_row.addWidget(self._spn_health)
-
-        header_row.addWidget(params_group)
-
-        # — SEARCH group (expanding)
-        search_group, search_row_inner = _make_group("SEARCH")
-        self._bdt_search = QLineEdit()
-        self._bdt_search.setObjectName("filter_input")
-        self._bdt_search.setPlaceholderText(
-            "Search by site ID or date  —  e.g.  ABC123, 2025-01-12, 2025")
-        self._bdt_search.setClearButtonEnabled(True)
-        self._bdt_search.setMinimumWidth(220)
-        self._bdt_search.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._bdt_search.textChanged.connect(self._filter_bdt_table)
-        search_row_inner.addWidget(self._bdt_search)
-        header_row.addWidget(search_group, 1)
-
-        lay.addLayout(header_row)
-
-        # ── Vertical splitter: results table + detail panel ──
-        self._bdt_splitter = QSplitter(Qt.Vertical)
-        self._bdt_splitter.setHandleWidth(1)
-
-        # -- Results table (top pane) --
-        cols = BDT_RESULT_HEADERS
-        self._bdt_table = QTableWidget(0, len(cols))
-        self._bdt_table.setHorizontalHeaderLabels(cols)
-        self._bdt_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self._bdt_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self._bdt_table.setAlternatingRowColors(True)
-        self._bdt_table.verticalHeader().setVisible(False)
-        self._bdt_table.verticalHeader().setDefaultSectionSize(28)
-        hdr = self._bdt_table.horizontalHeader()
-        # Rule columns (R1-R11) use compact auto-fit; others use fixed widths.
-        rule_cols = {c for c in cols if c.startswith("R") and c[1:].isdigit()}
-        for i, col in enumerate(cols):
-            if col in rule_cols:
-                hdr.setSectionResizeMode(i, QHeaderView.ResizeToContents)
-            else:
-                hdr.resizeSection(i, BDT_RESULT_WIDTHS.get(col, 80))
-        hdr.setStretchLastSection(True)
-        self._bdt_table.clicked.connect(self._on_bdt_row_clicked)
-        self._bdt_splitter.addWidget(self._bdt_table)
-
-        # -- Detail panel (bottom pane) --
-        self._bdt_detail_panel = self._make_bdt_detail_panel()
-        self._bdt_detail_panel.setVisible(False)
-        self._bdt_splitter.addWidget(self._bdt_detail_panel)
-        self._bdt_splitter.setSizes([250, 550])
-        # Let the detail panel stretch more than the table
-        self._bdt_splitter.setStretchFactor(0, 0)  # table: don't stretch
-        self._bdt_splitter.setStretchFactor(1, 1)  # detail: take remaining space
-
-        lay.addWidget(self._bdt_splitter, 1)
-
-        # ── Bottom bar ───────────────────────────────────
-        bot = QHBoxLayout()
-        self._bdt_summary = QLabel("")
-        self._bdt_summary.setStyleSheet(
-            "color:#6c7086; font-size:12px; background:transparent;")
-        bot.addWidget(self._bdt_summary)
-        bot.addStretch()
-
-        self._btn_bdt_export = QPushButton("Export Results XLSX")
-        self._btn_bdt_export.setObjectName("btn_export")
-        self._btn_bdt_export.setMinimumWidth(0)
-        self._btn_bdt_export.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        self._btn_bdt_export.clicked.connect(self._export_bdt_results)
-        bot.addWidget(self._btn_bdt_export)
-
-        self._btn_bdt_report = QPushButton("Daily Report")
-        self._btn_bdt_report.setObjectName("btn_dir")
-        self._btn_bdt_report.setMinimumWidth(0)
-        self._btn_bdt_report.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        self._btn_bdt_report.clicked.connect(self._show_daily_review_report)
-        bot.addWidget(self._btn_bdt_report)
-
-        lay.addLayout(bot)
-
-        # Store validation results for detail view & export
-        self._bdt_results: list[ValidationResult] = []
-        self._bdt_by_site: dict[str, list[BDTData]] = {}
-        self._current_bdt: BDTData | None = None
-        self._reviewed_bdt_keys: set[tuple[str, str, str]] = set()
 
         return w
 
@@ -811,198 +683,6 @@ class AlarmViewer(QMainWindow):
         QApplication.clipboard().setText("\t".join(parts))
         self._sbar.showMessage("Row copied to clipboard", 2000)
 
-    # ── BDT validation slots ─────────────────────────────────
-    def _run_validation(self):
-        directory = self._edit_dir.text().strip()
-        if not directory or not os.path.isdir(directory):
-            QMessageBox.warning(
-                self, "No Directory",
-                "Set a directory in the sidebar first.")
-            return
-
-        # Find BDT xlsx files (recursive, name must contain "bdt")
-        bdt_files = []
-        for root, _dirs, files in os.walk(directory):
-            for f in files:
-                fl = f.lower()
-                if (fl.endswith(".xlsx") and "bdt" in fl
-                        and not f.startswith("~$") and not f.startswith("._")):
-                    bdt_files.append(os.path.join(root, f))
-
-        if not bdt_files:
-            QMessageBox.information(
-                self, "No BDT Files",
-                "No BDT .xlsx files found in directory.\n"
-                "BDT filenames must contain 'BDT'.")
-            return
-
-        alarm_df = self._full_df if not self._full_df.empty else None
-        tolerance = self._spn_tolerance.value() / 100.0
-        health_pct = self._spn_health.value() / 100.0
-        self._last_bdt_health_pct = health_pct
-
-        self._sbar.showMessage(
-            f"Validating {len(bdt_files)} BDT file(s)…")
-        self._bdt_results = []
-        self._bdt_by_site = {}
-        self._bdt_detail_panel.setVisible(False)
-        self._prog.setVisible(True)
-        self._prog.setValue(0)
-
-        self._bdt_thread = BDTValidationThread(
-            bdt_files, alarm_df, tolerance, health_pct)
-        self._bdt_thread.progress.connect(
-            lambda v, m: (self._prog.setValue(v),
-                          self._sbar.showMessage(m)))
-        self._bdt_thread.finished.connect(self._on_validation_done)
-        self._bdt_thread.error.connect(self._on_validation_error)
-        self._bdt_thread.start()
-
-    def _on_validation_done(self, results, by_site):
-        self._bdt_results = results
-        self._bdt_by_site = by_site
-        self._prog.setVisible(False)
-        self._reviewed_bdt_keys.clear()
-        self._populate_bdt_table()
-        self._sbar.showMessage(
-            f"Validated {len(self._bdt_results)} BDT file(s)")
-
-    def _on_validation_error(self, msg):
-        self._prog.setVisible(False)
-        QMessageBox.critical(self, "Validation Error", msg)
-        self._sbar.showMessage("Validation failed")
-
-    def _populate_bdt_table(self):
-        results = self._bdt_results
-        self._bdt_table.setRowCount(len(results))
-
-        colors = {
-            "Accepted":      QColor("#a6e3a1"),
-            "Rejected":      QColor("#f38ba8"),
-            "Revise":        QColor("#fab387"),
-            "N/A":           QColor("#45475a"),
-            "No alarm data": QColor("#45475a"),
-        }
-
-        for r, res in enumerate(results):
-            row_map = {
-                "File": res.filename,
-                "Site Code": res.site_code or "--",
-                "Test Date": res.test_date,
-                "Verdict": res.overall,
-                "End Rectifier Voltage (V)": self._format_end_rectifier_voltage(
-                    res.bdt_data),
-                "Lead-acid SOH (%)": self._format_lead_acid_soh(res.bdt_data),
-            }
-            for rule in res.rules:
-                row_map[rule.rule_id] = self._rule_cell_text(rule)
-
-            for c, col_name in enumerate(BDT_RESULT_HEADERS):
-                val = row_map.get(col_name, "--")
-                item = QTableWidgetItem(str(val))
-                item.setTextAlignment(Qt.AlignCenter)
-                if col_name == "Verdict" or col_name.startswith("R"):
-                    item.setForeground(colors.get(val, QColor("#cdd6f4")))
-                self._bdt_table.setItem(r, c, item)
-
-        # Summary — count individual rule verdicts across all files
-        all_rules = [rule for r in results for rule in r.rules]
-        n_acc = sum(1 for r in all_rules if r.verdict == "Accepted")
-        n_rej = sum(1 for r in all_rules if r.verdict == "Rejected")
-        n_rev = sum(1 for r in all_rules if r.verdict == "Revise")
-        self._bdt_summary.setText(
-            f"<span style='color:#a6e3a1;'>{n_acc} Accepted</span>"
-            f" &middot; <span style='color:#f38ba8;'>{n_rej} Rejected</span>"
-            f" &middot; <span style='color:#fab387;'>{n_rev} Revise</span>"
-            f" &middot; <span style='color:#6c7086;'>"
-            f"{len(results)} files</span>")
-
-        # Re-apply current search text so row visibility is always consistent
-        # after rebuilding the table.
-        self._filter_bdt_table(self._bdt_search.text())
-
-    @staticmethod
-    def _rule_cell_text(rule) -> str:
-        if (rule.verdict == "N/A"
-                and "no alarm data" in str(rule.detail).lower()):
-            return "No alarm data"
-        return rule.verdict
-
-    @staticmethod
-    def _is_lithium_brand(brand: str | None) -> bool:
-        return "lith" in (brand or "").lower()
-
-    def _lead_acid_soh_percent(self, bdt: BDTData | None) -> float | None:
-        if not bdt or self._is_lithium_brand(bdt.battery_brand):
-            return None
-        if self._last_bdt_health_pct is None:
-            return None
-        return self._last_bdt_health_pct * 100.0
-
-    @staticmethod
-    def _format_end_rectifier_voltage(bdt: BDTData | None) -> str:
-        if not bdt or bdt.end_voltage is None:
-            return "--"
-        return f"{bdt.end_voltage:.2f}"
-
-    def _format_lead_acid_soh(self, bdt: BDTData | None) -> str:
-        soh = self._lead_acid_soh_percent(bdt)
-        if soh is None:
-            return "--"
-        return f"{soh:.0f}"
-
-    def _filter_bdt_table(self, text: str):
-        """Live-filter the BDT results table by site ID or date."""
-        import re
-        text = text.strip()
-        if not text:
-            for r in range(self._bdt_table.rowCount()):
-                self._bdt_table.setRowHidden(r, False)
-            return
-
-        text_lower = text.lower()
-
-        # Detect date patterns
-        is_year = re.fullmatch(r"\d{4}", text)
-        is_date = re.fullmatch(r"\d{4}-\d{2}-\d{2}", text)
-
-        for r in range(self._bdt_table.rowCount()):
-            if r >= len(self._bdt_results):
-                break
-            res = self._bdt_results[r]
-            show = False
-
-            if is_year:
-                show = res.test_date.startswith(text)
-            elif is_date:
-                show = res.test_date == text
-            else:
-                # Substring match on site code or filename
-                show = (text_lower in (res.site_code or "").lower()
-                        or text_lower in (res.filename or "").lower())
-
-            self._bdt_table.setRowHidden(r, not show)
-
-    def _on_bdt_row_clicked(self, index):
-        row = index.row()
-        if row >= len(self._bdt_results):
-            return
-        res = self._bdt_results[row]
-        self._record_review_event(res)
-
-        if not self._bdt_detail_panel.isVisible():
-            self._bdt_detail_panel.setVisible(True)
-            # Size the results table to fit its rows (header + rows + margin)
-            row_count = self._bdt_table.rowCount()
-            header_h = self._bdt_table.horizontalHeader().height()
-            row_h = self._bdt_table.verticalHeader().defaultSectionSize()
-            table_h = header_h + (row_count * row_h) + 6
-            table_h = min(table_h, 250)  # cap so detail always gets space
-            total = self._bdt_splitter.height() or 800
-            self._bdt_splitter.setSizes([table_h, total - table_h])
-
-        self._populate_bdt_detail(res)
-
     def _populate_bdt_detail(self, res: ValidationResult):
         """Fill the detail panel from the selected validation result."""
         bdt = res.bdt_data
@@ -1023,8 +703,8 @@ class AlarmViewer(QMainWindow):
                                       if bdt.discharge_minutes else "--"),
                 "starting_ibattery_ampere": (
                     f"{start_ibat} A" if start_ibat is not None else "--"),
-                "end_rectifier_voltage": self._format_end_rectifier_voltage(bdt),
-                "lead_acid_soh": self._format_lead_acid_soh(bdt),
+                "end_rectifier_voltage": self._bdt_validation_panel._format_end_rectifier_voltage(bdt),
+                "lead_acid_soh": self._bdt_validation_panel._format_lead_acid_soh(bdt),
                 "battery_brand":     bdt.battery_brand or "--",
                 "battery_ah":        (f"{bdt.battery_ah} AH"
                                       if bdt.battery_ah else "--"),
@@ -1779,65 +1459,6 @@ class AlarmViewer(QMainWindow):
             card_lay.addWidget(na_lbl, 1)
 
         return card
-
-    def _export_bdt_results(self):
-        if not self._bdt_results:
-            QMessageBox.information(
-                self, "Nothing to Export", "Run validation first.")
-            return
-        fp, _ = QFileDialog.getSaveFileName(
-            self, "Export Validation Results",
-            f"bdt_validation_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
-            "Excel Files (*.xlsx)")
-        if not fp:
-            return
-        sheets = build_bdt_export_sheets(
-            self._bdt_results,
-            health_pct=self._last_bdt_health_pct,
-        )
-        self._btn_bdt_export.setEnabled(False)
-        self._sbar.showMessage("Exporting BDT results …")
-        self._bdt_export_thread = ExportThread(sheets, fp)
-        self._bdt_export_thread.progress.connect(
-            lambda v, m: self._sbar.showMessage(m))
-        self._bdt_export_thread.finished.connect(self._on_bdt_export_done)
-        self._bdt_export_thread.error.connect(self._on_bdt_export_error)
-        self._bdt_export_thread.start()
-
-    def _on_bdt_export_done(self, fp: str):
-        self._btn_bdt_export.setEnabled(True)
-        QMessageBox.information(
-            self, "Export OK", f"Saved to:\n{fp}")
-        self._sbar.showMessage(f"BDT export → {fp}")
-
-    def _on_bdt_export_error(self, msg: str):
-        self._btn_bdt_export.setEnabled(True)
-        QMessageBox.critical(self, "Export Failed", msg)
-        self._sbar.showMessage("BDT export failed")
-
-    def _record_review_event(self, res: ValidationResult):
-        key = (
-            self._current_user,
-            str(res.filename or ""),
-            str(res.test_date or ""),
-        )
-        if key in self._reviewed_bdt_keys:
-            return
-        try:
-            state.append_review_event(
-                username=self._current_user,
-                filename=res.filename,
-                site_code=res.site_code,
-                test_date=res.test_date,
-                verdict=res.overall,
-            )
-            self._reviewed_bdt_keys.add(key)
-        except Exception:
-            pass
-
-    def _show_daily_review_report(self):
-        dlg = DailyReviewReportDialog(self)
-        dlg.exec_()
 
     # ── State persistence ────────────────────────────────────────
     def _save_ui_state(self):
