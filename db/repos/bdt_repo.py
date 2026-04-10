@@ -1,5 +1,6 @@
 """BDT test and photo repository."""
 
+import json
 import logging
 from datetime import date
 from sqlalchemy.orm import Session
@@ -24,6 +25,13 @@ def save_bdt_test(session: Session, bdt_dict: dict,
     if hasattr(test_date, "date"):
         test_date = test_date.date()
 
+    # Serialize variable-length fields as JSON
+    discharge_readings = bdt_dict.get("discharge_readings")
+    dr_json = json.dumps(discharge_readings, default=str) if discharge_readings else None
+
+    string_dr = bdt_dict.get("string_discharge_readings")
+    sdr_json = json.dumps(string_dr, default=str) if string_dr else None
+
     record = BDTTest(
         file_id=file_id,
         site_code=str(bdt_dict.get("site_code", "")).strip().upper(),
@@ -41,6 +49,15 @@ def save_bdt_test(session: Session, bdt_dict: dict,
         end_ampere=bdt_dict.get("end_ampere"),
         discharge_minutes=bdt_dict.get("discharge_minutes"),
         pld_value=bdt_dict.get("pld_value"),
+        site_name=bdt_dict.get("site_name"),
+        time_in=bdt_dict.get("time_in"),
+        time_out=bdt_dict.get("time_out"),
+        ibat_before_test=bdt_dict.get("ibat_before_test"),
+        starting_ibattery_ampere=bdt_dict.get("starting_ibattery_ampere"),
+        after_reconnect_voltage=bdt_dict.get("after_reconnect_voltage"),
+        after_reconnect_ampere=bdt_dict.get("after_reconnect_ampere"),
+        discharge_readings_json=dr_json,
+        string_discharge_readings_json=sdr_json,
         content_hash=content_hash,
     )
     session.add(record)

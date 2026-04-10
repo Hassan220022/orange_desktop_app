@@ -198,11 +198,33 @@ def load_all_validation_results(session: Session) -> list:
                 category=photo.slot_category or "other",
             ))
 
+        # Reconstruct discharge readings from JSON
+        discharge_readings = []
+        if bdt_db.discharge_readings_json:
+            try:
+                raw = json.loads(bdt_db.discharge_readings_json)
+                discharge_readings = [
+                    (str(r[0]) if r[0] else "", r[1], r[2] if len(r) > 2 else None)
+                    for r in raw
+                ]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        string_discharge_readings = []
+        if bdt_db.string_discharge_readings_json:
+            try:
+                string_discharge_readings = json.loads(bdt_db.string_discharge_readings_json)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         bdt_data = BDTData(
             file_path="",
             filename="",
             site_code=bdt_db.site_code or "",
+            site_name=bdt_db.site_name or "",
             test_date=bdt_db.test_date,
+            time_in=bdt_db.time_in or "",
+            time_out=bdt_db.time_out or "",
             battery_brand=bdt_db.battery_brand or "",
             battery_ah=bdt_db.battery_ah,
             battery_voltage=bdt_db.battery_voltage,
@@ -216,6 +238,12 @@ def load_all_validation_results(session: Session) -> list:
             end_ampere=bdt_db.end_ampere,
             discharge_minutes=bdt_db.discharge_minutes or 0.0,
             pld_value=bdt_db.pld_value or "",
+            ibat_before_test=bdt_db.ibat_before_test,
+            starting_ibattery_ampere=bdt_db.starting_ibattery_ampere,
+            after_reconnect_voltage=bdt_db.after_reconnect_voltage,
+            after_reconnect_ampere=bdt_db.after_reconnect_ampere,
+            discharge_readings=discharge_readings,
+            string_discharge_readings=string_discharge_readings,
             photo_slots=photo_slots,
             photo_count=len([s for s in photo_slots if s.image_data]),
         )

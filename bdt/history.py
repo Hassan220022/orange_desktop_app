@@ -211,6 +211,15 @@ def save_test_record(bdt, verdict: str) -> None:
         "end_ampere": getattr(bdt, "end_ampere", None),
         "discharge_minutes": getattr(bdt, "discharge_minutes", None),
         "pld_value": getattr(bdt, "pld_value", None),
+        "site_name": getattr(bdt, "site_name", ""),
+        "time_in": getattr(bdt, "time_in", ""),
+        "time_out": getattr(bdt, "time_out", ""),
+        "ibat_before_test": getattr(bdt, "ibat_before_test", None),
+        "starting_ibattery_ampere": getattr(bdt, "starting_ibattery_ampere", None),
+        "after_reconnect_voltage": getattr(bdt, "after_reconnect_voltage", None),
+        "after_reconnect_ampere": getattr(bdt, "after_reconnect_ampere", None),
+        "discharge_readings": getattr(bdt, "discharge_readings", []),
+        "string_discharge_readings": getattr(bdt, "string_discharge_readings", []),
         "overall_verdict": verdict,
     }
 
@@ -385,6 +394,15 @@ def save_validation_run(
         "end_ampere": getattr(bdt_data, "end_ampere", None),
         "discharge_minutes": getattr(bdt_data, "discharge_minutes", None),
         "pld_value": getattr(bdt_data, "pld_value", None),
+        "site_name": getattr(bdt_data, "site_name", ""),
+        "time_in": getattr(bdt_data, "time_in", ""),
+        "time_out": getattr(bdt_data, "time_out", ""),
+        "ibat_before_test": getattr(bdt_data, "ibat_before_test", None),
+        "starting_ibattery_ampere": getattr(bdt_data, "starting_ibattery_ampere", None),
+        "after_reconnect_voltage": getattr(bdt_data, "after_reconnect_voltage", None),
+        "after_reconnect_ampere": getattr(bdt_data, "after_reconnect_ampere", None),
+        "discharge_readings": getattr(bdt_data, "discharge_readings", []),
+        "string_discharge_readings": getattr(bdt_data, "string_discharge_readings", []),
     }
 
     from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test

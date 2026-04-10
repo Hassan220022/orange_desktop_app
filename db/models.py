@@ -76,6 +76,15 @@ class BDTTest(Base):
     site_type = Column(Text)
     power_source = Column(Text)
     pld_value = Column(Text)
+    site_name = Column(Text)
+    time_in = Column(Text)
+    time_out = Column(Text)
+    ibat_before_test = Column(Float)
+    starting_ibattery_ampere = Column(Float)
+    after_reconnect_voltage = Column(Float)
+    after_reconnect_ampere = Column(Float)
+    discharge_readings_json = Column(Text)       # JSON: [[label, voltage, ampere], ...]
+    string_discharge_readings_json = Column(Text) # JSON: [[[v, a], ...], ...]
     content_hash = Column(String(64), unique=True, index=True)
     created_at = Column(DateTime, default=func.now())
     tenant_id = Column(String(64), nullable=True)
