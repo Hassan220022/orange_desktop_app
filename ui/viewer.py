@@ -115,6 +115,7 @@ class AlarmViewer(QMainWindow):
         self.setStyleSheet(self._resolve_theme_style())
         self._restore_ui_state()
         self._start_sync_worker_if_enabled()
+        self._run_bootstrap_if_enabled()
 
     # ── UI construction ──────────────────────────────────────────
     def _build_ui(self):
@@ -602,10 +603,51 @@ class AlarmViewer(QMainWindow):
         if not should_run or self._sync_worker is not None:
             return
         try:
-            self._sync_worker = LocalSyncWorker()
+            sender = None
+            if self._sync_flags.get("sync_on", False):
+                try:
+                    from alarm_app.data.sync_client import http_send_batch
+                    sender = http_send_batch
+                except ImportError:
+                    pass
+            self._sync_worker = LocalSyncWorker(send_batch=sender)
             self._sync_worker.start()
         except Exception:
             self._sync_worker = None
+
+    def _run_bootstrap_if_enabled(self):
+        if not self._sync_flags.get("bootstrap_on"):
+            return
+        from PyQt5.QtCore import QThread
+
+        class _BootstrapThread(QThread):
+            def run(self_thread):
+                try:
+                    from alarm_app.data.bootstrap import run_bootstrap
+                    from alarm_app.db.engine import (
+                        create_engine,
+                        init_db,
+                        get_session_factory,
+                    )
+
+                    engine = create_engine()
+                    init_db(engine)
+                    SessionCls = get_session_factory(engine)
+                    session = SessionCls()
+                    try:
+                        counts = run_bootstrap(session)
+                        total = sum(counts.values())
+                        if total > 0:
+                            print(
+                                f"Bootstrap backfill queued {total} events: {counts}"
+                            )
+                    finally:
+                        session.close()
+                except Exception as exc:
+                    print(f"Bootstrap error: {exc}")
+
+        self._bootstrap_thread = _BootstrapThread(self)
+        self._bootstrap_thread.start()
 
     def _stop_sync_worker(self):
         worker = self._sync_worker
@@ -616,6 +658,19 @@ class AlarmViewer(QMainWindow):
             worker.stop(timeout=2.0)
         except Exception:
             pass
+
+    def _toggle_sync(self):
+        """Toggle sync_on feature flag and restart or stop the worker."""
+        s = state.load_state() or {}
+        current = self._sync_flags.get("sync_on", False)
+        s["sync_on"] = not current
+        state.save_state(s)
+        self._sync_flags["sync_on"] = not current
+
+        if not current:
+            self._start_sync_worker_if_enabled()
+        else:
+            self._stop_sync_worker()
 
     def _close_dialog_colors(self):
         """Return color dict for the close dialog based on current theme."""
