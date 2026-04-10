@@ -321,6 +321,46 @@ class AlarmIdConfigDialog(QDialog):
         self.accept()
 
 
+class FeatureFlagDialog(QDialog):
+    """Toggle feature flags: sync_on, cloud_read_on, bootstrap_on."""
+
+    def __init__(self, flags: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Feature Flags")
+        self.setFixedWidth(300)
+        if parent:
+            self.setStyleSheet(parent.styleSheet())
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+        self._checks: dict[str, QCheckBox] = {}
+
+        for key, label in [
+            ("sync_on", "Enable sync to server"),
+            ("cloud_read_on", "Read from cloud API"),
+            ("bootstrap_on", "Bootstrap backfill"),
+        ]:
+            cb = QCheckBox(label)
+            cb.setChecked(bool(flags.get(key, False)))
+            self._checks[key] = cb
+            layout.addWidget(cb)
+
+        btn_row = QHBoxLayout()
+        btn_ok = QPushButton("Save")
+        btn_ok.setObjectName("btn_search")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setObjectName("btn_clear")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_ok)
+        layout.addLayout(btn_row)
+
+    def get_flags(self) -> dict:
+        return {k: cb.isChecked() for k, cb in self._checks.items()}
+
+
 class BackupTimeDialog(QDialog):
     def __init__(self, df: pd.DataFrame, parent=None):
         super().__init__(parent)

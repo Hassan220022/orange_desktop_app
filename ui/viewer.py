@@ -34,7 +34,8 @@ try:
     from .threads import (RestoreThread, LoaderThread, ExportThread,
                           BDTValidationThread, BackupTimeThread)
     from .dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
-                          AlarmIdConfigDialog, BackupTimeDialog)
+                          AlarmIdConfigDialog, BackupTimeDialog,
+                          FeatureFlagDialog)
     from .panels.search_panel import SearchPanel
     from .panels.left_panel import LeftPanel
     from .panels.bdt_validation_panel import BdtValidationPanel
@@ -61,7 +62,8 @@ except ImportError:
     from alarm_app.ui.threads import (RestoreThread, LoaderThread, ExportThread,
                                       BDTValidationThread, BackupTimeThread)
     from alarm_app.ui.dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
-                                      AlarmIdConfigDialog, BackupTimeDialog)
+                                      AlarmIdConfigDialog, BackupTimeDialog,
+                                      FeatureFlagDialog)
     from alarm_app.ui.panels.search_panel import SearchPanel
     from alarm_app.ui.panels.left_panel import LeftPanel
     from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
@@ -295,6 +297,11 @@ class AlarmViewer(QMainWindow):
         btn_config.setObjectName("btn_dir")
         btn_config.clicked.connect(self._show_alarm_id_config)
         l.addWidget(btn_config)
+
+        btn_flags = QPushButton("Feature Flags")
+        btn_flags.setObjectName("btn_dir")
+        btn_flags.clicked.connect(self._show_feature_flags)
+        l.addWidget(btn_flags)
 
         self._btn_theme = QPushButton("Theme: Auto")
         self._btn_theme.setObjectName("btn_theme")
@@ -902,6 +909,21 @@ class AlarmViewer(QMainWindow):
             self._stats["avg_dur"].setText(f"{h:02d}:{m:02d}:{s:02d}")
         else:
             self._stats["avg_dur"].setText("—")
+
+    def _show_feature_flags(self):
+        dlg = FeatureFlagDialog(self._sync_flags, self)
+        if dlg.exec_() == QDialog.Accepted:
+            new_flags = dlg.get_flags()
+            self._sync_flags.update(new_flags)
+            # Persist flags
+            s = state.load_state() or {}
+            s.update(new_flags)
+            state.save_state(s)
+            # Apply changes
+            if new_flags.get("sync_on") and self._sync_worker is None:
+                self._start_sync_worker_if_enabled()
+            elif not new_flags.get("sync_on") and self._sync_worker is not None:
+                self._stop_sync_worker()
 
     def _show_alarm_id_config(self):
         dlg = AlarmIdConfigDialog(parent=self)
