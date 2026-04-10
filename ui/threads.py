@@ -67,8 +67,10 @@ class LoaderThread(QThread):
             except Exception:
                 _log.warning("DB session init failed; file-level dedup disabled", exc_info=True)
 
-            # ── File-level dedup: skip already-imported files ──
-            skipped_files = 0
+            # ── Build parse list (always parse all files for UI display) ──
+            # File-level dedup only prevents duplicate DB writes, not parsing.
+            # Users expect to see their data after loading regardless of prior imports.
+            _already_imported: set[str] = set()
             infos_to_parse: list[tuple[int, dict]] = []
             ordered = sorted(
                 enumerate(self.file_infos),
@@ -81,12 +83,7 @@ class LoaderThread(QThread):
                     try:
                         file_sha = compute_file_sha256(fp)
                         if _file_exists(db_session, file_sha):
-                            skipped_files += 1
-                            self.progress.emit(
-                                int((skipped_files) / total * 10),
-                                f"Skipping already-imported file: {info.get('filename', '')}",
-                            )
-                            continue
+                            _already_imported.add(fp)
                     except Exception:
                         _log.warning("File-level dedup check failed for %s", fp, exc_info=True)
                 infos_to_parse.append((idx, info))
@@ -112,9 +109,9 @@ class LoaderThread(QThread):
                         df = future.result()
                         if df is not None and not df.empty:
                             dfs.append(df)
-                            # Register file in DB after successful parse
+                            # Register file in DB (skip if already imported)
                             fp = info.get("path", "")
-                            if db_session and fp and os.path.isfile(fp):
+                            if db_session and fp and fp not in _already_imported and os.path.isfile(fp):
                                 try:
                                     file_sha = compute_file_sha256(fp)
                                     ext = os.path.splitext(fp)[1].lower()
