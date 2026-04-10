@@ -35,6 +35,7 @@ try:
     from .threads import RestoreThread
     from .dialogs import ColumnFilterPopup, DailyReviewReportDialog, AlarmIdConfigDialog
     from .panels.search_panel import SearchPanel
+    from .panels.left_panel import LeftPanel
     from ..bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
     from ..bdt_validator import validate_bdt, ValidationResult
     from ..bdt_export import build_bdt_export_sheets
@@ -57,6 +58,7 @@ except ImportError:
     from ui.threads import RestoreThread
     from ui.dialogs import ColumnFilterPopup, DailyReviewReportDialog, AlarmIdConfigDialog
     from ui.panels.search_panel import SearchPanel
+    from ui.panels.left_panel import LeftPanel
     from bdt_parser import parse_bdt_file, BDTData, load_bdt_photos
     from bdt_validator import validate_bdt, ValidationResult
     from bdt_export import build_bdt_export_sheets
@@ -129,7 +131,14 @@ class AlarmViewer(QMainWindow):
             "QSplitter::handle:horizontal { width: 8px; }")
 
         # Left sidebar
-        self._sidebar = self._make_left_panel()
+        self._left_panel = LeftPanel(self)
+        # Bridge: existing code references self._xxx etc.
+        self._edit_dir = self._left_panel.edit_dir
+        self._lbl_file_count = self._left_panel.lbl_file_count
+        self._file_list = self._left_panel.file_list
+        self._btn_load = self._left_panel.btn_load
+        self._lbl_loaded = self._left_panel.lbl_loaded
+        self._sidebar = self._left_panel
         self._sidebar.setObjectName("sidebar")
         self._sidebar.setMinimumWidth(50)
         self._sidebar.setMaximumWidth(16777215)
@@ -722,88 +731,6 @@ class AlarmViewer(QMainWindow):
         outer.addWidget(self._bdt_detail_splitter)
 
         return panel
-
-    # ── left panel ───────────────────────────────────────────────
-    def _make_left_panel(self):
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(12, 16, 12, 12)
-        lay.setSpacing(12)
-
-        # App brand in sidebar
-        brand_row = QHBoxLayout()
-        icon_lbl = QLabel("📡")
-        icon_lbl.setStyleSheet(
-            "font-size:18px; background:transparent;")
-        brand_row.addWidget(icon_lbl)
-        brand_row.addSpacing(4)
-        t = QLabel("Alarm Viewer")
-        t.setObjectName("lbl_app_name")
-        brand_row.addWidget(t)
-        brand_row.addStretch()
-        lay.addLayout(brand_row)
-        lay.addSpacing(4)
-
-        sec1 = QLabel("DIRECTORY")
-        sec1.setObjectName("lbl_section")
-        lay.addWidget(sec1)
-
-        self._edit_dir = QLineEdit()
-        self._edit_dir.setPlaceholderText("Select or paste path…")
-        lay.addWidget(self._edit_dir)
-
-        dir_row = QHBoxLayout(); dir_row.setSpacing(6)
-        b_br = QPushButton("Browse")
-        b_br.setObjectName("btn_dir")
-        b_br.clicked.connect(self._browse)
-        b_sc = QPushButton("⟳  Scan")
-        b_sc.setObjectName("btn_dir")
-        b_sc.clicked.connect(self._scan)
-        dir_row.addWidget(b_br); dir_row.addWidget(b_sc)
-        lay.addLayout(dir_row)
-
-        # ── Files sub-section ─────────────────────────────
-        sec2 = QLabel("FILES")
-        sec2.setObjectName("lbl_section")
-        lay.addWidget(sec2)
-
-        self._lbl_file_count = QLabel("No directory scanned")
-        self._lbl_file_count.setStyleSheet(
-            "color:#45475a; font-size:11px; background:transparent;")
-        lay.addWidget(self._lbl_file_count)
-
-        self._file_list = QListWidget()
-        self._file_list.setSelectionMode(
-            QAbstractItemView.MultiSelection)
-        self._file_list.setMinimumHeight(180)
-        lay.addWidget(self._file_list, 1)
-
-        sel_row = QHBoxLayout(); sel_row.setSpacing(5)
-        b_all  = QPushButton("All")
-        b_all.setObjectName("btn_small")
-        b_none = QPushButton("None")
-        b_none.setObjectName("btn_small")
-        b_all.setFixedWidth(44); b_none.setFixedWidth(44)
-        b_all.clicked.connect(self._file_list.selectAll)
-        b_none.clicked.connect(self._file_list.clearSelection)
-        sel_row.addWidget(b_all)
-        sel_row.addWidget(b_none)
-        sel_row.addStretch()
-        lay.addLayout(sel_row)
-
-        self._btn_load = QPushButton("Load Selected Files")
-        self._btn_load.setObjectName("btn_load")
-        self._btn_load.setEnabled(False)
-        self._btn_load.clicked.connect(self._load)
-        lay.addWidget(self._btn_load)
-
-        self._lbl_loaded = QLabel("")
-        self._lbl_loaded.setAlignment(Qt.AlignCenter)
-        self._lbl_loaded.setStyleSheet(
-            "color:#45475a; font-size:11px; background:transparent;")
-        lay.addWidget(self._lbl_loaded)
-
-        return w
 
     # ── table ────────────────────────────────────────────────────
     def _make_table(self):
