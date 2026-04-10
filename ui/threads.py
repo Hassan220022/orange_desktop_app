@@ -162,22 +162,36 @@ class LoaderThread(QThread):
 
             combined, dropped_duplicates = deduplicate_alarm_rows(combined)
 
-            # ── Row-level dedup: persist alarm rows to DB ──
-            db_inserted = 0
-            db_skipped = 0
+            # ── Emit data to UI FIRST so the user sees results immediately ──
+            self.progress.emit(95, "Rendering …")
+            skip_msg = ""
+            duplicate_msg = f"; dropped {dropped_duplicates:,} duplicate row(s)" if dropped_duplicates else ""
+
+            # Close DB session before emitting — we'll open a fresh one
+            # for the background persist below.
             if db_session:
                 try:
-                    self.progress.emit(95, "Persisting alarm records to DB …")
-                    db_inserted, db_skipped = _bulk_upsert_alarms(db_session, combined)
+                    db_session.close()
                 except Exception:
-                    _log.warning("Row-level DB upsert failed", exc_info=True)
-                    try:
-                        db_session.rollback()
-                    except Exception:
-                        pass
+                    pass
+                db_session = None
 
-                # Register files AFTER alarm rows are committed.
-                # This prevents orphaned file entries if the insert hangs/fails.
+            self.progress.emit(100, "Done!")
+            self.finished.emit(
+                combined,
+                f"Loaded {len(combined):,} records from {len(dfs)} file(s){skip_msg}{duplicate_msg}",
+            )
+
+            # ── Background DB persist: runs after UI is already updated ──
+            try:
+                bg_engine = _db_create_engine()
+                _db_init_db(bg_engine)
+                bg_factory = _db_get_session_factory(bg_engine)
+                bg_session = bg_factory()
+
+                _log.info("Background DB persist: %d rows", len(combined))
+                _bulk_upsert_alarms(bg_session, combined)
+
                 for _idx, info in infos_to_parse:
                     fp = info.get("path", "")
                     if fp and fp not in _already_imported and os.path.isfile(fp):
@@ -186,7 +200,7 @@ class LoaderThread(QThread):
                             ext = os.path.splitext(fp)[1].lower()
                             source_kind = "alarm_xlsx" if ext in (".xlsx", ".xls") else "alarm_csv"
                             _register_file(
-                                db_session,
+                                bg_session,
                                 file_sha256=file_sha,
                                 original_path=str(fp),
                                 original_name=info.get("filename", os.path.basename(fp)),
@@ -196,13 +210,17 @@ class LoaderThread(QThread):
                         except Exception:
                             _log.warning("File registration failed for %s", fp, exc_info=True)
                             try:
-                                db_session.rollback()
+                                bg_session.rollback()
                             except Exception:
                                 pass
                 try:
-                    db_session.commit()
+                    bg_session.commit()
                 except Exception:
                     pass
+                bg_session.close()
+                _log.info("Background DB persist complete")
+            except Exception:
+                _log.warning("Background DB persist failed", exc_info=True)
 
             # Durable sync journal entries (local outbox) for future cloud migration.
             try:
@@ -237,21 +255,6 @@ class LoaderThread(QThread):
             except Exception:
                 pass
 
-            # Close DB session
-            if db_session:
-                try:
-                    db_session.close()
-                except Exception:
-                    pass
-
-            self.progress.emit(100, "Done!")
-            skip_msg = f"; skipped {skipped_files} already-imported file(s)" if skipped_files else ""
-            duplicate_msg = f"; dropped {dropped_duplicates:,} duplicate row(s)" if dropped_duplicates else ""
-            db_msg = f"; DB: {db_inserted} new, {db_skipped} existing" if db_inserted or db_skipped else ""
-            self.finished.emit(
-                combined,
-                f"Loaded {len(combined):,} records from {len(dfs)} file(s){skip_msg}{duplicate_msg}{db_msg}",
-            )
         except Exception:
             self.error.emit(traceback.format_exc())
 
