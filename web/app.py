@@ -1,13 +1,17 @@
 """FastAPI application factory."""
 
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+_log = logging.getLogger(__name__)
 
 from .config import CORS_ORIGINS
 from .schemas import HealthResponse
 
 
 def create_app() -> FastAPI:
+    _log.info("Creating FastAPI app")
     app = FastAPI(title="Alarm Viewer API", version="0.1.0")
 
     app.add_middleware(

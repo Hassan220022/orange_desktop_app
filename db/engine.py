@@ -1,9 +1,12 @@
 """Database engine and session management."""
 
+import logging
 from pathlib import Path
 
 from sqlalchemy import create_engine as _create_engine, event
 from sqlalchemy.orm import sessionmaker, Session
+
+_log = logging.getLogger(__name__)
 
 STATE_DIR = Path.home() / ".alarm_viewer"
 DB_PATH = STATE_DIR / "alarm_viewer.db"
@@ -17,6 +20,9 @@ def create_engine(url: str | None = None):
 
     engine = _create_engine(url, echo=False)
 
+    url_type = "sqlite" if url.startswith("sqlite") else "postgres"
+    _log.info("Engine created: type=%s", url_type)
+
     if url.startswith("sqlite"):
         @event.listens_for(engine, "connect")
         def _set_sqlite_pragma(dbapi_conn, connection_record):
@@ -24,6 +30,7 @@ def create_engine(url: str | None = None):
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.close()
+            _log.debug("SQLite pragmas set: WAL mode, foreign keys enabled")
 
     return engine
 
@@ -46,7 +53,9 @@ def init_db(engine=None):
     from .models import Base
     if engine is None:
         engine = create_engine()
+    _log.info("init_db called: creating tables")
     Base.metadata.create_all(engine)
+    _log.info("Tables created")
 
     from .seed import seed_database
     _Session = sessionmaker(bind=engine)

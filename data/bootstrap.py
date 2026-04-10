@@ -1,6 +1,9 @@
 """Bootstrap backfill -- queue outbox events for existing local data."""
 
+import logging
 from sqlalchemy.orm import Session
+
+_log = logging.getLogger(__name__)
 
 from alarm_app.db.models import (
     AlarmRecord,
@@ -103,8 +106,12 @@ def bootstrap_validation_runs(session: Session) -> int:
 
 def run_bootstrap(session: Session) -> dict:
     """Run full bootstrap backfill. Returns counts per entity type."""
-    return {
+    _log.info("Bootstrap started")
+    counts = {
         "alarm_records": bootstrap_alarm_records(session),
         "bdt_tests": bootstrap_bdt_tests(session),
         "validation_runs": bootstrap_validation_runs(session),
     }
+    _log.info("Bootstrap completed: alarm_records=%d, bdt_tests=%d, validation_runs=%d",
+              counts["alarm_records"], counts["bdt_tests"], counts["validation_runs"])
+    return counts

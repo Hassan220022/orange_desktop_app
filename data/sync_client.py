@@ -1,9 +1,12 @@
 """HTTP sync client -- sends outbox batches to the cloud API."""
 
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
+
+_log = logging.getLogger(__name__)
 
 try:
     from .sync import TransientSyncError
@@ -53,14 +56,18 @@ def http_send_batch(request: dict) -> dict:
         method="POST",
     )
 
+    _log.info("Batch sending: event_count=%d, url=%s", len(events), url)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read().decode("utf-8"))
+            _log.debug("Sync response payload: %s", body)
     except urllib.error.HTTPError as exc:
         if exc.code >= 500:
+            _log.warning("Transient sync error: status=%d", exc.code)
             raise TransientSyncError(f"Server error {exc.code}") from exc
         raise
     except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as exc:
+        _log.warning("Transient sync error: %s", type(exc).__name__)
         raise TransientSyncError(f"Network error: {exc}") from exc
 
     # The API returns {"results": [...]}, but the worker expects {"items": [...]}.

@@ -1,10 +1,13 @@
 """Sync outbox and checkpoint repository — replaces JSONL files."""
 
 import json
+import logging
 from datetime import datetime
 from uuid import uuid4
 from sqlalchemy.orm import Session
 from alarm_app.db.models import SyncOutboxEvent, SyncCheckpoint
+
+_log = logging.getLogger(__name__)
 
 
 def append_outbox_event(session: Session, *, entity_type: str,
@@ -24,6 +27,7 @@ def append_outbox_event(session: Session, *, entity_type: str,
     )
     session.add(evt)
     session.commit()
+    _log.info("Outbox event appended: event_id=%s, entity_type=%s", evt.event_id, evt.entity_type)
     return evt
 
 
@@ -66,6 +70,7 @@ def mark_outbox_synced(session: Session, event_ids: list[str],
         save_sync_checkpoint(session, checkpoint_cursor)
 
     session.commit()
+    _log.info("Events marked synced: count=%d", count)
     return count
 
 
@@ -78,6 +83,7 @@ def save_sync_checkpoint(session: Session, cursor: str) -> None:
     else:
         session.add(SyncCheckpoint(cursor=cursor, last_ack_at=datetime.now()))
     session.commit()
+    _log.debug("Sync checkpoint saved: cursor=%s", cursor)
 
 
 def load_sync_checkpoint(session: Session) -> dict | None:

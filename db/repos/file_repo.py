@@ -1,15 +1,20 @@
 """Uploaded files repository — file-level dedup via SHA-256."""
 
+import logging
 from datetime import datetime
 from sqlalchemy.orm import Session
 from alarm_app.db.models import UploadedFile
 
+_log = logging.getLogger(__name__)
+
 
 def file_exists(session: Session, file_sha256: str) -> bool:
     """Check if a file with this hash has been imported."""
-    return session.query(UploadedFile.id).filter_by(
+    result = session.query(UploadedFile.id).filter_by(
         file_sha256=file_sha256
     ).first() is not None
+    _log.debug("file_exists check: sha256=%s, result=%s", file_sha256[:12], result)
+    return result
 
 
 def register_file(session: Session, *, file_sha256: str, original_path: str,
@@ -32,6 +37,7 @@ def register_file(session: Session, *, file_sha256: str, original_path: str,
     )
     session.add(record)
     session.flush()
+    _log.info("File registered: name=%s, sha256=%s, size=%d", original_name, file_sha256[:12], file_size)
     return record
 
 

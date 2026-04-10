@@ -8,10 +8,13 @@ Legacy file-path constants remain for functions that still operate on disk
 
 import hashlib
 import json
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
+
+_log = logging.getLogger(__name__)
 
 import pandas as pd
 
@@ -78,6 +81,7 @@ def save_state(state_dict: dict):
     session = _get_session()
     try:
         _save(session, state_dict)
+        _log.info("State saved")
     finally:
         session.close()
 
@@ -86,7 +90,9 @@ def load_state() -> dict | None:
     from alarm_app.db.repos.state_repo import load_state as _load
     session = _get_session()
     try:
-        return _load(session)
+        result = _load(session)
+        _log.info("State loaded: found=%s", result is not None)
+        return result
     finally:
         session.close()
 
@@ -96,6 +102,7 @@ def save_dataframe(df: pd.DataFrame):
     session = _get_session()
     try:
         bulk_upsert_alarms(session, df)
+        _log.info("DataFrame saved: row_count=%d", len(df))
     finally:
         session.close()
 
@@ -107,13 +114,17 @@ def load_dataframe() -> pd.DataFrame | None:
 
         cloud_df = fetch_alarms_from_api()
         if cloud_df is not None and not cloud_df.empty:
+            _log.info("DataFrame loaded from cloud: row_count=%d", len(cloud_df))
             return cloud_df
+        _log.warning("Cloud read failed or empty, falling back to local DB")
     # Fall back to local DB
     from alarm_app.db.repos.alarm_repo import load_alarms_as_df
 
     session = _get_session()
     try:
         df = load_alarms_as_df(session)
+        if not df.empty:
+            _log.info("DataFrame loaded from local DB: row_count=%d", len(df))
         return df if not df.empty else None
     finally:
         session.close()
@@ -238,11 +249,14 @@ def load_alarm_ids() -> dict:
     try:
         data = get_value(session, "alarm_ids")
         if isinstance(data, dict):
-            return {
+            result = {
                 "power": [str(x).strip() for x in data.get("power", [])],
                 "down":  [str(x).strip() for x in data.get("down", [])],
                 "door":  [str(x).strip() for x in data.get("door", [])],
             }
+            _log.debug("Alarm IDs loaded: power=%d, down=%d, door=%d",
+                       len(result["power"]), len(result["down"]), len(result["door"]))
+            return result
     except Exception:
         pass
     finally:
@@ -255,6 +269,8 @@ def save_alarm_ids(ids: dict):
     session = _get_session()
     try:
         set_value(session, "alarm_ids", ids)
+        _log.debug("Alarm IDs saved: power=%d, down=%d, door=%d",
+                   len(ids.get("power", [])), len(ids.get("down", [])), len(ids.get("door", [])))
     finally:
         session.close()
 

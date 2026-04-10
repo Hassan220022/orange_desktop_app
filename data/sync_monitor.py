@@ -1,10 +1,13 @@
 """Sync outbox monitoring -- lag, queue depth, failure tracking."""
 
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
 from alarm_app.db.models import SyncOutboxEvent
+
+_log = logging.getLogger(__name__)
 
 
 def outbox_stats(session: Session) -> dict:
@@ -27,10 +30,13 @@ def outbox_stats(session: Session) -> dict:
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         lag_seconds = (now_utc - oldest_pending[0]).total_seconds()
 
-    return {
+    stats = {
         "total": total,
         "pending": pending,
         "synced": synced,
         "lag_seconds": round(lag_seconds, 1),
         "health": "healthy" if pending < 100 and lag_seconds < 300 else "degraded",
     }
+    _log.debug("Outbox stats: pending=%d, synced=%d, lag_seconds=%.1f, health=%s",
+               pending, synced, stats["lag_seconds"], stats["health"])
+    return stats

@@ -1,8 +1,11 @@
 """PM validation run and rule result repository."""
 
 import json
+import logging
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+
+_log = logging.getLogger(__name__)
 from alarm_app.db.models import (
     PMValidationRun, PMRuleResult, PMRuleCatalog, PMParameterSet,
 )
@@ -25,6 +28,7 @@ def get_or_create_rule_catalog(session: Session) -> dict[str, int]:
         "R11": "Summary checklist",
     }
     result = {}
+    seeded = 0
     for code, name in rules.items():
         existing = session.query(PMRuleCatalog).filter_by(rule_code=code).first()
         if existing:
@@ -34,6 +38,9 @@ def get_or_create_rule_catalog(session: Session) -> dict[str, int]:
             session.add(r)
             session.flush()
             result[code] = r.id
+            seeded += 1
+    if seeded:
+        _log.info("Rule catalog seeded: %d new rules added", seeded)
     return result
 
 
@@ -104,6 +111,7 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
         validator_code_ref=validator_code_ref,
     ).first()
     if existing:
+        _log.warning("Duplicate validation run skipped: bdt_test_id=%d, verdict=%s", bdt_test_id, overall_verdict)
         return None
 
     run = PMValidationRun(
@@ -118,6 +126,7 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
         session.flush()
     except IntegrityError:
         session.rollback()
+        _log.warning("Duplicate validation run skipped (IntegrityError): bdt_test_id=%d", bdt_test_id)
         return None
 
     catalog = get_or_create_rule_catalog(session)
@@ -135,6 +144,7 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
         ))
 
     session.commit()
+    _log.info("Validation run saved: bdt_test_id=%d, verdict=%s", bdt_test_id, overall_verdict)
     return run
 
 

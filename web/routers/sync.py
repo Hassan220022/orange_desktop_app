@@ -1,7 +1,10 @@
 """Sync batch endpoint -- receives events from desktop sync worker."""
 
+import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
+
+_log = logging.getLogger(__name__)
 
 from ..deps import get_db
 from ..schemas import SyncBatchRequest, SyncBatchResponse, SyncEventResult
@@ -12,6 +15,8 @@ router = APIRouter(prefix="/v1/sync", tags=["sync"])
 @router.post("/batches", response_model=SyncBatchResponse)
 def receive_batch(req: SyncBatchRequest, db: Session = Depends(get_db)):
     results = []
+    applied = 0
+    duplicate = 0
     for evt in req.events:
         try:
             from alarm_app.db.repos.sync_repo import append_outbox_event
@@ -29,16 +34,20 @@ def receive_batch(req: SyncBatchRequest, db: Session = Depends(get_db)):
             results.append(SyncEventResult(
                 event_id=evt.event_id, status="applied",
             ))
+            applied += 1
         except Exception as e:
             if "UNIQUE" in str(e).upper():
                 results.append(SyncEventResult(
                     event_id=evt.event_id, status="duplicate",
                 ))
+                duplicate += 1
             else:
                 results.append(SyncEventResult(
                     event_id=evt.event_id, status="retryable_failed",
                     message=str(e),
                 ))
+    _log.info("Batch received: event_count=%d, applied=%d, duplicate=%d",
+              len(req.events), applied, duplicate)
     return SyncBatchResponse(results=results)
 
 

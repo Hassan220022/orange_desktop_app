@@ -1,11 +1,14 @@
 """Alarm records repository — row-level dedup via row_hash."""
 
+import logging
 import math
 
 import pandas as pd
 from sqlalchemy.orm import Session
 from alarm_app.db.models import AlarmRecord
 from alarm_app.db.hashing import compute_row_hash, ALARM_HASH_COLS
+
+_log = logging.getLogger(__name__)
 
 
 def _safe_val(value):
@@ -31,6 +34,7 @@ def bulk_upsert_alarms(session: Session, df: pd.DataFrame,
     for _, row in df.iterrows():
         row_dict = row.to_dict()
         row_hash = compute_row_hash(row_dict)
+        _log.debug("Row hash computed: %s", row_hash[:12])
 
         existing = session.query(AlarmRecord.id).filter_by(
             row_hash=row_hash
@@ -64,6 +68,7 @@ def bulk_upsert_alarms(session: Session, df: pd.DataFrame,
         inserted += 1
 
     session.commit()
+    _log.info("Alarms upserted: inserted=%d, skipped=%d", inserted, skipped)
     return inserted, skipped
 
 

@@ -1,8 +1,11 @@
 """Alarm upsert endpoint."""
 
+import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 import pandas as pd
+
+_log = logging.getLogger(__name__)
 
 from ..deps import get_db
 from ..schemas import AlarmBatchRequest, AlarmBatchResponse
@@ -20,6 +23,7 @@ def upsert_alarms(req: AlarmBatchRequest, db: Session = Depends(get_db)):
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
     inserted, skipped = bulk_upsert_alarms(db, df)
+    _log.info("Alarm upsert: inserted=%d, skipped=%d", inserted, skipped)
     return AlarmBatchResponse(inserted=inserted, skipped=skipped)
 
 
@@ -31,6 +35,7 @@ def query_alarms(db: Session = Depends(get_db),
 
     df = load_alarms_as_df(db)
     if df.empty:
+        _log.info("Alarm query: result_count=0")
         return {"alarms": []}
     if site_id:
         df = df[df["site_id"] == site_id]
@@ -38,4 +43,5 @@ def query_alarms(db: Session = Depends(get_db),
     # Convert timestamps to strings for JSON serialization
     for col in df.select_dtypes(include=["datetime64"]).columns:
         df[col] = df[col].astype(str)
+    _log.info("Alarm query: result_count=%d", len(df))
     return {"alarms": df.to_dict(orient="records")}

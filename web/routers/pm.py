@@ -1,7 +1,10 @@
 """PM validation endpoints."""
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+
+_log = logging.getLogger(__name__)
 
 from ..deps import get_db
 from ..schemas import PMRunResponse
@@ -16,6 +19,7 @@ def get_run(run_id: int, db: Session = Depends(get_db)):
     run = db.get(PMValidationRun, run_id)
     if not run:
         raise HTTPException(404, "Run not found")
+    _log.info("PM run queried: run_id=%d", run_id)
     return PMRunResponse(
         run_id=run.id,
         bdt_test_id=run.bdt_test_id,

@@ -1,9 +1,12 @@
 """BDT test and photo repository."""
 
+import logging
 from datetime import date
 from sqlalchemy.orm import Session
 from alarm_app.db.models import BDTTest, BDTPhoto
 from alarm_app.db.hashing import compute_bdt_content_hash
+
+_log = logging.getLogger(__name__)
 
 
 def save_bdt_test(session: Session, bdt_dict: dict,
@@ -42,6 +45,7 @@ def save_bdt_test(session: Session, bdt_dict: dict,
     )
     session.add(record)
     session.flush()
+    _log.info("BDT test saved: site_code=%s, test_date=%s", record.site_code, record.test_date)
     return record
 
 
@@ -69,4 +73,5 @@ def save_bdt_photo(session: Session, bdt_test_id: int, slot_index: int,
     )
     session.add(photo)
     session.flush()
+    _log.info("BDT photo linked: bdt_test_id=%d, slot_index=%d", bdt_test_id, slot_index)
     return photo

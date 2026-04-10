@@ -1,9 +1,12 @@
 """Blob asset metadata repository — images stored on disk, metadata in DB."""
 
+import logging
 from pathlib import Path
 from sqlalchemy.orm import Session
 from alarm_app.db.models import BlobAsset
 from alarm_app.db.hashing import compute_image_sha256
+
+_log = logging.getLogger(__name__)
 
 BLOB_DIR = Path.home() / ".alarm_viewer" / "blobs"
 
@@ -16,6 +19,7 @@ def store_blob(session: Session, image_bytes: bytes, *,
 
     existing = session.query(BlobAsset).filter_by(sha256=sha).first()
     if existing:
+        _log.debug("Duplicate blob skipped: sha256=%s", sha[:12])
         return existing
 
     # Write to disk: blobs/{sha[:2]}/{sha}
@@ -35,6 +39,7 @@ def store_blob(session: Session, image_bytes: bytes, *,
     )
     session.add(asset)
     session.flush()
+    _log.info("Blob stored: sha256=%s, size=%d", sha[:12], len(image_bytes))
     return asset
 
 
