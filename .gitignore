@@ -25,9 +25,6 @@ bdt_storage/
 dist_ci/
 alarm_web.db
 
-# ── Separate web app workspace (not part of desktop repo) ────
-web/
-
 # ── Web stack runtime secrets/config ──────────────────────────
 web/deploy/env/backend.env
 web/frontend/.env
