@@ -1,9 +1,25 @@
 """Alarm records repository — row-level dedup via row_hash."""
 
+import math
+
 import pandas as pd
 from sqlalchemy.orm import Session
 from alarm_app.db.models import AlarmRecord
 from alarm_app.db.hashing import compute_row_hash, ALARM_HASH_COLS
+
+
+def _safe_val(value):
+    """Convert pandas sentinel values (NaT, NaN) to None for SQLAlchemy."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return value
 
 
 def bulk_upsert_alarms(session: Session, df: pd.DataFrame,
@@ -26,22 +42,22 @@ def bulk_upsert_alarms(session: Session, df: pd.DataFrame,
         record = AlarmRecord(
             row_hash=row_hash,
             file_id=file_id,
-            site_id=row_dict.get("site_id"),
-            alarm_name=row_dict.get("alarm_name"),
-            alarm_id=row_dict.get("alarm_id"),
-            occurred_on=row_dict.get("occurred_on"),
-            cleared_on=row_dict.get("cleared_on"),
-            duration=row_dict.get("duration"),
-            duration_secs=row_dict.get("_duration_secs"),
-            category=row_dict.get("_category"),
-            vendor=row_dict.get("vendor"),
-            network_type=row_dict.get("network_type"),
-            severity=row_dict.get("severity"),
-            fm_office=row_dict.get("fm_office"),
-            alarm_source=row_dict.get("alarm_source"),
-            alarm_category=row_dict.get("alarm_category"),
-            clearance_status=row_dict.get("clearance_status"),
-            additional_info=row_dict.get("additional_info"),
+            site_id=_safe_val(row_dict.get("site_id")),
+            alarm_name=_safe_val(row_dict.get("alarm_name")),
+            alarm_id=_safe_val(row_dict.get("alarm_id")),
+            occurred_on=_safe_val(row_dict.get("occurred_on")),
+            cleared_on=_safe_val(row_dict.get("cleared_on")),
+            duration=_safe_val(row_dict.get("duration")),
+            duration_secs=_safe_val(row_dict.get("_duration_secs")),
+            category=_safe_val(row_dict.get("_category")),
+            vendor=_safe_val(row_dict.get("vendor")),
+            network_type=_safe_val(row_dict.get("network_type")),
+            severity=_safe_val(row_dict.get("severity")),
+            fm_office=_safe_val(row_dict.get("fm_office")),
+            alarm_source=_safe_val(row_dict.get("alarm_source")),
+            alarm_category=_safe_val(row_dict.get("alarm_category")),
+            clearance_status=_safe_val(row_dict.get("clearance_status")),
+            additional_info=_safe_val(row_dict.get("additional_info")),
             site_down=bool(row_dict.get("site_down", False)),
         )
         session.add(record)

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,6 +23,12 @@ from alarm_app.data.loaders import (
     deduplicate_alarm_rows,
 )
 from alarm_app.data import state
+from alarm_app.db.engine import create_engine as _db_create_engine, init_db as _db_init_db, get_session_factory as _db_get_session_factory
+from alarm_app.db.hashing import compute_file_sha256
+from alarm_app.db.repos.file_repo import file_exists as _file_exists, register_file as _register_file
+from alarm_app.db.repos.alarm_repo import bulk_upsert_alarms as _bulk_upsert_alarms
+
+_log = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -49,42 +56,98 @@ class LoaderThread(QThread):
             total = len(self.file_infos)
             file_paths = [info.get("path", "") for info in self.file_infos if info.get("path")]
 
-            # Sort largest-first so big files start immediately
+            # Open a thread-local DB session for dedup checks.
+            # If DB init fails, proceed without dedup (best-effort).
+            db_session = None
+            try:
+                _engine = _db_create_engine()
+                _db_init_db(_engine)
+                _factory = _db_get_session_factory(_engine)
+                db_session = _factory()
+            except Exception:
+                _log.warning("DB session init failed; file-level dedup disabled", exc_info=True)
+
+            # ── File-level dedup: skip already-imported files ──
+            skipped_files = 0
+            infos_to_parse: list[tuple[int, dict]] = []
             ordered = sorted(
                 enumerate(self.file_infos),
                 key=lambda t: t[1].get("size_kb", 0),
                 reverse=True,
             )
+            for idx, info in ordered:
+                fp = info.get("path", "")
+                if db_session and fp and os.path.isfile(fp):
+                    try:
+                        file_sha = compute_file_sha256(fp)
+                        if _file_exists(db_session, file_sha):
+                            skipped_files += 1
+                            self.progress.emit(
+                                int((skipped_files) / total * 10),
+                                f"Skipping already-imported file: {info.get('filename', '')}",
+                            )
+                            continue
+                    except Exception:
+                        _log.warning("File-level dedup check failed for %s", fp, exc_info=True)
+                infos_to_parse.append((idx, info))
 
-            workers = min(total, os.cpu_count() or 1, 6)
+            workers = min(max(len(infos_to_parse), 1), os.cpu_count() or 1, 6)
             done_count = 0
+            parse_total = len(infos_to_parse) or 1
 
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
                     pool.submit(parse_alarm_file, info): idx
-                    for idx, info in ordered
+                    for idx, info in infos_to_parse
                 }
                 for future in as_completed(futures):
                     done_count += 1
                     idx = futures[future]
                     info = self.file_infos[idx]
                     self.progress.emit(
-                        int(done_count / total * 90),
-                        f"[{done_count}/{total}]  {info['filename']}",
+                        10 + int(done_count / parse_total * 80),
+                        f"[{done_count}/{parse_total}]  {info['filename']}",
                     )
                     try:
                         df = future.result()
                         if df is not None and not df.empty:
                             dfs.append(df)
+                            # Register file in DB after successful parse
+                            fp = info.get("path", "")
+                            if db_session and fp and os.path.isfile(fp):
+                                try:
+                                    file_sha = compute_file_sha256(fp)
+                                    ext = os.path.splitext(fp)[1].lower()
+                                    source_kind = "alarm_xlsx" if ext in (".xlsx", ".xls") else "alarm_csv"
+                                    _register_file(
+                                        db_session,
+                                        file_sha256=file_sha,
+                                        original_path=str(fp),
+                                        original_name=info.get("filename", os.path.basename(fp)),
+                                        file_size=os.path.getsize(fp),
+                                        source_kind=source_kind,
+                                    )
+                                    db_session.commit()
+                                except Exception:
+                                    _log.warning("File registration failed for %s", fp, exc_info=True)
+                                    try:
+                                        db_session.rollback()
+                                    except Exception:
+                                        pass
                     except Exception:
                         pass  # individual file failures silently skipped
 
             if not dfs:
+                if db_session:
+                    try:
+                        db_session.close()
+                    except Exception:
+                        pass
                 self.error.emit(
                     "No readable alarm records found in selected files.")
                 return
 
-            self.progress.emit(95, "Merging records …")
+            self.progress.emit(92, "Merging records …")
             combined = pd.concat(dfs, ignore_index=True)
 
             # Fast vectorised datetime conversion
@@ -124,6 +187,20 @@ class LoaderThread(QThread):
 
             combined, dropped_duplicates = deduplicate_alarm_rows(combined)
 
+            # ── Row-level dedup: persist alarm rows to DB ──
+            db_inserted = 0
+            db_skipped = 0
+            if db_session:
+                try:
+                    self.progress.emit(95, "Persisting alarm records to DB …")
+                    db_inserted, db_skipped = _bulk_upsert_alarms(db_session, combined)
+                except Exception:
+                    _log.warning("Row-level DB upsert failed", exc_info=True)
+                    try:
+                        db_session.rollback()
+                    except Exception:
+                        pass
+
             # Durable sync journal entries (local outbox) for future cloud migration.
             try:
                 file_hashes = state.compute_file_hashes(file_paths)
@@ -157,11 +234,20 @@ class LoaderThread(QThread):
             except Exception:
                 pass
 
+            # Close DB session
+            if db_session:
+                try:
+                    db_session.close()
+                except Exception:
+                    pass
+
             self.progress.emit(100, "Done!")
+            skip_msg = f"; skipped {skipped_files} already-imported file(s)" if skipped_files else ""
             duplicate_msg = f"; dropped {dropped_duplicates:,} duplicate row(s)" if dropped_duplicates else ""
+            db_msg = f"; DB: {db_inserted} new, {db_skipped} existing" if db_inserted or db_skipped else ""
             self.finished.emit(
                 combined,
-                f"Loaded {len(combined):,} records from {len(dfs)} file(s){duplicate_msg}",
+                f"Loaded {len(combined):,} records from {len(dfs)} file(s){skip_msg}{duplicate_msg}{db_msg}",
             )
         except Exception:
             self.error.emit(traceback.format_exc())

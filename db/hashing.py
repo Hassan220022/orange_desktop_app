@@ -21,12 +21,18 @@ def _canonical_value(value) -> str:
     """Normalize a value for canonical hashing."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return ""
+    # pd.NaT passes isinstance checks for datetime/Timestamp, so catch it first
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
     if isinstance(value, datetime):
         return value.strftime("%Y-%m-%d %H:%M:%S")
     if isinstance(value, date):
         return value.strftime("%Y-%m-%d")
-    if isinstance(value, pd.Timestamp):
-        return value.strftime("%Y-%m-%d %H:%M:%S")
     s = str(value).strip()
     return s
 
