@@ -258,7 +258,8 @@ class SearchPanel(QWidget):
 
         gl.addWidget(date_frame)
 
-        viewer._toggle_date_filter(self.chk_date.isChecked())
+        # NOTE: viewer._toggle_date_filter() is called by AlarmViewer._build_ui()
+        # after bridge refs are assigned — do NOT call it here during construction.
 
         # ── Row 3: Action buttons ─────────────────────────────────
         row3 = QHBoxLayout()

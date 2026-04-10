@@ -210,6 +210,8 @@ class AlarmViewer(QMainWindow):
         self._btn_site_report = self._search_panel.btn_site_report
         self._btn_both = self._search_panel.btn_both
         self._stats = self._search_panel.stats
+        # Deferred: trigger date filter state now that bridge refs are assigned
+        self._toggle_date_filter(self._chk_date.isChecked())
         splitter.addWidget(self._search_panel)
         splitter.addWidget(self._make_table())
         splitter.setSizes([130, 800])
