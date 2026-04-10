@@ -40,3 +40,10 @@ def receive_batch(req: SyncBatchRequest, db: Session = Depends(get_db)):
                     message=str(e),
                 ))
     return SyncBatchResponse(results=results)
+
+
+@router.get("/status")
+def sync_status(db: Session = Depends(get_db)):
+    from alarm_app.data.sync_monitor import outbox_stats
+
+    return outbox_stats(db)
