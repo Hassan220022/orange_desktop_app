@@ -248,6 +248,11 @@ class BdtValidationPanel(QWidget):
         QMessageBox.critical(self, "Validation Error", msg)
         self._viewer._sbar.showMessage("Validation failed")
 
+    def set_results(self, results: list):
+        """Load validation results (e.g. restored from DB) and populate the table."""
+        self._viewer._bdt_results = results
+        self._populate_bdt_table()
+
     def _populate_bdt_table(self):
         results = self._viewer._bdt_results
         self.bdt_table.setRowCount(len(results))

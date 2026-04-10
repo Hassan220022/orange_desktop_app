@@ -116,6 +116,7 @@ class AlarmViewer(QMainWindow):
         self._setup_zoom_shortcuts()
         self.setStyleSheet(self._resolve_theme_style())
         self._restore_ui_state()
+        self._restore_bdt_results()  # always try to restore BDT from DB
         self._start_sync_worker_if_enabled()
         self._run_bootstrap_if_enabled()
 
@@ -601,6 +602,43 @@ class AlarmViewer(QMainWindow):
 
         self._sbar.showMessage(
             f"Session restored — {len(view):,} of {len(df):,} records")
+
+        # Restore BDT validation results from DB
+        self._restore_bdt_results()
+
+    def _restore_bdt_results(self):
+        """Load previous BDT validation results from the DB into the UI."""
+        try:
+            from alarm_app.db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
+            from alarm_app.db.repos.pm_repo import load_all_validation_results
+            engine = _ce()
+            _idb(engine)
+            session = _gsf(engine)()
+            try:
+                results = load_all_validation_results(session)
+            finally:
+                session.close()
+
+            if not results:
+                return
+
+            self._bdt_results = results
+            self._bdt_by_site = {}
+            for vr in results:
+                if vr.site_code:
+                    key = vr.site_code.strip().upper()
+                    self._bdt_by_site.setdefault(key, []).append(
+                        vr.bdt_data if vr.bdt_data else vr)
+
+            # Populate the validation table if the panel exists
+            if hasattr(self, "_bdt_validation_panel"):
+                self._bdt_validation_panel.set_results(results)
+
+            self._sbar.showMessage(
+                f"Session restored — {len(self._full_df):,} alarms, "
+                f"{len(results)} BDT validations")
+        except Exception:
+            pass  # BDT restore is best-effort
 
     def _start_sync_worker_if_enabled(self):
         should_run = (

@@ -148,6 +148,86 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
     return run
 
 
+def load_all_validation_results(session: Session) -> list:
+    """Load all validation runs from DB as ValidationResult dataclass objects.
+
+    Reconstructs the same objects the BDTValidationThread produces,
+    so the UI can display them without re-running validation.
+    """
+    from alarm_app.db.models import BDTTest
+    from alarm_app.bdt.validator import ValidationResult, RuleResult
+    from alarm_app.bdt.parser import BDTData
+
+    # Build rule_id -> rule_code map
+    catalog_rows = session.query(PMRuleCatalog).all()
+    id_to_code = {r.id: r.rule_code for r in catalog_rows}
+
+    runs = (
+        session.query(PMValidationRun)
+        .join(BDTTest)
+        .order_by(PMValidationRun.run_at.desc())
+        .all()
+    )
+
+    results = []
+    for run in runs:
+        bdt_db = session.get(BDTTest, run.bdt_test_id)
+        if not bdt_db:
+            continue
+
+        # Reconstruct BDTData with fields from DB
+        bdt_data = BDTData(
+            file_path="",
+            filename="",
+            site_code=bdt_db.site_code or "",
+            test_date=bdt_db.test_date,
+            battery_brand=bdt_db.battery_brand or "",
+            battery_ah=bdt_db.battery_ah,
+            battery_voltage=bdt_db.battery_voltage,
+            num_strings=bdt_db.num_strings,
+            num_batteries=bdt_db.num_batteries,
+            num_modules=bdt_db.num_modules,
+            rectifier_brand=bdt_db.rectifier_brand or "",
+            start_voltage=bdt_db.start_voltage,
+            end_voltage=bdt_db.end_voltage,
+            start_ampere=bdt_db.start_ampere,
+            end_ampere=bdt_db.end_ampere,
+            discharge_minutes=bdt_db.discharge_minutes or 0.0,
+            pld_value=bdt_db.pld_value or "",
+        )
+
+        # Reconstruct rule results
+        rule_results = []
+        for rr in sorted(run.rule_results, key=lambda r: r.rule_id):
+            code = id_to_code.get(rr.rule_id, f"R{rr.rule_id}")
+            detail = ""
+            if rr.evidence_json:
+                try:
+                    detail = json.loads(rr.evidence_json)
+                except (json.JSONDecodeError, TypeError):
+                    detail = rr.evidence_json
+            rule_results.append(RuleResult(
+                rule_id=code,
+                rule_name=code,
+                passed=rr.verdict == "Accepted" if rr.verdict else None,
+                verdict=rr.verdict or "N/A",
+                detail=str(detail),
+            ))
+
+        vr = ValidationResult(
+            filename=bdt_db.site_code or "",
+            site_code=bdt_db.site_code or "",
+            test_date=str(bdt_db.test_date) if bdt_db.test_date else "",
+            overall=run.overall_verdict or "",
+            rules=rule_results,
+            bdt_data=bdt_data,
+        )
+        results.append(vr)
+
+    _log.info("Loaded %d validation results from DB", len(results))
+    return results
+
+
 def load_validation_history(session: Session, site_code: str,
                             limit: int = 50) -> list[dict]:
     """Load recent validation runs for a site."""
