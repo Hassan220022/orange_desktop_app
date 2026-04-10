@@ -101,7 +101,16 @@ def save_dataframe(df: pd.DataFrame):
 
 
 def load_dataframe() -> pd.DataFrame | None:
+    flags = load_feature_flags()
+    if flags.get("cloud_read_on"):
+        from alarm_app.data.cloud_reader import fetch_alarms_from_api
+
+        cloud_df = fetch_alarms_from_api()
+        if cloud_df is not None and not cloud_df.empty:
+            return cloud_df
+    # Fall back to local DB
     from alarm_app.db.repos.alarm_repo import load_alarms_as_df
+
     session = _get_session()
     try:
         df = load_alarms_as_df(session)

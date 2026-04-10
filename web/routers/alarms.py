@@ -21,3 +21,21 @@ def upsert_alarms(req: AlarmBatchRequest, db: Session = Depends(get_db)):
             df[col] = pd.to_datetime(df[col], errors="coerce")
     inserted, skipped = bulk_upsert_alarms(db, df)
     return AlarmBatchResponse(inserted=inserted, skipped=skipped)
+
+
+@router.get("/query")
+def query_alarms(db: Session = Depends(get_db),
+                 site_id: str | None = None,
+                 limit: int = 10000):
+    from alarm_app.db.repos.alarm_repo import load_alarms_as_df
+
+    df = load_alarms_as_df(db)
+    if df.empty:
+        return {"alarms": []}
+    if site_id:
+        df = df[df["site_id"] == site_id]
+    df = df.head(limit)
+    # Convert timestamps to strings for JSON serialization
+    for col in df.select_dtypes(include=["datetime64"]).columns:
+        df[col] = df[col].astype(str)
+    return {"alarms": df.to_dict(orient="records")}
