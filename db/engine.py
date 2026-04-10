@@ -42,8 +42,16 @@ def get_session(engine=None) -> Session:
 
 
 def init_db(engine=None):
-    """Create all tables from ORM metadata. For dev/first-launch."""
+    """Create all tables and seed reference data."""
     from .models import Base
     if engine is None:
         engine = create_engine()
     Base.metadata.create_all(engine)
+
+    from .seed import seed_database
+    _Session = sessionmaker(bind=engine)
+    session = _Session()
+    try:
+        seed_database(session)
+    finally:
+        session.close()

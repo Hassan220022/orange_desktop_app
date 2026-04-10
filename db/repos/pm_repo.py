@@ -37,6 +37,43 @@ def get_or_create_rule_catalog(session: Session) -> dict[str, int]:
     return result
 
 
+def seed_rule_versions(session: Session, code_ref: str = "alarm_app.bdt.validator") -> None:
+    """Seed initial rule versions for R1-R11. Idempotent."""
+    from alarm_app.db.models import PMRuleVersion
+    from datetime import datetime
+
+    catalog = get_or_create_rule_catalog(session)
+
+    for rule_code, rule_id in catalog.items():
+        existing = session.query(PMRuleVersion).filter_by(
+            rule_id=rule_id, version="1.0"
+        ).first()
+        if not existing:
+            session.add(PMRuleVersion(
+                rule_id=rule_id,
+                version="1.0",
+                valid_from=datetime(2026, 1, 1),
+                code_ref=f"{code_ref}.{rule_code.lower()}",
+            ))
+    session.commit()
+
+
+def get_or_create_parameter_set(session: Session, params: dict) -> int:
+    """Get or create a parameter set. Returns the parameter_set_id."""
+    params_sha = compute_canonical_json_sha256(params)
+    existing = session.query(PMParameterSet).filter_by(params_sha256=params_sha).first()
+    if existing:
+        return existing.id
+
+    ps = PMParameterSet(
+        params_sha256=params_sha,
+        params_json=json.dumps(params, sort_keys=True, default=str),
+    )
+    session.add(ps)
+    session.flush()
+    return ps.id
+
+
 def save_validation_run(session: Session, *, bdt_test_id: int,
                         alarm_input_sha256: str,
                         validator_code_ref: str | None,
@@ -99,3 +136,30 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
 
     session.commit()
     return run
+
+
+def load_validation_history(session: Session, site_code: str,
+                            limit: int = 50) -> list[dict]:
+    """Load recent validation runs for a site."""
+    from alarm_app.db.models import BDTTest
+
+    runs = (
+        session.query(PMValidationRun)
+        .join(BDTTest)
+        .filter(BDTTest.site_code == site_code.strip().upper())
+        .order_by(PMValidationRun.run_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        {
+            "run_id": r.id,
+            "bdt_test_id": r.bdt_test_id,
+            "overall_verdict": r.overall_verdict,
+            "alarm_input_sha256": r.alarm_input_sha256,
+            "run_at": r.run_at.isoformat() if r.run_at else None,
+            "rule_count": len(r.rule_results),
+        }
+        for r in runs
+    ]
