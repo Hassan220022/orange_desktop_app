@@ -205,14 +205,29 @@ def save_test_record(bdt, verdict: str) -> None:
         "num_batteries": getattr(bdt, "num_batteries", None),
         "num_modules": getattr(bdt, "num_modules", None),
         "rectifier_brand": str(getattr(bdt, "rectifier_brand", "") or ""),
+        "start_voltage": getattr(bdt, "start_voltage", None),
+        "end_voltage": getattr(bdt, "end_voltage", None),
+        "start_ampere": getattr(bdt, "start_ampere", None),
+        "end_ampere": getattr(bdt, "end_ampere", None),
+        "discharge_minutes": getattr(bdt, "discharge_minutes", None),
+        "pld_value": getattr(bdt, "pld_value", None),
         "overall_verdict": verdict,
     }
 
     from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
     session = _get_session()
     try:
-        _save_bdt_test(session, bdt_dict)
+        bdt_record = _save_bdt_test(session, bdt_dict)
         session.commit()
+
+        # Persist photos to blob storage
+        photo_slots = getattr(bdt, "photo_slots", [])
+        if photo_slots and bdt_record:
+            try:
+                from alarm_app.db.repos.photo_service import persist_bdt_photos
+                persist_bdt_photos(session, bdt_record.id, photo_slots)
+            except Exception:
+                pass  # photo persistence is best-effort
     finally:
         session.close()
 
@@ -364,6 +379,12 @@ def save_validation_run(
         "num_batteries": getattr(bdt_data, "num_batteries", None),
         "num_modules": getattr(bdt_data, "num_modules", None),
         "rectifier_brand": str(getattr(bdt_data, "rectifier_brand", "") or ""),
+        "start_voltage": getattr(bdt_data, "start_voltage", None),
+        "end_voltage": getattr(bdt_data, "end_voltage", None),
+        "start_ampere": getattr(bdt_data, "start_ampere", None),
+        "end_ampere": getattr(bdt_data, "end_ampere", None),
+        "discharge_minutes": getattr(bdt_data, "discharge_minutes", None),
+        "pld_value": getattr(bdt_data, "pld_value", None),
     }
 
     from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
