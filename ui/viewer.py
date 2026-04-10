@@ -955,26 +955,39 @@ class AlarmViewer(QMainWindow):
             self._apply_sidebar_constraints()
 
     def _setup_zoom_shortcuts(self):
-        in_seqs = (
+        # Deduplicate: QKeySequence.ZoomIn resolves to Ctrl++ on most
+        # platforms, so listing it alongside an explicit Ctrl++ creates
+        # ambiguous shortcuts that Qt silently drops. Build a unique set
+        # keyed by the resolved string representation.
+        def _unique_seqs(raw_seqs):
+            seen = set()
+            out = []
+            for seq in raw_seqs:
+                ks = QKeySequence(seq) if isinstance(seq, int) else seq
+                key = ks.toString()
+                if key and key not in seen:
+                    seen.add(key)
+                    out.append(ks)
+            return out
+
+        in_seqs = _unique_seqs([
             QKeySequence.ZoomIn,
             QKeySequence("Ctrl+="),
             QKeySequence("Meta+="),
             QKeySequence("Ctrl++"),
             QKeySequence("Meta++"),
-        )
-        out_seqs = (
+        ])
+        out_seqs = _unique_seqs([
             QKeySequence.ZoomOut,
             QKeySequence("Ctrl+-"),
             QKeySequence("Meta+-"),
             QKeySequence("Ctrl+_"),
             QKeySequence("Meta+_"),
-            QKeySequence("Ctrl+minus"),
-            QKeySequence("Meta+minus"),
-        )
-        reset_seqs = (
+        ])
+        reset_seqs = _unique_seqs([
             QKeySequence("Ctrl+0"),
             QKeySequence("Meta+0"),
-        )
+        ])
         for seq in in_seqs:
             sc = QShortcut(seq, self)
             sc.activated.connect(self._zoom_in)
