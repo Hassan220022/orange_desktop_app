@@ -176,6 +176,28 @@ def load_all_validation_results(session: Session) -> list:
             continue
 
         # Reconstruct BDTData with fields from DB
+        from alarm_app.bdt.parser import PhotoSlot
+        from pathlib import Path
+
+        # Rebuild photo_slots from DB photos + blob storage
+        photo_slots = []
+        for photo in sorted(bdt_db.photos, key=lambda p: p.slot_index or 0):
+            image_data = None
+            image_ext = "jpeg"
+            if photo.blob_asset and photo.blob_asset.local_path:
+                blob_path = Path(photo.blob_asset.local_path)
+                if blob_path.exists():
+                    image_data = blob_path.read_bytes()
+                    mime = photo.blob_asset.mime_type or ""
+                    if "png" in mime:
+                        image_ext = "png"
+            photo_slots.append(PhotoSlot(
+                label=photo.slot_category or "other",
+                image_data=image_data,
+                image_ext=image_ext,
+                category=photo.slot_category or "other",
+            ))
+
         bdt_data = BDTData(
             file_path="",
             filename="",
@@ -194,6 +216,8 @@ def load_all_validation_results(session: Session) -> list:
             end_ampere=bdt_db.end_ampere,
             discharge_minutes=bdt_db.discharge_minutes or 0.0,
             pld_value=bdt_db.pld_value or "",
+            photo_slots=photo_slots,
+            photo_count=len([s for s in photo_slots if s.image_data]),
         )
 
         # Reconstruct rule results
