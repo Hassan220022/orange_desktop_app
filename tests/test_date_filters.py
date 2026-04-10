@@ -27,6 +27,11 @@ def _isolate_state_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(
         state_mod, "SYNC_CHECKPOINT_FILE", tmp_path / "sync_checkpoint.json")
     monkeypatch.setattr(state_mod, "DEVICE_ID_FILE", tmp_path / "device_id.txt")
+    # Reset DB engine so each test gets a fresh temp database
+    monkeypatch.setattr("alarm_app.db.engine.STATE_DIR", tmp_path)
+    monkeypatch.setattr("alarm_app.db.engine.DB_PATH", tmp_path / "test.db")
+    monkeypatch.setattr(state_mod, "_engine", None)
+    monkeypatch.setattr(state_mod, "_SessionFactory", None)
 
 
 @pytest.fixture
