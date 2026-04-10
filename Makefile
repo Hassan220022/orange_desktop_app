@@ -1,7 +1,12 @@
-.PHONY: run dev live build-windows build-macos build-windows-installer build-macos-installer
+.PHONY: run dev live server build-windows build-macos build-windows-installer build-macos-installer
 
+# Start the app (backend starts automatically as a child process).
 run:
 	cd .. && alarm_app/.venv/bin/python -m alarm_app.main
+
+# Run the backend server standalone (for development/debugging).
+server:
+	cd .. && alarm_app/.venv/bin/python -m uvicorn alarm_app.web.app:app --host 127.0.0.1 --port 8787 --reload
 
 # Live code patching — edits to functions/methods apply instantly without restart.
 # Layout/widget changes still need a restart (use `make dev` for those).

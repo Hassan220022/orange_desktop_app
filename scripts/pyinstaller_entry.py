@@ -1,5 +1,7 @@
 """PyInstaller entrypoint for building Alarm Viewer executables."""
 
+import multiprocessing
+
 try:
     from alarm_app.main import main
 except ImportError:
@@ -7,4 +9,5 @@ except ImportError:
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     main()

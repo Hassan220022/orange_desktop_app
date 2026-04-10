@@ -2,8 +2,13 @@
 """
 Alarm Viewer — Telecom Alarm Data Explorer
 Thin entry point.  All logic lives in the alarm_app package.
+Starts the FastAPI backend in a child process and shuts it down on exit.
 """
 
+import atexit
+import multiprocessing
+import os
+import signal
 import sys
 from pathlib import Path
 
@@ -14,9 +19,44 @@ from PyQt5.QtWidgets import QApplication
 try:
     from .constants import APP_NAME, APP_VERSION
     from .ui.viewer import AlarmViewer
-except ImportError:  # PyInstaller flat-module runtime fallback
-    from constants import APP_NAME, APP_VERSION
+except ImportError:
+    from alarm_app.constants import APP_NAME, APP_VERSION
     from alarm_app.ui.viewer import AlarmViewer
+
+_backend_process: multiprocessing.Process | None = None
+BACKEND_HOST = os.environ.get("ALARM_BACKEND_HOST", "127.0.0.1")
+BACKEND_PORT = int(os.environ.get("ALARM_BACKEND_PORT", "8787"))
+
+
+def _run_backend():
+    """Target for the backend child process."""
+    import uvicorn
+    from alarm_app.web.app import create_app
+
+    app = create_app()
+    uvicorn.run(app, host=BACKEND_HOST, port=BACKEND_PORT,
+                log_level="warning")
+
+
+def _start_backend():
+    """Start the FastAPI backend in a child process."""
+    global _backend_process
+    proc = multiprocessing.Process(target=_run_backend, daemon=True)
+    proc.start()
+    _backend_process = proc
+
+
+def _stop_backend():
+    """Shut down the backend child process."""
+    global _backend_process
+    if _backend_process is None or not _backend_process.is_alive():
+        return
+    _backend_process.terminate()
+    _backend_process.join(timeout=3)
+    if _backend_process.is_alive():
+        _backend_process.kill()
+        _backend_process.join(timeout=2)
+    _backend_process = None
 
 
 def main():
@@ -30,6 +70,11 @@ def main():
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
     app.setStyle("Fusion")
+
+    # Start backend server
+    _start_backend()
+    atexit.register(_stop_backend)
+    app.aboutToQuit.connect(_stop_backend)
 
     icon_candidates = []
     bundle_root = getattr(sys, "_MEIPASS", None)
@@ -49,8 +94,12 @@ def main():
     if app_icon is not None and not app_icon.isNull():
         win.setWindowIcon(app_icon)
     win.show()
-    sys.exit(app.exec_())
+
+    exit_code = app.exec_()
+    _stop_backend()
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()  # required for PyInstaller on Windows
     main()
