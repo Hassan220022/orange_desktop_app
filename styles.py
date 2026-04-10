@@ -914,6 +914,35 @@ QPushButton#btn_ghost:disabled {
     color: #35354a;
     border-color: #1a1a28;
 }
+/* ── Statistics panel ────────────────────────────────────────── */
+QFrame#stats_frame {
+    background: #0a0a14;
+    border: 1px solid #1e1e2e;
+    border-radius: 8px;
+}
+QLabel#stats_section_label {
+    color: #45475a;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    background: transparent;
+}
+QLabel#stats_label {
+    color: #45475a;
+    font-size: 11px;
+    background: transparent;
+}
+QLabel#stat_total  { color: #89b4fa; font-size: 12px; font-weight: bold; background: transparent; }
+QLabel#stat_power  { color: #f38ba8; font-size: 12px; font-weight: bold; background: transparent; }
+QLabel#stat_down   { color: #fab387; font-size: 12px; font-weight: bold; background: transparent; }
+QLabel#stat_door   { color: #89dceb; font-size: 12px; font-weight: bold; background: transparent; }
+QLabel#stat_sites  { color: #a6e3a1; font-size: 12px; font-weight: bold; background: transparent; }
+QLabel#stat_avg_dur { color: #cba6f7; font-size: 12px; font-weight: bold; background: transparent; }
+QFrame#stats_sep {
+    color: #1e1e2e;
+    background: #1e1e2e;
+    max-height: 1px;
+}
 """
 
 STYLE_LIGHT = """
@@ -1826,6 +1855,35 @@ QPushButton#btn_ghost:hover {
 QPushButton#btn_ghost:disabled {
     color: #bcc0cc;
     border-color: #dce0e8;
+}
+/* ── Statistics panel ────────────────────────────────────────── */
+QFrame#stats_frame {
+    background: #dce0e8;
+    border: 1px solid #ccd0da;
+    border-radius: 8px;
+}
+QLabel#stats_section_label {
+    color: #6c6f85;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    background: transparent;
+}
+QLabel#stats_label {
+    color: #6c6f85;
+    font-size: 11px;
+    background: transparent;
+}
+QLabel#stat_total  { color: #1e66f5; font-size: 12px; font-weight: bold; background: transparent; }
+QLabel#stat_power  { color: #d20f39; font-size: 12px; font-weight: bold; background: transparent; }
+QLabel#stat_down   { color: #fe640b; font-size: 12px; font-weight: bold; background: transparent; }
+QLabel#stat_door   { color: #209fb5; font-size: 12px; font-weight: bold; background: transparent; }
+QLabel#stat_sites  { color: #40a02b; font-size: 12px; font-weight: bold; background: transparent; }
+QLabel#stat_avg_dur { color: #8839ef; font-size: 12px; font-weight: bold; background: transparent; }
+QFrame#stats_sep {
+    color: #ccd0da;
+    background: #ccd0da;
+    max-height: 1px;
 }
 """
 

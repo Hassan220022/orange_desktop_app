@@ -616,16 +616,38 @@ class AlarmViewer(QMainWindow):
         except Exception:
             pass
 
+    def _close_dialog_colors(self):
+        """Return color dict for the close dialog based on current theme."""
+        mode = self._theme_mode
+        if mode == "auto":
+            mode = self._detect_os_theme()
+        if mode == "dark":
+            return dict(
+                bg="#1a1a2a", border="#2a2a3e", text="#cdd6f4",
+                muted="#6c7086", warn="#fab387", blue="#89b4fa",
+                green="#a6e3a1", red="#f38ba8",
+                stay_bg="#1a2744", stay_border="#2a4070", stay_hover="#1f3258",
+                exit_bg="#3d1e2c", exit_border="#5a2030", exit_hover="#4d2838",
+            )
+        return dict(
+            bg="#e6e9ef", border="#ccd0da", text="#4c4f69",
+            muted="#6c6f85", warn="#fe640b", blue="#1e66f5",
+            green="#40a02b", red="#d20f39",
+            stay_bg="#d5e0fc", stay_border="#a8bff8", stay_hover="#c0d0fa",
+            exit_bg="#f5d5da", exit_border="#e8a0b0", exit_hover="#f0c0c8",
+        )
+
     def closeEvent(self, event):
         """Always warn before closing."""
+        c = self._close_dialog_colors()
         dlg = QDialog(self, Qt.FramelessWindowHint)
         dlg.setFixedWidth(380)
-        dlg.setStyleSheet("""
-            QDialog {
-                background: #1a1a2a;
-                border: 1px solid #2a2a3e;
+        dlg.setStyleSheet(f"""
+            QDialog {{
+                background: {c['bg']};
+                border: 1px solid {c['border']};
                 border-radius: 12px;
-            }
+            }}
         """)
         lay = QVBoxLayout(dlg)
         lay.setContentsMargins(28, 24, 28, 20)
@@ -633,14 +655,14 @@ class AlarmViewer(QMainWindow):
 
         # Icon + title row
         title_row = QHBoxLayout()
-        icon = QLabel("⚠")
+        icon = QLabel("\u26a0")
         icon.setStyleSheet(
-            "font-size:28px; background:transparent; color:#fab387;")
+            f"font-size:28px; background:transparent; color:{c['warn']};")
         title_row.addWidget(icon)
         title_row.addSpacing(8)
         title = QLabel("Close Alarm Viewer?")
         title.setStyleSheet(
-            "color:#cdd6f4; font-size:16px; font-weight:700;"
+            f"color:{c['text']}; font-size:16px; font-weight:700;"
             "background:transparent;")
         title_row.addWidget(title)
         title_row.addStretch()
@@ -649,7 +671,7 @@ class AlarmViewer(QMainWindow):
         # Separator
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color:#2a2a3e;")
+        sep.setStyleSheet(f"color:{c['border']};")
         lay.addWidget(sep)
 
         # Message adapts to whether data is loaded
@@ -659,25 +681,25 @@ class AlarmViewer(QMainWindow):
                        if "site_id" in self._full_df.columns else 0)
             n_files = len(self._file_infos)
             msg = (
-                f"<span style='color:#6c7086;'>"
+                f"<span style='color:{c['muted']};'>"
                 f"You currently have data in memory:</span><br><br>"
-                f"<span style='color:#89b4fa;'>{n_rec:,}</span>"
-                f"<span style='color:#6c7086;'> records</span>"
+                f"<span style='color:{c['blue']};'>{n_rec:,}</span>"
+                f"<span style='color:{c['muted']};'> records</span>"
                 f"&nbsp;&nbsp;&middot;&nbsp;&nbsp;"
-                f"<span style='color:#a6e3a1;'>{n_sites:,}</span>"
-                f"<span style='color:#6c7086;'> sites</span>"
+                f"<span style='color:{c['green']};'>{n_sites:,}</span>"
+                f"<span style='color:{c['muted']};'> sites</span>"
                 f"&nbsp;&nbsp;&middot;&nbsp;&nbsp;"
-                f"<span style='color:#fab387;'>{n_files}</span>"
-                f"<span style='color:#6c7086;'> files</span><br><br>"
-                f"<span style='color:#a6e3a1;'>"
+                f"<span style='color:{c['warn']};'>{n_files}</span>"
+                f"<span style='color:{c['muted']};'> files</span><br><br>"
+                f"<span style='color:{c['green']};'>"
                 f"Your session will be saved and restored next time.</span>")
         else:
-            msg = ("<span style='color:#6c7086;'>"
+            msg = (f"<span style='color:{c['muted']};'>"
                    "Are you sure you want to exit?</span>")
 
         info = QLabel(msg)
         info.setStyleSheet(
-            "color:#cdd6f4; font-size:13px; background:transparent;"
+            f"color:{c['text']}; font-size:13px; background:transparent;"
             "line-height:1.5;")
         info.setWordWrap(True)
         lay.addWidget(info)
@@ -690,31 +712,31 @@ class AlarmViewer(QMainWindow):
         btn_row.addStretch()
 
         btn_cancel = QPushButton("Stay")
-        btn_cancel.setStyleSheet("""
-            QPushButton {
-                background: #1a2744; color: #89b4fa;
-                border: 1px solid #2a4070; border-radius: 6px;
+        btn_cancel.setStyleSheet(f"""
+            QPushButton {{
+                background: {c['stay_bg']}; color: {c['blue']};
+                border: 1px solid {c['stay_border']}; border-radius: 6px;
                 padding: 8px 24px; font-size: 13px; font-weight: 600;
                 min-width: 80px;
-            }
-            QPushButton:hover {
-                background: #1f3258; border-color: #89b4fa;
-            }
+            }}
+            QPushButton:hover {{
+                background: {c['stay_hover']}; border-color: {c['blue']};
+            }}
         """)
         btn_cancel.clicked.connect(dlg.reject)
         btn_row.addWidget(btn_cancel)
 
         btn_exit = QPushButton("Exit")
-        btn_exit.setStyleSheet("""
-            QPushButton {
-                background: #3d1e2c; color: #f38ba8;
-                border: 1px solid #5a2030; border-radius: 6px;
+        btn_exit.setStyleSheet(f"""
+            QPushButton {{
+                background: {c['exit_bg']}; color: {c['red']};
+                border: 1px solid {c['exit_border']}; border-radius: 6px;
                 padding: 8px 24px; font-size: 13px; font-weight: 600;
                 min-width: 80px;
-            }
-            QPushButton:hover {
-                background: #4d2838; border-color: #f38ba8;
-            }
+            }}
+            QPushButton:hover {{
+                background: {c['exit_hover']}; border-color: {c['red']};
+            }}
         """)
         btn_exit.clicked.connect(dlg.accept)
         btn_row.addWidget(btn_exit)

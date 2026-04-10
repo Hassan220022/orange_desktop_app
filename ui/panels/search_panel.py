@@ -329,39 +329,36 @@ class SearchPanel(QWidget):
 
         # ── Stats panel (right of search) ─────────────────
         stats_frame = QFrame()
+        stats_frame.setObjectName("stats_frame")
         stats_frame.setFixedWidth(220)
-        stats_frame.setStyleSheet(
-            "QFrame { background:#0a0a14; border:1px solid #1e1e2e; "
-            "border-radius:8px; }")
         sf = QVBoxLayout(stats_frame)
         sf.setContentsMargins(12, 10, 12, 10)
         sf.setSpacing(7)
 
         sec_lbl = QLabel("STATISTICS")
-        sec_lbl.setObjectName("lbl_section")
-        sec_lbl.setStyleSheet(
-            "color:#45475a; font-size:10px; font-weight:700; "
-            "letter-spacing:2px; background:transparent;")
+        sec_lbl.setObjectName("stats_section_label")
         sf.addWidget(sec_lbl)
 
         self.stats: dict[str, QLabel] = {}
-        for key, label, color in (
-            ("total",    "Total Records",  "#89b4fa"),
-            ("power",    "Power Alarms",   "#f38ba8"),
-            ("down",     "Down Alarms",    "#fab387"),
-            ("door",     "Door Alarms",    "#89dceb"),
-            ("sites",    "Unique Sites",   "#a6e3a1"),
-            ("avg_dur",  "Avg Duration",   "#cba6f7"),
+        stat_obj_names = {
+            "total": "stat_total", "power": "stat_power",
+            "down": "stat_down", "door": "stat_door",
+            "sites": "stat_sites", "avg_dur": "stat_avg_dur",
+        }
+        for key, label in (
+            ("total",    "Total Records"),
+            ("power",    "Power Alarms"),
+            ("down",     "Down Alarms"),
+            ("door",     "Door Alarms"),
+            ("sites",    "Unique Sites"),
+            ("avg_dur",  "Avg Duration"),
         ):
             row_h = QHBoxLayout(); row_h.setSpacing(4)
             lt = QLabel(label)
-            lt.setStyleSheet(
-                "color:#45475a; font-size:11px; background:transparent;")
+            lt.setObjectName("stats_label")
             lv = QLabel("\u2014")
             lv.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            lv.setFont(QFont("Segoe UI", 12, QFont.Bold))
-            lv.setStyleSheet(
-                f"color:{color}; background:transparent;")
+            lv.setObjectName(stat_obj_names[key])
             self.stats[key] = lv
             row_h.addWidget(lt); row_h.addWidget(lv)
             sf.addLayout(row_h)
@@ -369,8 +366,7 @@ class SearchPanel(QWidget):
             if key != "avg_dur":
                 sep = QFrame()
                 sep.setFrameShape(QFrame.HLine)
-                sep.setStyleSheet(
-                    "color:#1e1e2e; background:#1e1e2e; max-height:1px;")
+                sep.setObjectName("stats_sep")
                 sf.addWidget(sep)
 
         outer.addWidget(stats_frame)
