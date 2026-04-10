@@ -15,10 +15,9 @@ from unittest.mock import patch
 # We import only the pure helpers and functions, not the QThread classes.
 # The module-level import of PyQt5 inside parsers.py is unavoidable, but
 # we only exercise functions that never touch Qt.
+from alarm_app.core.duration import duration_to_secs, secs_to_hhmmss
 from alarm_app.parsers import (
     _is_alarm_header,
-    _duration_to_secs,
-    _secs_to_hhmmss,
     _load_external_summary_lookup,
     _match_external_summary_row,
     parse_alarm_file,
@@ -325,39 +324,39 @@ class TestDurationToSecs:
     """Convert heterogeneous duration representations to seconds."""
 
     def test_string_hhmmss(self):
-        assert _duration_to_secs("01:30:45") == 5445.0
+        assert duration_to_secs("01:30:45") == 5445.0
 
     def test_string_short(self):
-        assert _duration_to_secs("00:00:09") == 9.0
+        assert duration_to_secs("00:00:09") == 9.0
 
     def test_datetime_time(self):
-        assert _duration_to_secs(datetime.time(0, 5, 10)) == 310.0
+        assert duration_to_secs(datetime.time(0, 5, 10)) == 310.0
 
     def test_pd_timestamp(self):
         ts = pd.Timestamp("1900-01-01 00:02:20")
-        assert _duration_to_secs(ts) == 140.0
+        assert duration_to_secs(ts) == 140.0
 
     def test_none(self):
-        assert _duration_to_secs(None) == 0.0
+        assert duration_to_secs(None) == 0.0
 
     def test_nan(self):
-        assert _duration_to_secs(float("nan")) == 0.0
+        assert duration_to_secs(float("nan")) == 0.0
 
     def test_empty_string(self):
-        assert _duration_to_secs("") == 0.0
+        assert duration_to_secs("") == 0.0
 
     def test_malformed_string(self):
-        assert _duration_to_secs("abc") == 0.0
+        assert duration_to_secs("abc") == 0.0
 
     def test_np_nan(self):
-        assert _duration_to_secs(np.nan) == 0.0
+        assert duration_to_secs(np.nan) == 0.0
 
     def test_pd_nat(self):
-        assert _duration_to_secs(pd.NaT) == 0.0
+        assert duration_to_secs(pd.NaT) == 0.0
 
     def test_large_hours(self):
         # "100:00:00" = 360000s
-        assert _duration_to_secs("100:00:00") == 360000.0
+        assert duration_to_secs("100:00:00") == 360000.0
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -367,26 +366,26 @@ class TestSecsToHhmmss:
     """Convert numeric seconds back to display strings."""
 
     def test_normal(self):
-        assert _secs_to_hhmmss(5445) == "01:30:45"
+        assert secs_to_hhmmss(5445) == "01:30:45"
 
     def test_zero(self):
-        assert _secs_to_hhmmss(0) == ""
+        assert secs_to_hhmmss(0) == ""
 
     def test_negative(self):
-        assert _secs_to_hhmmss(-1) == ""
+        assert secs_to_hhmmss(-1) == ""
 
     def test_exact_hour(self):
-        assert _secs_to_hhmmss(3661) == "01:01:01"
+        assert secs_to_hhmmss(3661) == "01:01:01"
 
     def test_large_value(self):
         # 100 hours
-        assert _secs_to_hhmmss(360000) == "100:00:00"
+        assert secs_to_hhmmss(360000) == "100:00:00"
 
     def test_one_second(self):
-        assert _secs_to_hhmmss(1) == "00:00:01"
+        assert secs_to_hhmmss(1) == "00:00:01"
 
     def test_zero_padded(self):
-        assert _secs_to_hhmmss(61) == "00:01:01"
+        assert secs_to_hhmmss(61) == "00:01:01"
 
 
 # ═══════════════════════════════════════════════════════════════════

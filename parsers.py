@@ -24,9 +24,13 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 try:
     from .constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
+    from .core.duration import duration_to_secs as _duration_to_secs
+    from .core.duration import secs_to_hhmmss as _secs_to_hhmmss
     from . import state
 except ImportError:
     from constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
+    from core.duration import duration_to_secs as _duration_to_secs
+    from core.duration import secs_to_hhmmss as _secs_to_hhmmss
     import state
 
 _EXTS = frozenset((".csv", ".xlsx", ".xls"))
@@ -506,39 +510,8 @@ def compute_site_down_flag(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Duration helpers
+# Duration helpers — moved to core.duration; aliases imported above
 # ─────────────────────────────────────────────────────────────────
-def _duration_to_secs(val) -> float:
-    """Convert a duration value (str, time, Timestamp) to seconds."""
-    if pd.isna(val) or val is None:
-        return 0.0
-    # datetime.time object
-    import datetime as _dt
-    if isinstance(val, _dt.time):
-        return val.hour * 3600 + val.minute * 60 + val.second
-    # Timestamp (Excel serial date like 1900-01-01 00:02:20)
-    if isinstance(val, pd.Timestamp):
-        return val.hour * 3600 + val.minute * 60 + val.second
-    # String "HH:MM:SS"
-    s = str(val).strip()
-    parts = s.split(":")
-    if len(parts) >= 3:
-        try:
-            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-        except (ValueError, TypeError):
-            pass
-    return 0.0
-
-
-def _secs_to_hhmmss(s) -> str:
-    """Convert seconds to HH:MM:SS string."""
-    if s <= 0:
-        return ""
-    h = int(s // 3600)
-    m = int((s % 3600) // 60)
-    sec = int(s % 60)
-    return f"{h:02d}:{m:02d}:{sec:02d}"
-
 
 _ROW_HASH_COLUMNS = (
     "site_id",
