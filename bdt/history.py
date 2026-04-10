@@ -25,6 +25,24 @@ PM_RUNS_DIR = HISTORY_DIR / "_pm_runs"
 PM_RULE_RESULTS_DIR = HISTORY_DIR / "_pm_rule_results"
 
 
+_engine = None
+_SessionFactory = None
+
+
+def _get_session():
+    global _engine, _SessionFactory
+    if _engine is None:
+        from alarm_app.db.engine import (
+            create_engine as _create_engine,
+            init_db as _init_db,
+            get_session_factory as _get_session_factory,
+        )
+        _engine = _create_engine()
+        _init_db(_engine)
+        _SessionFactory = _get_session_factory(_engine)
+    return _SessionFactory()
+
+
 @dataclass
 class BDTTestRecord:
     """Stored snapshot of a BDT test for future comparison."""
@@ -127,6 +145,36 @@ def compute_alarm_input_sha256(alarm_df, site_code: str, test_date: str) -> str:
     return _canonical_json_sha256(payload)
 
 
+def _bdt_test_to_record(db_row) -> BDTTestRecord:
+    """Convert a BDTTest ORM row to a BDTTestRecord dataclass."""
+    test_date = db_row.test_date
+    if hasattr(test_date, "strftime"):
+        test_date_str = test_date.strftime("%Y-%m-%d")
+    else:
+        test_date_str = str(test_date or "")
+
+    created_at = db_row.created_at
+    if hasattr(created_at, "isoformat"):
+        saved_at = created_at.isoformat()
+    else:
+        saved_at = str(created_at or "")
+
+    return BDTTestRecord(
+        site_code=str(db_row.site_code or ""),
+        test_date=test_date_str,
+        file_path="",
+        battery_brand=str(db_row.battery_brand or ""),
+        battery_ah=db_row.battery_ah,
+        battery_voltage=db_row.battery_voltage,
+        num_strings=db_row.num_strings,
+        num_batteries=db_row.num_batteries,
+        num_modules=db_row.num_modules,
+        rectifier_brand=str(db_row.rectifier_brand or ""),
+        overall_verdict="",
+        saved_at=saved_at,
+    )
+
+
 def save_test_record(bdt, verdict: str) -> None:
     """Persist a BDT test result for future comparison.
 
@@ -137,31 +185,36 @@ def save_test_record(bdt, verdict: str) -> None:
     if not bdt.site_code or not bdt.test_date:
         return
 
-    site_dir = HISTORY_DIR / bdt.site_code.strip().upper()
-    site_dir.mkdir(parents=True, exist_ok=True)
-
     test_date_str = (bdt.test_date.strftime("%Y-%m-%d")
                      if isinstance(bdt.test_date, (date, datetime))
                      else str(bdt.test_date))
 
-    record = BDTTestRecord(
-        site_code=bdt.site_code,
-        test_date=test_date_str,
-        file_path=str(bdt.file_path or ""),
-        battery_brand=str(bdt.battery_brand or ""),
-        battery_ah=bdt.battery_ah,
-        battery_voltage=bdt.battery_voltage,
-        num_strings=bdt.num_strings,
-        num_batteries=getattr(bdt, "num_batteries", None),
-        num_modules=getattr(bdt, "num_modules", None),
-        rectifier_brand=str(getattr(bdt, "rectifier_brand", "") or ""),
-        overall_verdict=verdict,
-        saved_at=datetime.now().isoformat(),
-    )
+    test_date_obj = (bdt.test_date.date()
+                     if isinstance(bdt.test_date, datetime)
+                     else bdt.test_date if isinstance(bdt.test_date, date)
+                     else date.fromisoformat(test_date_str))
 
-    filename = f"{test_date_str}.json"
-    path = site_dir / filename
-    path.write_text(json.dumps(asdict(record), indent=2, default=str))
+    bdt_dict = {
+        "site_code": bdt.site_code,
+        "test_date": test_date_obj,
+        "file_path": str(bdt.file_path or ""),
+        "battery_brand": str(bdt.battery_brand or ""),
+        "battery_ah": bdt.battery_ah,
+        "battery_voltage": bdt.battery_voltage,
+        "num_strings": bdt.num_strings,
+        "num_batteries": getattr(bdt, "num_batteries", None),
+        "num_modules": getattr(bdt, "num_modules", None),
+        "rectifier_brand": str(getattr(bdt, "rectifier_brand", "") or ""),
+        "overall_verdict": verdict,
+    }
+
+    from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
+    session = _get_session()
+    try:
+        _save_bdt_test(session, bdt_dict)
+        session.commit()
+    finally:
+        session.close()
 
 
 def load_previous_test(site_code: str, before_date: date) -> BDTTestRecord | None:
@@ -174,27 +227,15 @@ def load_previous_test(site_code: str, before_date: date) -> BDTTestRecord | Non
     Returns:
         BDTTestRecord or None if no history found
     """
-    site_dir = HISTORY_DIR / site_code.strip().upper()
-    if not site_dir.exists():
-        return None
-
-    best_record = None
-    best_date = None
-
-    for json_file in site_dir.glob("*.json"):
-        try:
-            data = json.loads(json_file.read_text())
-            record_date = date.fromisoformat(data["test_date"])
-            if record_date < before_date:
-                if best_date is None or record_date > best_date:
-                    best_date = record_date
-                    best_record = BDTTestRecord(**{
-                        k: data.get(k) for k in BDTTestRecord.__dataclass_fields__
-                    })
-        except (json.JSONDecodeError, KeyError, ValueError):
-            continue
-
-    return best_record
+    from alarm_app.db.repos.bdt_repo import load_previous_test as _load_previous_test
+    session = _get_session()
+    try:
+        db_row = _load_previous_test(session, site_code, before_date)
+        if db_row is None:
+            return None
+        return _bdt_test_to_record(db_row)
+    finally:
+        session.close()
 
 
 def compare_tests(current_bdt, previous: BDTTestRecord) -> BDTComparison:
@@ -288,11 +329,63 @@ def save_validation_run(
     idempotency_key = _canonical_json_sha256(idempotency_material)
     run_uuid = str(uuid5(NAMESPACE_URL, idempotency_key))
 
-    PM_RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    PM_RULE_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    overall_verdict = str(getattr(validation_result, "overall", "") or "")
 
-    run_path = PM_RUNS_DIR / f"{idempotency_key}.json"
-    rules_path = PM_RULE_RESULTS_DIR / f"{run_uuid}.jsonl"
+    # Build rule_results list for pm_repo
+    seen_rule_ids: set[str] = set()
+    rule_results = []
+    for idx, rule in enumerate(rules, start=1):
+        rule_id = str(getattr(rule, "rule_id", "") or "")
+        if not rule_id or rule_id in seen_rule_ids:
+            continue
+        seen_rule_ids.add(rule_id)
+        rule_results.append({
+            "rule_code": rule_id,
+            "verdict": str(getattr(rule, "verdict", "") or ""),
+            "detail": str(getattr(rule, "detail", "") or ""),
+        })
+
+    raw_test_date = getattr(bdt_data, "test_date", None)
+    if isinstance(raw_test_date, datetime):
+        test_date_obj = raw_test_date.date()
+    elif isinstance(raw_test_date, date):
+        test_date_obj = raw_test_date
+    else:
+        test_date_obj = date.fromisoformat(test_date)
+
+    bdt_dict = {
+        "site_code": site_code,
+        "test_date": test_date_obj,
+        "file_path": str(getattr(bdt_data, "file_path", "") or ""),
+        "battery_brand": str(getattr(bdt_data, "battery_brand", "") or ""),
+        "battery_ah": getattr(bdt_data, "battery_ah", None),
+        "battery_voltage": getattr(bdt_data, "battery_voltage", None),
+        "num_strings": getattr(bdt_data, "num_strings", None),
+        "num_batteries": getattr(bdt_data, "num_batteries", None),
+        "num_modules": getattr(bdt_data, "num_modules", None),
+        "rectifier_brand": str(getattr(bdt_data, "rectifier_brand", "") or ""),
+    }
+
+    from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
+    from alarm_app.db.repos.pm_repo import save_validation_run as _save_pm_run
+
+    session = _get_session()
+    try:
+        bdt_db = _save_bdt_test(session, bdt_dict)
+        session.flush()
+
+        pm_run = _save_pm_run(
+            session,
+            bdt_test_id=bdt_db.id,
+            alarm_input_sha256=alarm_input_sha256,
+            validator_code_ref=validator_ref,
+            overall_verdict=overall_verdict,
+            rule_results=rule_results,
+            params=params or {},
+        )
+        # pm_run is None when identical run already exists (idempotent)
+    finally:
+        session.close()
 
     run_payload = {
         "run_id": run_uuid,
@@ -300,46 +393,14 @@ def save_validation_run(
         "site_code": site_code,
         "test_date": test_date,
         "file_path": str(getattr(bdt_data, "file_path", "") or ""),
-        "overall_verdict": str(getattr(validation_result, "overall", "") or ""),
+        "overall_verdict": overall_verdict,
         "validator_code_ref": validator_ref,
         "params": params or {},
         "params_sha256": params_sha256,
         "alarm_input_sha256": alarm_input_sha256,
-        "rule_count": len(rules),
-        "is_complete_rule_set": len(rules) == 11,
+        "rule_count": len(rule_results),
+        "is_complete_rule_set": len(rule_results) == 11,
         "created_at": datetime.now().isoformat(),
     }
-
-    if not run_path.exists():
-        run_path.write_text(
-            json.dumps(run_payload, indent=2, default=str),
-            encoding="utf-8",
-        )
-
-    if not rules_path.exists():
-        seen_rule_ids: set[str] = set()
-        with rules_path.open("w", encoding="utf-8") as fh:
-            for idx, rule in enumerate(rules, start=1):
-                rule_id = str(getattr(rule, "rule_id", "") or "")
-                if not rule_id or rule_id in seen_rule_ids:
-                    continue
-                seen_rule_ids.add(rule_id)
-
-                row = {
-                    "run_id": run_uuid,
-                    "rule_order": idx,
-                    "rule_id": rule_id,
-                    "rule_name": str(getattr(rule, "rule_name", "") or ""),
-                    "verdict": str(getattr(rule, "verdict", "") or ""),
-                    "detail": str(getattr(rule, "detail", "") or ""),
-                    "passed": getattr(rule, "passed", None),
-                    "rule_version": validator_ref,
-                    "evidence": {
-                        "detail": str(getattr(rule, "detail", "") or ""),
-                        "passed": getattr(rule, "passed", None),
-                    },
-                    "created_at": datetime.now().isoformat(),
-                }
-                fh.write(json.dumps(row, default=str) + "\n")
 
     return run_payload
