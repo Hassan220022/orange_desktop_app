@@ -1,129 +1,161 @@
-"""Alarm records repository — row-level dedup via row_hash."""
+"""Alarm records repository — row-level dedup via row_hash.
 
+Optimized for large datasets (1M+ rows): uses vectorized pandas
+operations and raw SQL instead of ORM objects for bulk insert/load.
+"""
+
+import hashlib
 import logging
 import math
 
 import pandas as pd
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from alarm_app.db.models import AlarmRecord
-from alarm_app.db.hashing import compute_row_hash, ALARM_HASH_COLS
+from alarm_app.db.hashing import ALARM_HASH_COLS, _canonical_value
 
 _log = logging.getLogger(__name__)
 
+# Column mapping: DataFrame column name -> DB column name
+_DF_TO_DB = {
+    "site_id": "site_id",
+    "alarm_name": "alarm_name",
+    "alarm_id": "alarm_id",
+    "occurred_on": "occurred_on",
+    "cleared_on": "cleared_on",
+    "duration": "duration",
+    "_duration_secs": "duration_secs",
+    "_category": "category",
+    "vendor": "vendor",
+    "network_type": "network_type",
+    "severity": "severity",
+    "fm_office": "fm_office",
+    "alarm_source": "alarm_source",
+    "alarm_category": "alarm_category",
+    "clearance_status": "clearance_status",
+    "additional_info": "additional_info",
+    "site_down": "site_down",
+}
 
-def _safe_val(value):
-    """Convert pandas sentinel values (NaT, NaN) to None for SQLAlchemy."""
-    if value is None:
-        return None
-    try:
-        if pd.isna(value):
-            return None
-    except (TypeError, ValueError):
-        pass
-    if isinstance(value, float) and math.isnan(value):
-        return None
-    return value
+
+def _vectorized_row_hash(df: pd.DataFrame) -> pd.Series:
+    """Compute SHA-256 row hashes using vectorized string ops."""
+    parts = []
+    for col in ALARM_HASH_COLS:
+        if col in df.columns:
+            s = df[col].astype(str).str.strip()
+            s = s.replace({"nan": "", "None": "", "NaT": "", "<NA>": ""})
+            parts.append(s.fillna(""))
+        else:
+            parts.append(pd.Series([""] * len(df), index=df.index))
+
+    combined = parts[0]
+    for p in parts[1:]:
+        combined = combined.str.cat(p, sep="|")
+
+    # str.cat can produce NaN if any part is NaN — fill before hashing
+    combined = combined.fillna("")
+    return combined.apply(lambda s: hashlib.sha256(s.encode("utf-8")).hexdigest())
 
 
 def bulk_upsert_alarms(session: Session, df: pd.DataFrame,
                        file_id: int | None = None) -> tuple[int, int]:
     """Insert alarm rows with dedup. Returns (inserted, skipped).
 
-    Uses batch hash computation and a single query to fetch existing
-    hashes, then bulk-inserts only new rows. Much faster than per-row
-    SELECT for large datasets.
+    Uses vectorized hashing and pandas to_sql for speed on large datasets.
     """
     if df.empty:
         return 0, 0
 
-    # 1. Compute all row hashes in one pass
-    hashes = df.apply(lambda row: compute_row_hash(row.to_dict()), axis=1)
-    _log.debug("Computed %d row hashes", len(hashes))
+    total = len(df)
+    _log.debug("bulk_upsert_alarms: processing %d rows", total)
 
-    # 2. Fetch existing hashes in one query
-    unique_hashes = set(hashes)
-    existing_hashes: set[str] = set()
-    batch_size = 500
-    hash_list = list(unique_hashes)
-    for i in range(0, len(hash_list), batch_size):
-        chunk = hash_list[i:i + batch_size]
-        rows = (
-            session.query(AlarmRecord.row_hash)
-            .filter(AlarmRecord.row_hash.in_(chunk))
-            .all()
-        )
-        existing_hashes.update(r[0] for r in rows)
+    # 1. Vectorized hash computation (~10x faster than apply+to_dict)
+    df = df.copy()
+    df["_row_hash"] = _vectorized_row_hash(df)
+    _log.debug("Hashes computed for %d rows", total)
 
-    # 3. Bulk-insert only new rows
-    new_records = []
-    for idx, row_hash in enumerate(hashes):
-        if row_hash in existing_hashes:
-            continue
-        existing_hashes.add(row_hash)  # prevent dupes within same batch
-        row_dict = df.iloc[idx].to_dict()
-        new_records.append(AlarmRecord(
-            row_hash=row_hash,
-            file_id=file_id,
-            site_id=_safe_val(row_dict.get("site_id")),
-            alarm_name=_safe_val(row_dict.get("alarm_name")),
-            alarm_id=_safe_val(row_dict.get("alarm_id")),
-            occurred_on=_safe_val(row_dict.get("occurred_on")),
-            cleared_on=_safe_val(row_dict.get("cleared_on")),
-            duration=_safe_val(row_dict.get("duration")),
-            duration_secs=_safe_val(row_dict.get("_duration_secs")),
-            category=_safe_val(row_dict.get("_category")),
-            vendor=_safe_val(row_dict.get("vendor")),
-            network_type=_safe_val(row_dict.get("network_type")),
-            severity=_safe_val(row_dict.get("severity")),
-            fm_office=_safe_val(row_dict.get("fm_office")),
-            alarm_source=_safe_val(row_dict.get("alarm_source")),
-            alarm_category=_safe_val(row_dict.get("alarm_category")),
-            clearance_status=_safe_val(row_dict.get("clearance_status")),
-            additional_info=_safe_val(row_dict.get("additional_info")),
-            site_down=bool(row_dict.get("site_down", False)),
-        ))
+    # 2. Drop duplicates within the batch itself
+    df = df.drop_duplicates(subset="_row_hash", keep="first")
+    in_batch_dupes = total - len(df)
+    if in_batch_dupes > 0:
+        _log.debug("Dropped %d in-batch duplicates", in_batch_dupes)
 
-    if new_records:
-        session.add_all(new_records)
-    session.commit()
+    # 3. Fetch existing hashes from DB
+    engine = session.get_bind()
+    existing = pd.read_sql(
+        "SELECT row_hash FROM alarm_records",
+        engine,
+    )
+    existing_set = set(existing["row_hash"]) if not existing.empty else set()
+    _log.debug("DB has %d existing hashes", len(existing_set))
 
-    inserted = len(new_records)
-    skipped = len(hashes) - inserted
-    _log.info("Alarms upserted: inserted=%d, skipped=%d (of %d total rows)",
-              inserted, skipped, len(hashes))
+    # 4. Filter to only new rows
+    mask = ~df["_row_hash"].isin(existing_set)
+    new_df = df[mask].copy()
+    skipped = int((~mask).sum()) + in_batch_dupes
+
+    if new_df.empty:
+        _log.info("Alarms upserted: inserted=0, skipped=%d (of %d total)", skipped, total)
+        return 0, skipped
+
+    # 5. Build insert DataFrame with DB column names
+    insert_df = pd.DataFrame()
+    insert_df["row_hash"] = new_df["_row_hash"]
+    if file_id is not None:
+        insert_df["file_id"] = file_id
+
+    for df_col, db_col in _DF_TO_DB.items():
+        if df_col in new_df.columns:
+            insert_df[db_col] = new_df[df_col]
+        else:
+            insert_df[db_col] = None
+
+    # Convert NaT/NaN to None for SQLite
+    insert_df = insert_df.where(insert_df.notna(), None)
+
+    # 6. Bulk insert via pandas to_sql (much faster than ORM add_all)
+    inserted = len(insert_df)
+    insert_df.to_sql(
+        "alarm_records",
+        engine,
+        if_exists="append",
+        index=False,
+        method="multi",
+        chunksize=5000,
+    )
+
+    _log.info("Alarms upserted: inserted=%d, skipped=%d (of %d total)",
+              inserted, skipped, total)
     return inserted, skipped
 
 
 def load_alarms_as_df(session: Session) -> pd.DataFrame:
-    """Load all alarm records as a pandas DataFrame."""
-    rows = session.query(AlarmRecord).all()
-    if not rows:
+    """Load all alarm records as a pandas DataFrame.
+
+    Uses pd.read_sql for speed instead of ORM iteration.
+    """
+    engine = session.get_bind()
+    df = pd.read_sql("SELECT * FROM alarm_records", engine)
+
+    if df.empty:
         return pd.DataFrame()
 
-    records = []
-    for r in rows:
-        records.append({
-            "site_id": r.site_id,
-            "alarm_name": r.alarm_name,
-            "alarm_id": r.alarm_id,
-            "occurred_on": r.occurred_on,
-            "cleared_on": r.cleared_on,
-            "duration": r.duration,
-            "_duration_secs": r.duration_secs,
-            "_category": r.category,
-            "vendor": r.vendor,
-            "network_type": r.network_type,
-            "severity": r.severity,
-            "fm_office": r.fm_office,
-            "alarm_source": r.alarm_source,
-            "alarm_category": r.alarm_category,
-            "clearance_status": r.clearance_status,
-            "additional_info": r.additional_info,
-            "site_down": r.site_down,
-        })
-    return pd.DataFrame(records)
+    # Rename DB columns back to DataFrame convention
+    db_to_df = {v: k for k, v in _DF_TO_DB.items()}
+    df = df.rename(columns=db_to_df)
+
+    # Drop DB-only columns
+    for col in ("id", "row_hash", "file_id", "created_at", "tenant_id"):
+        if col in df.columns:
+            df = df.drop(columns=col)
+
+    _log.debug("Loaded %d alarm records from DB", len(df))
+    return df
 
 
 def count_alarms(session: Session) -> int:
     """Return total alarm record count."""
-    return session.query(AlarmRecord).count()
+    engine = session.get_bind()
+    result = pd.read_sql("SELECT COUNT(*) as cnt FROM alarm_records", engine)
+    return int(result["cnt"].iloc[0]) if not result.empty else 0
