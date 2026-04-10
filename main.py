@@ -13,10 +13,10 @@ from PyQt5.QtWidgets import QApplication
 
 try:
     from .constants import APP_NAME, APP_VERSION
-    from .viewer import AlarmViewer
+    from .ui.viewer import AlarmViewer
 except ImportError:  # PyInstaller flat-module runtime fallback
     from constants import APP_NAME, APP_VERSION
-    from viewer import AlarmViewer
+    from alarm_app.ui.viewer import AlarmViewer
 
 
 def main():
