@@ -13,6 +13,7 @@ import alarm_app.data.state as state_mod
 @pytest.fixture(autouse=True)
 def _isolate_state_dir(tmp_path, monkeypatch):
     """Redirect all state module paths to a temp directory for every test."""
+    # Existing file path patches
     monkeypatch.setattr(state_mod, "STATE_DIR", tmp_path)
     monkeypatch.setattr(state_mod, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(state_mod, "CACHE_FILE", tmp_path / "data_cache.parquet")
@@ -21,6 +22,14 @@ def _isolate_state_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(state_mod, "OUTBOX_FILE", tmp_path / "sync_outbox.jsonl")
     monkeypatch.setattr(state_mod, "SYNC_CHECKPOINT_FILE", tmp_path / "sync_checkpoint.json")
     monkeypatch.setattr(state_mod, "DEVICE_ID_FILE", tmp_path / "device_id.txt")
+
+    # DB engine patches — force each test to use a fresh temp database
+    monkeypatch.setattr("alarm_app.db.engine.STATE_DIR", tmp_path)
+    monkeypatch.setattr("alarm_app.db.engine.DB_PATH", tmp_path / "test.db")
+
+    # Reset module-level engine state so each test gets a fresh DB
+    monkeypatch.setattr(state_mod, "_engine", None)
+    monkeypatch.setattr(state_mod, "_SessionFactory", None)
 
 
 # ── save_state / load_state round-trip ─────────────────────────
@@ -56,16 +65,25 @@ class TestDataFramePersistence:
         loaded = state_mod.load_dataframe()
         assert loaded is not None
         assert len(loaded) == 2
-        assert list(loaded.columns) == ["site_id", "occurred_on", "duration"]
+        # DB layer returns full AlarmRecord schema; verify saved columns survived
+        assert "site_id" in loaded.columns
+        assert "occurred_on" in loaded.columns
+        assert "duration" in loaded.columns
+        assert loaded["site_id"].tolist() == ["A001", "B002"]
+        assert loaded["duration"].tolist() == ["01:30:00", "02:45:00"]
 
-    def test_object_columns_coerced_to_string(self):
-        """Mixed-type object columns survive Parquet serialisation."""
-        df = pd.DataFrame({"mixed": ["hello", None, 42]})
+    def test_object_columns_stored_in_mapped_fields(self):
+        """Columns that map to AlarmRecord fields survive the DB round-trip."""
+        df = pd.DataFrame({
+            "site_id": ["S1", "S2"],
+            "alarm_name": ["PowerFail", None],
+            "vendor": ["Huawei", "Nokia"],
+        })
         state_mod.save_dataframe(df)
         loaded = state_mod.load_dataframe()
         assert loaded is not None
-        # None becomes "" then str, 42 becomes "42"
-        assert loaded["mixed"].tolist() == ["hello", "", "42"]
+        assert loaded["site_id"].tolist() == ["S1", "S2"]
+        assert loaded["vendor"].tolist() == ["Huawei", "Nokia"]
 
     def test_load_missing_file_returns_none(self):
         assert state_mod.load_dataframe() is None
@@ -73,19 +91,19 @@ class TestDataFramePersistence:
 
 # ── clear_cache ────────────────────────────────────────────────
 class TestClearCache:
-    def test_removes_both_files(self):
+    def test_removes_state_and_alarm_data(self):
         state_mod.save_state({"x": 1})
-        state_mod.save_dataframe(pd.DataFrame({"a": [1]}))
-        assert state_mod.STATE_FILE.exists()
-        assert state_mod.CACHE_FILE.exists()
+        state_mod.save_dataframe(pd.DataFrame({"site_id": ["A1"]}))
+        assert state_mod.load_state() is not None
+        assert state_mod.load_dataframe() is not None
 
         state_mod.clear_cache()
 
-        assert not state_mod.STATE_FILE.exists()
-        assert not state_mod.CACHE_FILE.exists()
+        assert state_mod.load_state() is None
+        assert state_mod.load_dataframe() is None
 
-    def test_no_error_when_files_missing(self):
-        """clear_cache must not raise even if files don't exist."""
+    def test_no_error_when_empty(self):
+        """clear_cache must not raise even when DB tables are empty."""
         state_mod.clear_cache()  # should silently pass
 
 

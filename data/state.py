@@ -1,9 +1,9 @@
 """
 State persistence — save/restore UI state and DataFrame cache across sessions.
 
-Uses ~/.alarm_viewer/ with:
-  state.json        — UI settings, filter values, window geometry
-  data_cache.parquet — full DataFrame for fast restore (~1s vs 10-30s)
+Backend: SQLite database via SQLAlchemy (migrated from flat JSON/Parquet files).
+Legacy file-path constants remain for functions that still operate on disk
+(device_id, file hashing) and for test fixture patching.
 """
 
 import hashlib
@@ -15,6 +15,12 @@ from uuid import uuid4
 
 import pandas as pd
 
+from alarm_app.db.engine import (
+    create_engine as _create_engine,
+    init_db as _init_db,
+    get_session_factory as _get_session_factory,
+)
+
 STATE_DIR  = Path.home() / ".alarm_viewer"
 STATE_FILE = STATE_DIR / "state.json"
 CACHE_FILE = STATE_DIR / "data_cache.parquet"
@@ -22,12 +28,25 @@ REVIEW_LOG_FILE = STATE_DIR / "review_log.jsonl"
 OUTBOX_FILE = STATE_DIR / "sync_outbox.jsonl"
 SYNC_CHECKPOINT_FILE = STATE_DIR / "sync_checkpoint.json"
 DEVICE_ID_FILE = STATE_DIR / "device_id.txt"
+ALARM_IDS_FILE = STATE_DIR / "alarm_ids.json"
 FEATURE_FLAG_KEYS = ("sync_on", "cloud_read_on", "bootstrap_on")
 DEFAULT_FEATURE_FLAGS = {
     "sync_on": False,
     "cloud_read_on": False,
     "bootstrap_on": False,
 }
+
+_engine = None
+_SessionFactory = None
+
+
+def _get_session():
+    global _engine, _SessionFactory
+    if _engine is None:
+        _engine = _create_engine()
+        _init_db(_engine)
+        _SessionFactory = _get_session_factory(_engine)
+    return _SessionFactory()
 
 
 def _coerce_bool(value) -> bool:
@@ -54,45 +73,52 @@ def load_feature_flags(source: dict | None = None) -> dict[str, bool]:
 
 
 def save_state(state_dict: dict):
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    from alarm_app.db.repos.state_repo import save_state as _save
     state_dict["saved_at"] = datetime.now().isoformat()
-    STATE_FILE.write_text(json.dumps(state_dict, indent=2, default=str),
-                          encoding="utf-8")
+    session = _get_session()
+    try:
+        _save(session, state_dict)
+    finally:
+        session.close()
 
 
 def load_state() -> dict | None:
+    from alarm_app.db.repos.state_repo import load_state as _load
+    session = _get_session()
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+        return _load(session)
+    finally:
+        session.close()
 
 
 def save_dataframe(df: pd.DataFrame):
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    # Coerce object columns (e.g. duration with mixed str/datetime.time)
-    # to strings so Parquet serialisation doesn't choke on mixed types.
-    out = df.copy()
-    for col in out.columns:
-        if out[col].dtype == object:
-            out[col] = out[col].fillna("").astype(str)
-    out.to_parquet(CACHE_FILE, index=False, engine="pyarrow")
+    from alarm_app.db.repos.alarm_repo import bulk_upsert_alarms
+    session = _get_session()
+    try:
+        bulk_upsert_alarms(session, df)
+    finally:
+        session.close()
 
 
 def load_dataframe() -> pd.DataFrame | None:
+    from alarm_app.db.repos.alarm_repo import load_alarms_as_df
+    session = _get_session()
     try:
-        if CACHE_FILE.exists():
-            return pd.read_parquet(CACHE_FILE, engine="pyarrow")
-    except Exception:
-        pass
-    return None
+        df = load_alarms_as_df(session)
+        return df if not df.empty else None
+    finally:
+        session.close()
 
 
 def clear_cache():
-    for f in (STATE_FILE, CACHE_FILE):
-        try:
-            f.unlink(missing_ok=True)
-        except Exception:
-            pass
+    from alarm_app.db.models import AlarmRecord, UIState
+    session = _get_session()
+    try:
+        session.query(AlarmRecord).delete()
+        session.query(UIState).delete()
+        session.commit()
+    finally:
+        session.close()
 
 
 # ── Review log / daily report ──────────────────────────────
@@ -105,37 +131,59 @@ def append_review_event(
     verdict: str,
     reviewed_at: str | None = None,
 ) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "reviewed_at": reviewed_at or datetime.now().isoformat(),
-        "username": str(username or "").strip(),
-        "filename": str(filename or ""),
-        "site_code": str(site_code or ""),
-        "test_date": str(test_date or ""),
-        "verdict": str(verdict or ""),
-    }
-    with REVIEW_LOG_FILE.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, default=str) + "\n")
+    from alarm_app.db.models import ReviewEvent
+    from datetime import date as _date
+
+    # Convert string date to Python date object for SQLite Date column
+    parsed_test_date = None
+    if test_date:
+        try:
+            parsed_test_date = _date.fromisoformat(str(test_date).strip()[:10])
+        except (ValueError, TypeError):
+            pass
+
+    # Convert reviewed_at string to datetime object for SQLite DateTime column
+    raw_reviewed_at = reviewed_at or datetime.now().isoformat()
+    parsed_reviewed_at = None
+    try:
+        parsed_reviewed_at = datetime.fromisoformat(str(raw_reviewed_at))
+    except (ValueError, TypeError):
+        parsed_reviewed_at = datetime.now()
+
+    session = _get_session()
+    try:
+        session.add(ReviewEvent(
+            event_type="review",
+            site_code=str(site_code or ""),
+            test_date=parsed_test_date,
+            reviewer=str(username or "").strip(),
+            filename=str(filename or ""),
+            verdict=str(verdict or ""),
+            reviewed_at=parsed_reviewed_at,
+        ))
+        session.commit()
+    finally:
+        session.close()
 
 
 def load_review_events() -> list[dict]:
-    events: list[dict] = []
+    from alarm_app.db.models import ReviewEvent
+    session = _get_session()
     try:
-        if not REVIEW_LOG_FILE.exists():
-            return events
-        for line in REVIEW_LOG_FILE.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except Exception:
-                continue
-            if isinstance(event, dict):
-                events.append(event)
-    except Exception:
-        return []
-    return events
+        rows = session.query(ReviewEvent).order_by(ReviewEvent.id).all()
+        return [
+            {
+                "username": r.reviewer or "",
+                "filename": r.filename or "",
+                "site_code": r.site_code or "",
+                "test_date": str(r.test_date) if r.test_date else "",
+                "verdict": r.verdict or "",
+                "reviewed_at": str(r.reviewed_at) if r.reviewed_at else "",
+            }
+            for r in rows
+        ]
+    finally:
+        session.close()
 
 
 def summarize_review_events_by_day(events: list[dict] | None = None) -> list[dict]:
@@ -174,13 +222,13 @@ def summarize_review_events_by_day(events: list[dict] | None = None) -> list[dic
 
 
 # ── Alarm ID configuration ────────────────────────────────
-ALARM_IDS_FILE = STATE_DIR / "alarm_ids.json"
-
 def load_alarm_ids() -> dict:
     """Return {"power": [...], "down": [...], "door": [...]} from config."""
+    from alarm_app.db.repos.state_repo import get_value
+    session = _get_session()
     try:
-        if ALARM_IDS_FILE.exists():
-            data = json.loads(ALARM_IDS_FILE.read_text(encoding="utf-8"))
+        data = get_value(session, "alarm_ids")
+        if isinstance(data, dict):
             return {
                 "power": [str(x).strip() for x in data.get("power", [])],
                 "down":  [str(x).strip() for x in data.get("down", [])],
@@ -188,13 +236,18 @@ def load_alarm_ids() -> dict:
             }
     except Exception:
         pass
+    finally:
+        session.close()
     return {"power": [], "down": [], "door": []}
 
 
 def save_alarm_ids(ids: dict):
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    ALARM_IDS_FILE.write_text(
-        json.dumps(ids, indent=2), encoding="utf-8")
+    from alarm_app.db.repos.state_repo import set_value
+    session = _get_session()
+    try:
+        set_value(session, "alarm_ids", ids)
+    finally:
+        session.close()
 
 
 # ── File hash change detection ───────────────────────────
@@ -256,101 +309,72 @@ def append_outbox_event(
     created_at: str | None = None,
 ) -> dict:
     """Append one sync event to durable local outbox journal."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    event = {
-        "event_id": event_id or str(uuid4()),
-        "origin_device_id": origin_device_id or get_or_create_device_id(),
-        "entity_type": str(entity_type or ""),
-        "entity_local_id": str(entity_local_id or ""),
-        "op": str(op or "upsert"),
-        "entity_hash": str(entity_hash or ""),
-        "payload": payload or {},
-        "created_at": created_at or datetime.now().isoformat(),
-    }
-    with OUTBOX_FILE.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(event, default=str) + "\n")
-    return event
+    from alarm_app.db.repos.sync_repo import append_outbox_event as _append
+    resolved_event_id = event_id or str(uuid4())
+    resolved_device_id = origin_device_id or get_or_create_device_id()
+    session = _get_session()
+    try:
+        evt = _append(
+            session,
+            entity_type=str(entity_type or ""),
+            entity_local_id=str(entity_local_id or ""),
+            op=str(op or "upsert"),
+            entity_hash=str(entity_hash or ""),
+            payload=payload or {},
+            origin_device_id=resolved_device_id,
+            event_id=resolved_event_id,
+        )
+        return {
+            "event_id": evt.event_id,
+            "origin_device_id": evt.origin_device_id,
+            "entity_type": evt.entity_type,
+            "entity_local_id": evt.entity_local_id,
+            "op": evt.op,
+            "entity_hash": evt.entity_hash,
+            "payload": json.loads(evt.payload_json) if evt.payload_json else {},
+            "created_at": evt.created_at.isoformat() if evt.created_at else (created_at or datetime.now().isoformat()),
+        }
+    finally:
+        session.close()
 
 
 def load_pending_outbox(limit: int | None = None) -> list[dict]:
     """Return pending outbox events that are not yet marked synced."""
-    rows: list[dict] = []
+    from alarm_app.db.repos.sync_repo import load_pending_outbox as _load
+    session = _get_session()
     try:
-        if not OUTBOX_FILE.exists():
-            return rows
-        for line in OUTBOX_FILE.read_text(encoding="utf-8").splitlines():
-            raw = line.strip()
-            if not raw:
-                continue
-            try:
-                item = json.loads(raw)
-            except Exception:
-                continue
-            if isinstance(item, dict) and not item.get("synced_at"):
-                rows.append(item)
-                if limit is not None and limit > 0 and len(rows) >= limit:
-                    break
-    except Exception:
-        return []
-    return rows
+        return _load(session, limit=limit)
+    finally:
+        session.close()
 
 
 def save_sync_checkpoint(cursor: str, last_ack_at: str | None = None) -> None:
     """Persist durable sync checkpoint cursor."""
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "cursor": str(cursor or ""),
-        "last_ack_at": last_ack_at or datetime.now().isoformat(),
-        "updated_at": datetime.now().isoformat(),
-    }
-    SYNC_CHECKPOINT_FILE.write_text(
-        json.dumps(payload, indent=2, default=str),
-        encoding="utf-8",
-    )
+    from alarm_app.db.repos.sync_repo import save_sync_checkpoint as _save
+    session = _get_session()
+    try:
+        _save(session, cursor=str(cursor or ""))
+    finally:
+        session.close()
 
 
 def load_sync_checkpoint() -> dict | None:
     """Load durable sync checkpoint cursor metadata."""
+    from alarm_app.db.repos.sync_repo import load_sync_checkpoint as _load
+    session = _get_session()
     try:
-        if not SYNC_CHECKPOINT_FILE.exists():
-            return None
-        data = json.loads(SYNC_CHECKPOINT_FILE.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
+        return _load(session)
+    finally:
+        session.close()
 
 
 def mark_outbox_synced(event_ids: list[str], checkpoint_cursor: str | None = None) -> int:
     """Mark matching outbox events as synced and optionally advance checkpoint."""
-    if not event_ids or not OUTBOX_FILE.exists():
+    from alarm_app.db.repos.sync_repo import mark_outbox_synced as _mark
+    if not event_ids:
         return 0
-
-    targets = set(event_ids)
-    updated_rows: list[dict] = []
-    synced_count = 0
-
-    for line in OUTBOX_FILE.read_text(encoding="utf-8").splitlines():
-        raw = line.strip()
-        if not raw:
-            continue
-        try:
-            item = json.loads(raw)
-        except Exception:
-            continue
-        if not isinstance(item, dict):
-            continue
-
-        if item.get("event_id") in targets and not item.get("synced_at"):
-            item["synced_at"] = datetime.now().isoformat()
-            item["sync_status"] = "synced"
-            synced_count += 1
-        updated_rows.append(item)
-
-    with OUTBOX_FILE.open("w", encoding="utf-8") as fh:
-        for item in updated_rows:
-            fh.write(json.dumps(item, default=str) + "\n")
-
-    if checkpoint_cursor:
-        save_sync_checkpoint(checkpoint_cursor)
-
-    return synced_count
+    session = _get_session()
+    try:
+        return _mark(session, event_ids, checkpoint_cursor=checkpoint_cursor)
+    finally:
+        session.close()

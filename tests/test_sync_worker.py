@@ -43,6 +43,14 @@ def _isolate_state_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(state_mod, "SYNC_CHECKPOINT_FILE", tmp_path / "sync_checkpoint.json")
     monkeypatch.setattr(state_mod, "DEVICE_ID_FILE", tmp_path / "device_id.txt")
 
+    # DB engine patches — force each test to use a fresh temp database
+    monkeypatch.setattr("alarm_app.db.engine.STATE_DIR", tmp_path)
+    monkeypatch.setattr("alarm_app.db.engine.DB_PATH", tmp_path / "test.db")
+
+    # Reset module-level engine state so each test gets a fresh DB
+    monkeypatch.setattr(state_mod, "_engine", None)
+    monkeypatch.setattr(state_mod, "_SessionFactory", None)
+
 
 def test_process_once_success_marks_synced_and_advances_checkpoint(tmp_path, monkeypatch):
     _isolate_state_paths(tmp_path, monkeypatch)
