@@ -11,15 +11,15 @@ from PyQt5.QtWidgets import (
     QHeaderView, QAbstractItemView, QSizePolicy,
     QDialog, QScrollArea, QGridLayout, QComboBox,
 )
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QColor, QPixmap, QUrl, QDesktopServices
+from PyQt5.QtCore import Qt, QTimer, QUrl
+from PyQt5.QtGui import QColor, QPixmap, QDesktopServices
 
 try:
-    from ...bdt_parser import BDTData, load_bdt_photos
-    from ...bdt_validator import ValidationResult
+    from ...bdt.parser import BDTData, load_bdt_photos
+    from ...bdt.validator import ValidationResult
 except ImportError:
-    from bdt_parser import BDTData, load_bdt_photos
-    from bdt_validator import ValidationResult
+    from alarm_app.bdt.parser import BDTData, load_bdt_photos
+    from alarm_app.bdt.validator import ValidationResult
 
 
 class BdtDetailPanel(QWidget):
@@ -468,9 +468,9 @@ class BdtDetailPanel(QWidget):
         if bdt and bdt.test_date and self._viewer._full_df is not None and not self._viewer._full_df.empty:
             try:
                 try:
-                    from ...bdt_validator import _find_door_alarms
+                    from ...bdt.validator import _find_door_alarms
                 except ImportError:
-                    from bdt_validator import _find_door_alarms
+                    from alarm_app.bdt.validator import _find_door_alarms
                 import pandas as pd
                 test_date_ts = pd.Timestamp(bdt.test_date).normalize()
                 doors = _find_door_alarms(self._viewer._full_df, bdt.site_code, test_date_ts)
@@ -500,9 +500,9 @@ class BdtDetailPanel(QWidget):
         if bdt and bdt.test_date and bdt.site_code:
             try:
                 try:
-                    from ...bdt_history import load_previous_test, compare_tests
+                    from ...bdt.history import load_previous_test, compare_tests
                 except ImportError:
-                    from bdt_history import load_previous_test, compare_tests
+                    from alarm_app.bdt.history import load_previous_test, compare_tests
                 from datetime import date as date_type
                 test_date = (bdt.test_date.date() if hasattr(bdt.test_date, "date")
                              else bdt.test_date)

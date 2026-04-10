@@ -17,20 +17,20 @@ from PyQt5.QtGui import QColor
 
 try:
     from ...constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS
-    from ...parsers import ExportThread, BDTValidationThread
-    from ...bdt_parser import BDTData
-    from ...bdt_validator import ValidationResult
-    from ...bdt_export import build_bdt_export_sheets
+    from ..threads import ExportThread, BDTValidationThread
+    from ...bdt.parser import BDTData
+    from ...bdt.validator import ValidationResult
+    from ...bdt.export import build_bdt_export_sheets
     from ..dialogs import DailyReviewReportDialog
-    from ... import state
+    from ...data import state
 except ImportError:
-    from constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS
-    from parsers import ExportThread, BDTValidationThread
-    from bdt_parser import BDTData
-    from bdt_validator import ValidationResult
-    from bdt_export import build_bdt_export_sheets
-    from ui.dialogs import DailyReviewReportDialog
-    import state
+    from alarm_app.constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS
+    from alarm_app.ui.threads import ExportThread, BDTValidationThread
+    from alarm_app.bdt.parser import BDTData
+    from alarm_app.bdt.validator import ValidationResult
+    from alarm_app.bdt.export import build_bdt_export_sheets
+    from alarm_app.ui.dialogs import DailyReviewReportDialog
+    from alarm_app.data import state
 
 
 class BdtValidationPanel(QWidget):
