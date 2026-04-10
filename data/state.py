@@ -98,47 +98,64 @@ def load_state() -> dict | None:
 
 
 def save_dataframe(df: pd.DataFrame):
-    from alarm_app.db.repos.alarm_repo import bulk_upsert_alarms
-    session = _get_session()
-    try:
-        bulk_upsert_alarms(session, df)
-        _log.info("DataFrame saved: row_count=%d", len(df))
-    finally:
-        session.close()
+    """Persist alarm DataFrame to Parquet for fast restore.
+
+    Parquet handles 1.8M rows in ~1 second. SQLite row-by-row insert
+    takes minutes at this scale, so bulk alarm data stays in Parquet.
+    The DB stores metadata (files, BDT tests, PM runs, sync events).
+    """
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # Coerce object columns to strings for Parquet compatibility
+    out = df.copy()
+    for col in out.select_dtypes(include=["object"]).columns:
+        out[col] = out[col].astype(str)
+    out.to_parquet(CACHE_FILE, engine="pyarrow", index=False)
+    _log.info("DataFrame saved to Parquet: row_count=%d", len(df))
 
 
 def load_dataframe() -> pd.DataFrame | None:
+    """Load alarm DataFrame from Parquet cache (or cloud API if enabled)."""
     flags = load_feature_flags()
     if flags.get("cloud_read_on"):
         from alarm_app.data.cloud_reader import fetch_alarms_from_api
-
         cloud_df = fetch_alarms_from_api()
         if cloud_df is not None and not cloud_df.empty:
             _log.info("DataFrame loaded from cloud: row_count=%d", len(cloud_df))
             return cloud_df
-        _log.warning("Cloud read failed or empty, falling back to local DB")
-    # Fall back to local DB
-    from alarm_app.db.repos.alarm_repo import load_alarms_as_df
+        _log.warning("Cloud read failed or empty, falling back to local cache")
 
-    session = _get_session()
+    if not CACHE_FILE.exists():
+        _log.info("No Parquet cache found")
+        return None
     try:
-        df = load_alarms_as_df(session)
-        if not df.empty:
-            _log.info("DataFrame loaded from local DB: row_count=%d", len(df))
-        return df if not df.empty else None
-    finally:
-        session.close()
+        df = pd.read_parquet(CACHE_FILE, engine="pyarrow")
+        if df.empty:
+            return None
+        _log.info("DataFrame loaded from Parquet: row_count=%d", len(df))
+        return df
+    except Exception:
+        _log.warning("Parquet cache read failed", exc_info=True)
+        return None
 
 
 def clear_cache():
-    from alarm_app.db.models import AlarmRecord, UIState
-    session = _get_session()
+    """Remove cached data files and clear DB UI state."""
+    for f in (STATE_FILE, CACHE_FILE):
+        try:
+            f.unlink(missing_ok=True)
+        except Exception:
+            pass
+    # Also clear UI state in DB
     try:
-        session.query(AlarmRecord).delete()
-        session.query(UIState).delete()
-        session.commit()
-    finally:
-        session.close()
+        from alarm_app.db.models import UIState
+        session = _get_session()
+        try:
+            session.query(UIState).delete()
+            session.commit()
+        finally:
+            session.close()
+    except Exception:
+        pass
 
 
 # ── Review log / daily report ──────────────────────────────

@@ -182,15 +182,16 @@ class LoaderThread(QThread):
                 f"Loaded {len(combined):,} records from {len(dfs)} file(s){skip_msg}{duplicate_msg}",
             )
 
-            # ── Background DB persist: runs after UI is already updated ──
+            # ── Background DB persist: file metadata only ──
+            # Alarm rows stay in-memory (DataFrame) and persist via Parquet
+            # in state.save_dataframe(). Writing 1.8M rows to SQLite is too
+            # slow for the desktop use case. The DB stores file registrations,
+            # BDT tests, PM runs, and sync events — not bulk alarm rows.
             try:
                 bg_engine = _db_create_engine()
                 _db_init_db(bg_engine)
                 bg_factory = _db_get_session_factory(bg_engine)
                 bg_session = bg_factory()
-
-                _log.info("Background DB persist: %d rows", len(combined))
-                _bulk_upsert_alarms(bg_session, combined)
 
                 for _idx, info in infos_to_parse:
                     fp = info.get("path", "")
@@ -218,9 +219,9 @@ class LoaderThread(QThread):
                 except Exception:
                     pass
                 bg_session.close()
-                _log.info("Background DB persist complete")
+                _log.info("File registrations persisted to DB")
             except Exception:
-                _log.warning("Background DB persist failed", exc_info=True)
+                _log.warning("DB file registration failed", exc_info=True)
 
             # Durable sync journal entries (local outbox) for future cloud migration.
             try:
