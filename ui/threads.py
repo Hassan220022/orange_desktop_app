@@ -109,28 +109,6 @@ class LoaderThread(QThread):
                         df = future.result()
                         if df is not None and not df.empty:
                             dfs.append(df)
-                            # Register file in DB (skip if already imported)
-                            fp = info.get("path", "")
-                            if db_session and fp and fp not in _already_imported and os.path.isfile(fp):
-                                try:
-                                    file_sha = compute_file_sha256(fp)
-                                    ext = os.path.splitext(fp)[1].lower()
-                                    source_kind = "alarm_xlsx" if ext in (".xlsx", ".xls") else "alarm_csv"
-                                    _register_file(
-                                        db_session,
-                                        file_sha256=file_sha,
-                                        original_path=str(fp),
-                                        original_name=info.get("filename", os.path.basename(fp)),
-                                        file_size=os.path.getsize(fp),
-                                        source_kind=source_kind,
-                                    )
-                                    db_session.commit()
-                                except Exception:
-                                    _log.warning("File registration failed for %s", fp, exc_info=True)
-                                    try:
-                                        db_session.rollback()
-                                    except Exception:
-                                        pass
                     except Exception:
                         pass  # individual file failures silently skipped
 
@@ -197,6 +175,34 @@ class LoaderThread(QThread):
                         db_session.rollback()
                     except Exception:
                         pass
+
+                # Register files AFTER alarm rows are committed.
+                # This prevents orphaned file entries if the insert hangs/fails.
+                for _idx, info in infos_to_parse:
+                    fp = info.get("path", "")
+                    if fp and fp not in _already_imported and os.path.isfile(fp):
+                        try:
+                            file_sha = compute_file_sha256(fp)
+                            ext = os.path.splitext(fp)[1].lower()
+                            source_kind = "alarm_xlsx" if ext in (".xlsx", ".xls") else "alarm_csv"
+                            _register_file(
+                                db_session,
+                                file_sha256=file_sha,
+                                original_path=str(fp),
+                                original_name=info.get("filename", os.path.basename(fp)),
+                                file_size=os.path.getsize(fp),
+                                source_kind=source_kind,
+                            )
+                        except Exception:
+                            _log.warning("File registration failed for %s", fp, exc_info=True)
+                            try:
+                                db_session.rollback()
+                            except Exception:
+                                pass
+                try:
+                    db_session.commit()
+                except Exception:
+                    pass
 
             # Durable sync journal entries (local outbox) for future cloud migration.
             try:
