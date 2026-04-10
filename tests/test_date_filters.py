@@ -1,8 +1,8 @@
-"""Tests for the date filter helpers in viewer.py plus state round-trip.
+"""Tests for the date filter helpers in core/filters.py plus state round-trip.
 
 These exercise the pure filtering logic without needing a QApplication:
-    - ``AlarmViewer._parse_manual_days`` (static)
-    - ``compute_date_mask`` (module-level helper)
+    - ``parse_manual_days`` (standalone function)
+    - ``compute_date_mask`` (standalone function)
     - ``save_state`` / ``load_state`` round-trip for the new date keys.
 """
 
@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 
 import alarm_app.state as state_mod
-from alarm_app.viewer import AlarmViewer, compute_date_mask
+from alarm_app.core.filters import compute_date_mask, parse_manual_days
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -47,22 +47,22 @@ def sample_occurred() -> pd.Series:
 # ─────────────────────────────────────────────────────────────────────
 class TestParseManualDays:
     def test_empty_string_returns_empty(self):
-        days, invalid = AlarmViewer._parse_manual_days("")
+        days, invalid = parse_manual_days("")
         assert days == set()
         assert invalid == []
 
     def test_whitespace_only(self):
-        days, invalid = AlarmViewer._parse_manual_days("   ")
+        days, invalid = parse_manual_days("   ")
         assert days == set()
         assert invalid == []
 
     def test_single_valid_day(self):
-        days, invalid = AlarmViewer._parse_manual_days("2026-01-15")
+        days, invalid = parse_manual_days("2026-01-15")
         assert days == {pd.Timestamp("2026-01-15")}
         assert invalid == []
 
     def test_multiple_valid_days_comma_separated(self):
-        days, invalid = AlarmViewer._parse_manual_days(
+        days, invalid = parse_manual_days(
             "2026-01-01, 2026-02-02, 2026-03-03")
         assert days == {
             pd.Timestamp("2026-01-01"),
@@ -72,7 +72,7 @@ class TestParseManualDays:
         assert invalid == []
 
     def test_supports_space_and_semicolon_separators(self):
-        days, invalid = AlarmViewer._parse_manual_days(
+        days, invalid = parse_manual_days(
             "2026-01-01 2026-02-02;2026-03-03")
         assert days == {
             pd.Timestamp("2026-01-01"),
@@ -82,20 +82,20 @@ class TestParseManualDays:
         assert invalid == []
 
     def test_dedupes_repeated_days(self):
-        days, invalid = AlarmViewer._parse_manual_days(
+        days, invalid = parse_manual_days(
             "2026-01-01, 2026-01-01 , 2026-01-01")
         assert days == {pd.Timestamp("2026-01-01")}
         assert invalid == []
 
     def test_normalizes_parsed_timestamps_to_midnight(self):
         """Parsed dates should always compare equal to their midnight form."""
-        days, _invalid = AlarmViewer._parse_manual_days("2026-01-15")
+        days, _invalid = parse_manual_days("2026-01-15")
         (only,) = days
         assert only == only.normalize()
         assert only.hour == 0 and only.minute == 0 and only.second == 0
 
     def test_invalid_tokens_are_collected(self):
-        days, invalid = AlarmViewer._parse_manual_days(
+        days, invalid = parse_manual_days(
             "2026-01-01, not-a-date, 2026-02-02, garbage")
         assert days == {
             pd.Timestamp("2026-01-01"),
@@ -104,7 +104,7 @@ class TestParseManualDays:
         assert invalid == ["not-a-date", "garbage"]
 
     def test_all_invalid_returns_empty_days(self):
-        days, invalid = AlarmViewer._parse_manual_days("nope; nada, zilch")
+        days, invalid = parse_manual_days("nope; nada, zilch")
         assert days == set()
         assert invalid == ["nope", "nada", "zilch"]
 
