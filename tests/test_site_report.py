@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from alarm_app.site_report import (
+from alarm_app.data.site_report import (
     build_site_alarm_report,
     filter_site_sheet_to_matching_sites,
     infer_site_id_column,

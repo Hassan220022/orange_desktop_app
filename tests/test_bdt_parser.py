@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from alarm_app.bdt_parser import (
+from alarm_app.bdt.parser import (
     BDTData,
     PhotoSlot,
     _parse_battery_info,
@@ -530,7 +530,7 @@ class TestParseBdtFile:
             mock_owb.__getitem__ = MagicMock(return_value=mock_ws)
 
             with patch("builtins.__import__", side_effect=mock_import):
-                with patch("alarm_app.bdt_parser.load_workbook",
+                with patch("alarm_app.bdt.parser.load_workbook",
                            return_value=mock_owb):
                     result = parse_bdt_file("/fake/file.xlsx",
                                             skip_photos=True)
@@ -558,7 +558,7 @@ class TestParseBdtFile:
             mock_owb.sheetnames = ["Sheet1"]
 
             with patch("builtins.__import__", side_effect=mock_import):
-                with patch("alarm_app.bdt_parser.load_workbook",
+                with patch("alarm_app.bdt.parser.load_workbook",
                            return_value=mock_owb):
                     result = parse_bdt_file("/fake/file.xlsx",
                                             skip_photos=True)
@@ -582,7 +582,7 @@ class TestParseBdtFile:
                 return original_import(name, *args, **kwargs)
 
             with patch("builtins.__import__", side_effect=mock_import):
-                with patch("alarm_app.bdt_parser.load_workbook",
+                with patch("alarm_app.bdt.parser.load_workbook",
                            side_effect=Exception("corrupt file")):
                     result = parse_bdt_file("/fake/corrupt.xlsx",
                                             skip_photos=True)
@@ -615,7 +615,7 @@ class TestParseBdtFile:
             mock_owb.sheetnames = ["BDT sheet"]
             mock_owb.__getitem__ = MagicMock(return_value=mock_ws)
 
-            with patch("alarm_app.bdt_parser.load_workbook", return_value=mock_owb):
+            with patch("alarm_app.bdt.parser.load_workbook", return_value=mock_owb):
                 result = parse_bdt_file("/fake/fallback.xlsx", skip_photos=True)
 
             assert result.errors == []

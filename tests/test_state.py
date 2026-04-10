@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-import alarm_app.state as state_mod
+import alarm_app.data.state as state_mod
 
 
 @pytest.fixture(autouse=True)

@@ -1,7 +1,7 @@
 """Tests for local sync worker state machine behavior."""
 
-import alarm_app.state as state_mod
-from alarm_app.sync_worker import (
+import alarm_app.data.state as state_mod
+from alarm_app.data.sync import (
     LocalSyncWorker,
     TransientSyncError,
     compute_batch_idempotency_key,

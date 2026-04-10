@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from alarm_app.bdt_history import (
+from alarm_app.bdt.history import (
     BDTTestRecord,
     BDTComparison,
     save_test_record,
@@ -38,7 +38,7 @@ class _FakeBDT:
 @pytest.fixture
 def history_dir(tmp_path, monkeypatch):
     """Redirect HISTORY_DIR to a temp directory."""
-    import alarm_app.bdt_history as mod
+    import alarm_app.bdt.history as mod
     monkeypatch.setattr(mod, "HISTORY_DIR", tmp_path)
     monkeypatch.setattr(mod, "PM_RUNS_DIR", tmp_path / "_pm_runs")
     monkeypatch.setattr(mod, "PM_RULE_RESULTS_DIR", tmp_path / "_pm_rule_results")
@@ -204,7 +204,7 @@ class TestValidationRunPersistence:
         assert run["rule_count"] == 11
         assert run["is_complete_rule_set"] is True
 
-        import alarm_app.bdt_history as mod
+        import alarm_app.bdt.history as mod
         run_path = mod.PM_RUNS_DIR / f"{run['idempotency_key']}.json"
         assert run_path.exists()
 
@@ -236,7 +236,7 @@ class TestValidationRunPersistence:
         assert first["idempotency_key"] == second["idempotency_key"]
         assert first["run_id"] == second["run_id"]
 
-        import alarm_app.bdt_history as mod
+        import alarm_app.bdt.history as mod
         run_files = list(mod.PM_RUNS_DIR.glob("*.json"))
         rules_files = list(mod.PM_RULE_RESULTS_DIR.glob("*.jsonl"))
         assert len(run_files) == 1

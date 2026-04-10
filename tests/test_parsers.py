@@ -17,7 +17,7 @@ from unittest.mock import patch
 # we only exercise functions that never touch Qt.
 from alarm_app.core.duration import duration_to_secs, secs_to_hhmmss
 from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
-from alarm_app.parsers import (
+from alarm_app.data.loaders import (
     _is_alarm_header,
     _load_external_summary_lookup,
     _match_external_summary_row,
@@ -34,7 +34,7 @@ from alarm_app.constants import (
 class TestBDTValidationThreadFiltering:
     def test_skips_missing_bdt_sheet_results(self):
         # Import here so test_parsers can remain mostly pure-function focused.
-        from alarm_app.parsers import BDTValidationThread
+        from alarm_app.ui.threads import BDTValidationThread
 
         class _FakeBdtData:
             def __init__(self, filename, errors):
@@ -74,9 +74,9 @@ class TestBDTValidationThreadFiltering:
         th.finished.connect(lambda results, by_site: captured.update(
             {"results": results, "by_site": by_site}))
 
-        with patch("alarm_app.bdt_parser.parse_bdt_file", side_effect=fake_parse), \
-             patch("alarm_app.bdt_validator.validate_bdt", side_effect=fake_validate), \
-             patch("alarm_app.bdt_parser.load_bdt_photos", side_effect=lambda b: None):
+        with patch("alarm_app.bdt.parser.parse_bdt_file", side_effect=fake_parse), \
+             patch("alarm_app.bdt.validator.validate_bdt", side_effect=fake_validate), \
+             patch("alarm_app.bdt.parser.load_bdt_photos", side_effect=lambda b: None):
             th.run()
 
         assert "results" in captured
@@ -85,7 +85,7 @@ class TestBDTValidationThreadFiltering:
         assert "4415DE" in captured["by_site"]
 
     def test_keeps_partially_parsed_file_with_nonfatal_errors(self):
-        from alarm_app.parsers import BDTValidationThread
+        from alarm_app.ui.threads import BDTValidationThread
 
         class _FakeBdtData:
             def __init__(self, filename, errors):
@@ -125,9 +125,9 @@ class TestBDTValidationThreadFiltering:
         th.finished.connect(lambda results, by_site: captured.update(
             {"results": results, "by_site": by_site}))
 
-        with patch("alarm_app.bdt_parser.parse_bdt_file", side_effect=fake_parse), \
-             patch("alarm_app.bdt_validator.validate_bdt", side_effect=fake_validate), \
-             patch("alarm_app.bdt_parser.load_bdt_photos", side_effect=lambda b: None):
+        with patch("alarm_app.bdt.parser.parse_bdt_file", side_effect=fake_parse), \
+             patch("alarm_app.bdt.validator.validate_bdt", side_effect=fake_validate), \
+             patch("alarm_app.bdt.parser.load_bdt_photos", side_effect=lambda b: None):
             th.run()
 
         assert "results" in captured
@@ -136,7 +136,7 @@ class TestBDTValidationThreadFiltering:
         assert "0630UP" in captured["by_site"]
 
     def test_applies_external_summary_lookup_before_validation(self):
-        from alarm_app.parsers import BDTValidationThread
+        from alarm_app.ui.threads import BDTValidationThread
 
         class _FakeBdtData:
             def __init__(self, filename):

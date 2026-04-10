@@ -9,7 +9,7 @@ These exercise the pure filtering logic without needing a QApplication:
 import pandas as pd
 import pytest
 
-import alarm_app.state as state_mod
+import alarm_app.data.state as state_mod
 from alarm_app.core.filters import compute_date_mask, parse_manual_days
 
 

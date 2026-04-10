@@ -4,8 +4,8 @@ from datetime import datetime
 
 import pandas as pd
 
-from alarm_app.bdt_parser import BDTData, PhotoSlot
-from alarm_app.bdt_validator import (
+from alarm_app.bdt.parser import BDTData, PhotoSlot
+from alarm_app.bdt.validator import (
     _rule_1_photos,
     _rule_2_power_alarm_match,
     _rule_3_string_vs_busbar,
