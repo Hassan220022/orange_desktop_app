@@ -45,6 +45,19 @@ alarm_app/
 │   ├── export.py        Export formatting for PM summary sheets
 │   └── history.py       Test record persistence and comparison
 │
+├── db/              SQLAlchemy ORM + repositories
+│   ├── engine.py        create_engine, get_session, init_db (SQLite local, Postgres later)
+│   ├── models.py        14 ORM table models
+│   ├── hashing.py       Canonical normalization, SHA-256, dHash for dedup
+│   └── repos/           Repository pattern — one file per domain
+│       ├── alarm_repo.py    Alarm records with row-hash dedup
+│       ├── bdt_repo.py      BDT tests + photos with content-hash dedup
+│       ├── blob_repo.py     Blob assets — images on disk, metadata in DB
+│       ├── file_repo.py     Uploaded files with SHA-256 dedup
+│       ├── pm_repo.py       PM validation runs + rule results
+│       ├── state_repo.py    UI state key-value store
+│       └── sync_repo.py     Sync outbox + checkpoints
+│
 └── ui/              PyQt5 — imports from core/, data/, bdt/
     ├── viewer.py        AlarmViewer (QMainWindow) — wiring and state only
     ├── model.py         AlarmTableModel — pre-stringified 2D cache
@@ -79,6 +92,7 @@ alarm_app/
 10. State persistence uses `~/.alarm_viewer/state.json` (UI settings) and `data_cache.parquet` (DataFrame). Object columns are coerced to strings before Parquet serialisation.
 11. `core/` and `data/` must never import from `ui/`. This is the only architectural rule.
 12. Panels receive data from AlarmViewer via bridge pattern or method calls.
+13. `db/` handles all SQL. No raw SQL outside `db/repos/`. `data/state.py` is the adapter between the app and the DB layer.
 
 ## Quick Edit Reference
 
@@ -92,6 +106,10 @@ alarm_app/
 | Session persistence     | `data/state.py`                     |
 | UI layout / wiring      | `ui/viewer.py`                      |
 | Filter logic            | `core/filters.py`                   |
+| DB tables / columns     | `db/models.py`                      |
+| DB queries / CRUD       | `db/repos/*.py`                     |
+| Hash computation        | `db/hashing.py`                     |
+| DB connection           | `db/engine.py`                      |
 | BDT parsing             | `bdt/parser.py`                     |
 | BDT validation rules    | `bdt/validator.py`                  |
 | BDT export formatting   | `bdt/export.py`                     |
