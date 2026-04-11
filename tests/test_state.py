@@ -55,52 +55,23 @@ class TestStatePersistence:
 
 # ── save_dataframe / load_dataframe round-trip ─────────────────
 class TestDataFramePersistence:
-    def test_round_trip(self):
-        df = pd.DataFrame({
-            "site_id": ["A001", "B002"],
-            "occurred_on": pd.to_datetime(["2025-01-01", "2025-01-02"]),
-            "duration": ["01:30:00", "02:45:00"],
-        })
-        state_mod.save_dataframe(df)
-        loaded = state_mod.load_dataframe()
-        assert loaded is not None
-        assert len(loaded) == 2
-        # DB layer returns full AlarmRecord schema; verify saved columns survived
-        assert "site_id" in loaded.columns
-        assert "occurred_on" in loaded.columns
-        assert "duration" in loaded.columns
-        assert loaded["site_id"].tolist() == ["A001", "B002"]
-        assert loaded["duration"].tolist() == ["01:30:00", "02:45:00"]
+    def test_save_is_noop(self):
+        """save_dataframe is a no-op — alarm data is not cached."""
+        df = pd.DataFrame({"site_id": ["A001", "B002"]})
+        state_mod.save_dataframe(df)  # should not raise
 
-    def test_object_columns_stored_in_mapped_fields(self):
-        """Columns that map to AlarmRecord fields survive the DB round-trip."""
-        df = pd.DataFrame({
-            "site_id": ["S1", "S2"],
-            "alarm_name": ["PowerFail", None],
-            "vendor": ["Huawei", "Nokia"],
-        })
-        state_mod.save_dataframe(df)
-        loaded = state_mod.load_dataframe()
-        assert loaded is not None
-        assert loaded["site_id"].tolist() == ["S1", "S2"]
-        assert loaded["vendor"].tolist() == ["Huawei", "Nokia"]
-
-    def test_load_missing_file_returns_none(self):
+    def test_load_returns_none(self):
+        """load_dataframe always returns None — no alarm caching."""
         assert state_mod.load_dataframe() is None
 
 
 # ── clear_cache ────────────────────────────────────────────────
 class TestClearCache:
-    def test_removes_state_and_alarm_data(self):
+    def test_clears_state(self):
         state_mod.save_state({"x": 1})
-        state_mod.save_dataframe(pd.DataFrame({"site_id": ["A1"]}))
         assert state_mod.load_state() is not None
-        assert state_mod.load_dataframe() is not None
-
         state_mod.clear_cache()
-
         assert state_mod.load_state() is None
-        assert state_mod.load_dataframe() is None
 
     def test_no_error_when_empty(self):
         """clear_cache must not raise even when DB tables are empty."""

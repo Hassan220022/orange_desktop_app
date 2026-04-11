@@ -98,44 +98,21 @@ def load_state() -> dict | None:
 
 
 def save_dataframe(df: pd.DataFrame):
-    """Persist alarm DataFrame to Parquet for fast restore.
+    """No-op. Alarm data is not cached between sessions.
 
-    Parquet handles 1.8M rows in ~1 second. SQLite row-by-row insert
-    takes minutes at this scale, so bulk alarm data stays in Parquet.
-    The DB stores metadata (files, BDT tests, PM runs, sync events).
+    Users load from disk each time. The DB stores metadata (files,
+    BDT tests, PM runs, sync events) but not bulk alarm rows.
     """
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    # Coerce object columns to strings for Parquet compatibility
-    out = df.copy()
-    for col in out.select_dtypes(include=["object"]).columns:
-        out[col] = out[col].astype(str)
-    out.to_parquet(CACHE_FILE, engine="pyarrow", index=False)
-    _log.info("DataFrame saved to Parquet: row_count=%d", len(df))
+    _log.debug("save_dataframe called (no-op, caching disabled)")
 
 
 def load_dataframe() -> pd.DataFrame | None:
-    """Load alarm DataFrame from Parquet cache (or cloud API if enabled)."""
-    flags = load_feature_flags()
-    if flags.get("cloud_read_on"):
-        from alarm_app.data.cloud_reader import fetch_alarms_from_api
-        cloud_df = fetch_alarms_from_api()
-        if cloud_df is not None and not cloud_df.empty:
-            _log.info("DataFrame loaded from cloud: row_count=%d", len(cloud_df))
-            return cloud_df
-        _log.warning("Cloud read failed or empty, falling back to local cache")
+    """No-op. Alarm data is not cached between sessions.
 
-    if not CACHE_FILE.exists():
-        _log.info("No Parquet cache found")
-        return None
-    try:
-        df = pd.read_parquet(CACHE_FILE, engine="pyarrow")
-        if df.empty:
-            return None
-        _log.info("DataFrame loaded from Parquet: row_count=%d", len(df))
-        return df
-    except Exception:
-        _log.warning("Parquet cache read failed", exc_info=True)
-        return None
+    Returns None so the app starts fresh. Users load from disk.
+    """
+    _log.debug("load_dataframe called (no-op, caching disabled)")
+    return None
 
 
 def clear_cache():
