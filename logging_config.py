@@ -1,6 +1,6 @@
 """Centralized logging configuration.
 
-Log files are written to ~/.alarm_viewer/logs/:
+Log files are written to <repo>/logs/:
   - app.log       — desktop app (UI, threads, state)
   - backend.log   — FastAPI server
   - db.log        — database operations (engine, repos, hashing)
@@ -14,7 +14,9 @@ import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-LOG_DIR = Path.home() / ".alarm_viewer" / "logs"
+# Logs live inside the repo (not in ~/.alarm_viewer/) so they're easy
+# to find, tail, and tail -f alongside the code.
+LOG_DIR = Path(__file__).resolve().parent / "logs"
 LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 MAX_BYTES = 5 * 1024 * 1024  # 5 MB
