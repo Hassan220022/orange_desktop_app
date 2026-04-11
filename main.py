@@ -6,6 +6,7 @@ Starts the FastAPI backend in a child process and shuts it down on exit.
 """
 
 import atexit
+import logging
 import multiprocessing
 import os
 import signal
@@ -19,9 +20,13 @@ from PyQt5.QtWidgets import QApplication
 try:
     from .constants import APP_NAME, APP_VERSION
     from .ui.viewer import AlarmViewer
+    from .logging_config import setup_logging
 except ImportError:
     from alarm_app.constants import APP_NAME, APP_VERSION
     from alarm_app.ui.viewer import AlarmViewer
+    from alarm_app.logging_config import setup_logging
+
+_log = logging.getLogger(__name__)
 
 _backend_process: multiprocessing.Process | None = None
 BACKEND_HOST = os.environ.get("ALARM_BACKEND_HOST", "127.0.0.1")
@@ -30,12 +35,25 @@ BACKEND_PORT = int(os.environ.get("ALARM_BACKEND_PORT", "8787"))
 
 def _run_backend():
     """Target for the backend child process."""
+    # Child processes don't inherit logging config — set it up here too
+    from alarm_app.logging_config import setup_logging
+    setup_logging()
+
+    import logging
+    log = logging.getLogger(__name__)
+    log.info("Backend process starting: host=%s port=%s", BACKEND_HOST, BACKEND_PORT)
+
     import uvicorn
     from alarm_app.web.app import create_app
 
     app = create_app()
+    log.info("Backend FastAPI app created, starting uvicorn")
+
+    # log_config=None prevents uvicorn from overriding our logging setup;
+    # uvicorn's own loggers then propagate to handlers attached via
+    # setup_logging() (uvicorn, uvicorn.error, uvicorn.access → backend.log).
     uvicorn.run(app, host=BACKEND_HOST, port=BACKEND_PORT,
-                log_level="warning")
+                log_config=None, log_level="info", access_log=True)
 
 
 def _start_backend():
@@ -60,6 +78,9 @@ def _stop_backend():
 
 
 def main():
+    setup_logging()
+    _log.info("Alarm Viewer %s starting", APP_VERSION)
+
     # Windows / macOS High-DPI support
     if hasattr(Qt, "AA_EnableHighDpiScaling"):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
@@ -72,6 +93,7 @@ def main():
     app.setStyle("Fusion")
 
     # Start backend server
+    _log.info("Starting backend at %s:%s", BACKEND_HOST, BACKEND_PORT)
     _start_backend()
     atexit.register(_stop_backend)
     app.aboutToQuit.connect(_stop_backend)

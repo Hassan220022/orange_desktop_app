@@ -32,6 +32,3 @@ def create_app() -> FastAPI:
         return HealthResponse(status="ok", version="0.1.0")
 
     return app
-
-
-app = create_app()

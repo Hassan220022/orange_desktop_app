@@ -84,7 +84,14 @@ def setup_logging(*, console_level: int = logging.WARNING,
     web_logger.addHandler(backend_handler)
     web_logger.setLevel(file_level)
     web_logger.propagate = False
-    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        logger = logging.getLogger(name)
-        logger.addHandler(backend_handler)
-        logger.setLevel(file_level)
+    # Uvicorn sub-loggers: attach handler only to the parent, and set
+    # propagate=False on children so they don't double-emit.
+    uv_parent = logging.getLogger("uvicorn")
+    uv_parent.addHandler(backend_handler)
+    uv_parent.setLevel(file_level)
+    uv_parent.propagate = False
+    for name in ("uvicorn.error", "uvicorn.access"):
+        child = logging.getLogger(name)
+        child.setLevel(file_level)
+        # Children propagate to uvicorn parent which has the handler
+        child.propagate = True
