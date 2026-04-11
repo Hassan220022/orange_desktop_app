@@ -12,3 +12,4 @@ imagehash>=4.3
 Pillow>=10.0
 fastapi[standard]>=0.110
 uvicorn>=0.27
+duckdb>=1.0

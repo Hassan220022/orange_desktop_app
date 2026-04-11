@@ -530,7 +530,7 @@ class AlarmViewer(QMainWindow):
 
         # Kick off background data restore (DB preferred, Parquet fallback)
         from alarm_app.db.engine import DB_PATH as _db_path
-        if state.CACHE_FILE.exists() or _db_path.exists():
+        if state.ALARM_DB_FILE.exists() or state.CACHE_FILE.exists() or _db_path.exists():
             self._sbar.showMessage("Restoring previous session...")
             self._restore_thread = RestoreThread()
             self._restore_thread.finished.connect(self._on_cache_restored)

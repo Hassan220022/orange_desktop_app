@@ -22,6 +22,7 @@ def _isolate_state_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(state_mod, "OUTBOX_FILE", tmp_path / "sync_outbox.jsonl")
     monkeypatch.setattr(state_mod, "SYNC_CHECKPOINT_FILE", tmp_path / "sync_checkpoint.json")
     monkeypatch.setattr(state_mod, "DEVICE_ID_FILE", tmp_path / "device_id.txt")
+    monkeypatch.setattr(state_mod, "ALARM_DB_FILE", tmp_path / "alarms.duckdb")
 
     # DB engine patches — force each test to use a fresh temp database
     monkeypatch.setattr("alarm_app.db.engine.STATE_DIR", tmp_path)
@@ -55,13 +56,20 @@ class TestStatePersistence:
 
 # ── save_dataframe / load_dataframe round-trip ─────────────────
 class TestDataFramePersistence:
-    def test_save_is_noop(self):
-        """save_dataframe is a no-op — alarm data is not cached."""
-        df = pd.DataFrame({"site_id": ["A001", "B002"]})
-        state_mod.save_dataframe(df)  # should not raise
+    def test_round_trip(self):
+        df = pd.DataFrame({
+            "site_id": ["A001", "B002"],
+            "occurred_on": pd.to_datetime(["2025-01-01", "2025-01-02"]),
+            "duration": ["01:30:00", "02:45:00"],
+        })
+        state_mod.save_dataframe(df)
+        loaded = state_mod.load_dataframe()
+        assert loaded is not None
+        assert len(loaded) == 2
+        assert "site_id" in loaded.columns
+        assert loaded["site_id"].tolist() == ["A001", "B002"]
 
-    def test_load_returns_none(self):
-        """load_dataframe always returns None — no alarm caching."""
+    def test_load_missing_returns_none(self):
         assert state_mod.load_dataframe() is None
 
 

@@ -97,27 +97,58 @@ def load_state() -> dict | None:
         session.close()
 
 
-def save_dataframe(df: pd.DataFrame):
-    """No-op. Alarm data is not cached between sessions.
+ALARM_DB_FILE = STATE_DIR / "alarms.duckdb"
 
-    Users load from disk each time. The DB stores metadata (files,
-    BDT tests, PM runs, sync events) but not bulk alarm rows.
+
+def save_dataframe(df: pd.DataFrame):
+    """Persist alarm DataFrame to DuckDB for fast restore.
+
+    DuckDB writes 1.8M rows in ~2 seconds and reads in ~1 second.
     """
-    _log.debug("save_dataframe called (no-op, caching disabled)")
+    import duckdb
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    con = duckdb.connect(str(ALARM_DB_FILE))
+    try:
+        con.execute("DROP TABLE IF EXISTS alarm_records")
+        con.execute("CREATE TABLE alarm_records AS SELECT * FROM df")
+        _log.info("DataFrame saved to DuckDB: row_count=%d", len(df))
+    finally:
+        con.close()
 
 
 def load_dataframe() -> pd.DataFrame | None:
-    """No-op. Alarm data is not cached between sessions.
+    """Load alarm DataFrame from DuckDB (or cloud API if enabled)."""
+    import duckdb
+    flags = load_feature_flags()
+    if flags.get("cloud_read_on"):
+        from alarm_app.data.cloud_reader import fetch_alarms_from_api
+        cloud_df = fetch_alarms_from_api()
+        if cloud_df is not None and not cloud_df.empty:
+            _log.info("DataFrame loaded from cloud: row_count=%d", len(cloud_df))
+            return cloud_df
+        _log.warning("Cloud read failed or empty, falling back to local DuckDB")
 
-    Returns None so the app starts fresh. Users load from disk.
-    """
-    _log.debug("load_dataframe called (no-op, caching disabled)")
-    return None
+    if not ALARM_DB_FILE.exists():
+        _log.info("No DuckDB alarm cache found")
+        return None
+    try:
+        con = duckdb.connect(str(ALARM_DB_FILE), read_only=True)
+        try:
+            df = con.execute("SELECT * FROM alarm_records").fetchdf()
+        finally:
+            con.close()
+        if df.empty:
+            return None
+        _log.info("DataFrame loaded from DuckDB: row_count=%d", len(df))
+        return df
+    except Exception:
+        _log.warning("DuckDB alarm cache read failed", exc_info=True)
+        return None
 
 
 def clear_cache():
     """Remove cached data files and clear DB UI state."""
-    for f in (STATE_FILE, CACHE_FILE):
+    for f in (STATE_FILE, CACHE_FILE, ALARM_DB_FILE):
         try:
             f.unlink(missing_ok=True)
         except Exception:
