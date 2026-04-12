@@ -139,6 +139,35 @@ _BRAND_KEYWORDS = (
 )
 
 
+_BRAND_LABEL_KEYWORDS = ("battery brand", "battery type", "brand", "make",
+                         "manufacturer")
+_VOLTAGE_LABEL_KEYWORDS = ("nominal voltage", "nominal volt", "voltage",
+                           "volt")
+_AH_LABEL_KEYWORDS = ("ampere hour", "ampere-hour", "capacity", "ah",
+                       "battery capacity")
+_STRINGS_LABEL_KEYWORDS = ("number of string", "number of strings",
+                           "no. of string", "strings", "string count")
+_NUM_BATTERIES_LABEL_KEYWORDS = ("number of batteries", "no. of batteries",
+                                 "batteries count", "battery count")
+_NUM_MODULES_LABEL_KEYWORDS = ("modules", "module count", "number of modules",
+                               "no. of modules")
+
+
+def _read_value_near_label(cell_fn, r: int, c: int, max_col: int):
+    """Return the first non-empty value to the right of (r, c)."""
+    for offset in (1, 2):
+        if c + offset <= max_col:
+            val = _safe_str(cell_fn(r, c + offset))
+            if val:
+                return val
+    # Also try the canonical value column 9
+    if c < 9:
+        val = _safe_str(cell_fn(r, 9))
+        if val:
+            return val
+    return ""
+
+
 def _parse_battery_info(max_column, cell_fn, data: BDTData):
     """Extract battery specs from the BDT sheet.
 
@@ -149,7 +178,9 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData):
         row 46: Battery ampere hour
         row 48: Number of strings
 
-    Falls back to keyword scanning rows 35-65 if fixed positions don't match.
+    Falls back to keyword scanning rows 20-100 if fixed positions miss.
+    A second-pass broad scan (rows 1-150) catches templates with unusual
+    layouts.
     """
     brand_raw = ""
     ah_raw = None
@@ -173,45 +204,93 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData):
     if parsed is not None and parsed > 0:
         strings_raw = int(parsed)
 
-    # ── Keyword-based scan (rows 35-65) as fallback ──
-    for r in range(35, 66):
-        val = _safe_str(cell_fn(r, 1)).lower()
-        if not val:
-            val = _safe_str(cell_fn(r, 2)).lower()
-        if not val:
-            continue
+    # ── Keyword-based scan (rows 20-100, cols 0-15) as fallback ──
+    scan_col_end = min(max(max_column, 9), 16)
+    for r in range(20, 101):
+        for c in range(0, scan_col_end + 1):
+            val = _safe_str(cell_fn(r, c)).lower()
+            if not val:
+                continue
 
-        # Battery brand
-        if not brand_raw and "battery brand" in val:
-            candidate = _safe_str(cell_fn(r, 9))
-            if candidate:
-                brand_raw = candidate
+            # Battery brand
+            if not brand_raw and any(kw in val for kw in _BRAND_LABEL_KEYWORDS):
+                candidate = _read_value_near_label(cell_fn, r, c, max_column)
+                if candidate:
+                    brand_raw = candidate
 
-        # Nominal voltage
-        if voltage_raw is None and "nominal voltage" in val:
-            parsed = _safe_float(cell_fn(r, 9))
-            if parsed is not None and parsed > 0:
-                voltage_raw = parsed
+            # Nominal voltage
+            if voltage_raw is None and any(kw in val for kw in _VOLTAGE_LABEL_KEYWORDS):
+                raw = _read_value_near_label(cell_fn, r, c, max_column)
+                parsed = _safe_float(raw) if raw else None
+                if parsed is not None and parsed > 0:
+                    voltage_raw = parsed
 
-        # AH
-        if ah_raw is None and "ampere hour" in val:
-            parsed = _safe_float(cell_fn(r, 9))
-            if parsed is not None and parsed > 0:
-                ah_raw = parsed
+            # AH
+            if ah_raw is None and any(kw in val for kw in _AH_LABEL_KEYWORDS):
+                raw = _read_value_near_label(cell_fn, r, c, max_column)
+                parsed = _safe_float(raw) if raw else None
+                if parsed is not None and parsed > 0:
+                    ah_raw = parsed
 
-        # Number of strings
-        if strings_raw is None and "number of string" in val:
-            parsed = _safe_float(cell_fn(r, 9))
-            if parsed is not None and parsed > 0:
-                strings_raw = int(parsed)
+            # Number of strings
+            if strings_raw is None and any(kw in val for kw in _STRINGS_LABEL_KEYWORDS):
+                raw = _read_value_near_label(cell_fn, r, c, max_column)
+                parsed = _safe_float(raw) if raw else None
+                if parsed is not None and parsed > 0:
+                    strings_raw = int(parsed)
+
+    # ── Second-pass broad scan (rows 1-150) if still missing values ──
+    if not brand_raw or voltage_raw is None or ah_raw is None or strings_raw is None:
+        for r in range(1, 151):
+            for c in range(0, scan_col_end + 1):
+                val = _safe_str(cell_fn(r, c)).lower()
+                if not val:
+                    continue
+
+                if not brand_raw and any(kw in val for kw in _BRAND_LABEL_KEYWORDS):
+                    # Try cell to the right
+                    candidate = _read_value_near_label(cell_fn, r, c, max_column)
+                    if not candidate:
+                        # Try cell below
+                        candidate = _safe_str(cell_fn(r + 1, c))
+                    if candidate:
+                        brand_raw = candidate
+
+                if voltage_raw is None and any(kw in val for kw in _VOLTAGE_LABEL_KEYWORDS):
+                    raw = _read_value_near_label(cell_fn, r, c, max_column)
+                    if not raw:
+                        raw = _safe_str(cell_fn(r + 1, c))
+                    parsed = _safe_float(raw) if raw else None
+                    if parsed is not None and parsed > 0:
+                        voltage_raw = parsed
+
+                if ah_raw is None and any(kw in val for kw in _AH_LABEL_KEYWORDS):
+                    raw = _read_value_near_label(cell_fn, r, c, max_column)
+                    if not raw:
+                        raw = _safe_str(cell_fn(r + 1, c))
+                    parsed = _safe_float(raw) if raw else None
+                    if parsed is not None and parsed > 0:
+                        ah_raw = parsed
+
+                if strings_raw is None and any(kw in val for kw in _STRINGS_LABEL_KEYWORDS):
+                    raw = _read_value_near_label(cell_fn, r, c, max_column)
+                    if not raw:
+                        raw = _safe_str(cell_fn(r + 1, c))
+                    parsed = _safe_float(raw) if raw else None
+                    if parsed is not None and parsed > 0:
+                        strings_raw = int(parsed)
+
+            # Stop early if everything is populated
+            if brand_raw and voltage_raw is not None and ah_raw is not None and strings_raw is not None:
+                break
 
     # ── Brand detection from known manufacturer keywords ──
     if brand_raw:
         data.battery_brand = brand_raw
     else:
-        # Try to find brand by scanning battery section for known names
-        for r in range(35, 66):
-            for c in (1, 2, 9):
+        # Try to find brand by scanning wider range for known names
+        for r in range(20, 101):
+            for c in range(0, scan_col_end + 1):
                 val = _safe_str(cell_fn(r, c)).lower()
                 for kw in _BRAND_KEYWORDS:
                     if kw in val:
