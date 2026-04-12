@@ -446,6 +446,39 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
     data.time_in = _safe_str(cell(4, 15))
     data.time_out = _safe_str(cell(5, 15))
 
+    # Alternate fixed positions for test_date when the default cell is empty
+    if data.test_date is None:
+        for rr, cc in ((2, 15), (4, 15), (3, 14), (3, 16), (1, 15), (5, 15)):
+            parsed = _parse_test_date(cell(rr, cc), data.filename)
+            if parsed is not None:
+                data.test_date = parsed
+                break
+
+    # Keyword-based fallback scan for test_date
+    if data.test_date is None:
+        for r in range(1, min(max_row, 25) + 1):
+            found = False
+            for c in range(1, min(max_col, 12) + 1):
+                text = _safe_str(cell(r, c)).lower()
+                if not text:
+                    continue
+                if any(kw in text for kw in ("test date", "date of test",
+                                              "التاريخ")) or text == "date":
+                    for nc in range(c + 1, min(max_col, c + 6) + 1):
+                        parsed = _parse_test_date(cell(r, nc), data.filename)
+                        if parsed is not None:
+                            data.test_date = parsed
+                            found = True
+                            break
+                    if found:
+                        break
+            if data.test_date is not None:
+                break
+
+    # Final filename-only fallback (in case no cell yielded a date)
+    if data.test_date is None:
+        data.test_date = _parse_test_date(None, data.filename)
+
     for r in range(1, min(max_row, 20) + 1):
         label = _safe_str(cell(r, 1)).lower()
         if not label:
