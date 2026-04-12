@@ -274,20 +274,15 @@ def load_second_most_recent_test(site_code: str) -> BDTTestRecord | None:
     Returns:
         BDTTestRecord or None if fewer than two tests exist
     """
-    from alarm_app.db.models import BDTTest
+    if not site_code or not str(site_code).strip():
+        return None
+    from alarm_app.db.repos.bdt_repo import load_second_most_recent as _load
     session = _get_session()
     try:
-        normalized = site_code.strip().upper()
-        candidates = (
-            session.query(BDTTest)
-            .filter(BDTTest.site_code == normalized)
-            .order_by(BDTTest.test_date.desc())
-            .limit(2)
-            .all()
-        )
-        if len(candidates) >= 2:
-            return _bdt_test_to_record(candidates[1])
-        return None
+        db_row = _load(session, site_code)
+        if db_row is None:
+            return None
+        return _bdt_test_to_record(db_row)
     finally:
         session.close()
 

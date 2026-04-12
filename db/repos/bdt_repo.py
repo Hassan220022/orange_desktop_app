@@ -79,6 +79,23 @@ def load_previous_test(session: Session, site_code: str,
     )
 
 
+def load_second_most_recent(session: Session, site_code: str) -> BDTTest | None:
+    """Return the second most recent BDT test for a site."""
+    if not site_code or not str(site_code).strip():
+        return None
+    normalized = str(site_code).strip().upper()
+    candidates = (
+        session.query(BDTTest)
+        .filter(BDTTest.site_code == normalized)
+        .order_by(BDTTest.test_date.desc())
+        .limit(2)
+        .all()
+    )
+    if len(candidates) >= 2:
+        return candidates[1]
+    return None
+
+
 def save_bdt_photo(session: Session, bdt_test_id: int, slot_index: int,
                    slot_category: str, blob_asset_id: int | None = None) -> BDTPhoto:
     """Link a photo slot to a BDT test."""

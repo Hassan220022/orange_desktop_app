@@ -207,7 +207,7 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData):
     # ── Keyword-based scan (rows 20-100, cols 0-15) as fallback ──
     scan_col_end = min(max(max_column, 9), 16)
     for r in range(20, 101):
-        for c in range(0, scan_col_end + 1):
+        for c in range(1, scan_col_end + 1):
             val = _safe_str(cell_fn(r, c)).lower()
             if not val:
                 continue
@@ -239,10 +239,16 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData):
                 if parsed is not None and parsed > 0:
                     strings_raw = int(parsed)
 
+        if brand_raw and voltage_raw is not None and ah_raw is not None and strings_raw is not None:
+            break
+
     # ── Second-pass broad scan (rows 1-150) if still missing values ──
+    # Use restricted keywords to avoid matching discharge table headers.
+    _VOLTAGE_BROAD_KEYWORDS = ("nominal voltage", "battery voltage")
+    _AH_BROAD_KEYWORDS = ("ampere hour", "battery capacity", "ampere-hour")
     if not brand_raw or voltage_raw is None or ah_raw is None or strings_raw is None:
         for r in range(1, 151):
-            for c in range(0, scan_col_end + 1):
+            for c in range(1, scan_col_end + 1):
                 val = _safe_str(cell_fn(r, c)).lower()
                 if not val:
                     continue
@@ -256,7 +262,7 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData):
                     if candidate:
                         brand_raw = candidate
 
-                if voltage_raw is None and any(kw in val for kw in _VOLTAGE_LABEL_KEYWORDS):
+                if voltage_raw is None and any(kw in val for kw in _VOLTAGE_BROAD_KEYWORDS):
                     raw = _read_value_near_label(cell_fn, r, c, max_column)
                     if not raw:
                         raw = _safe_str(cell_fn(r + 1, c))
@@ -264,7 +270,7 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData):
                     if parsed is not None and parsed > 0:
                         voltage_raw = parsed
 
-                if ah_raw is None and any(kw in val for kw in _AH_LABEL_KEYWORDS):
+                if ah_raw is None and any(kw in val for kw in _AH_BROAD_KEYWORDS):
                     raw = _read_value_near_label(cell_fn, r, c, max_column)
                     if not raw:
                         raw = _safe_str(cell_fn(r + 1, c))

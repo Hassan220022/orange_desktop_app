@@ -562,7 +562,9 @@ class BdtDetailPanel(QWidget):
                 self._bdt_history_label.setText(
                     "—  history module not available")
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).warning(
+                    "History comparison failed for site %s", bdt.site_code, exc_info=True)
 
         # Collapse the history section to its empty-hint when there's no
         # previous record — keeps the Validation Rules table tall.
