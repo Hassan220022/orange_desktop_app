@@ -262,6 +262,36 @@ def load_previous_test(site_code: str, before_date: date) -> BDTTestRecord | Non
         session.close()
 
 
+def load_second_most_recent_test(site_code: str) -> BDTTestRecord | None:
+    """Return the second most recent test for a site.
+
+    Useful when test_date is None or load_previous_test found nothing:
+    we grab the two newest rows and return the older one.
+
+    Args:
+        site_code: Site identifier (e.g., "0167DE")
+
+    Returns:
+        BDTTestRecord or None if fewer than two tests exist
+    """
+    from alarm_app.db.models import BDTTest
+    session = _get_session()
+    try:
+        normalized = site_code.strip().upper()
+        candidates = (
+            session.query(BDTTest)
+            .filter(BDTTest.site_code == normalized)
+            .order_by(BDTTest.test_date.desc())
+            .limit(2)
+            .all()
+        )
+        if len(candidates) >= 2:
+            return _bdt_test_to_record(candidates[1])
+        return None
+    finally:
+        session.close()
+
+
 def compare_tests(current_bdt, previous: BDTTestRecord) -> BDTComparison:
     """Compare current BDT data against a previous test record.
 

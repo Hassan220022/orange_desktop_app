@@ -497,49 +497,67 @@ class BdtDetailPanel(QWidget):
         # ── Populate test history comparison ──────────────────
         self._bdt_history_table.setRowCount(0)
         self._bdt_history_label.setText("—  no previous test history found")
-        if bdt and bdt.test_date and bdt.site_code:
+        if bdt and bdt.site_code:
             try:
                 try:
-                    from ...bdt.history import load_previous_test, compare_tests
+                    from ...bdt.history import (
+                        load_previous_test, compare_tests,
+                        load_second_most_recent_test,
+                    )
                 except ImportError:
-                    from alarm_app.bdt.history import load_previous_test, compare_tests
-                from datetime import date as date_type
-                test_date = (bdt.test_date.date() if hasattr(bdt.test_date, "date")
-                             else bdt.test_date)
+                    from alarm_app.bdt.history import (
+                        load_previous_test, compare_tests,
+                        load_second_most_recent_test,
+                    )
+                from datetime import date as date_type, datetime as datetime_type
+
+                test_date = None
+                if bdt.test_date:
+                    test_date = (bdt.test_date.date()
+                                 if hasattr(bdt.test_date, "date")
+                                 else bdt.test_date)
+
+                prev = None
                 if isinstance(test_date, date_type):
                     prev = load_previous_test(bdt.site_code, test_date)
-                    if prev:
-                        comp = compare_tests(bdt, prev)
-                        fields = [
-                            ("Battery Brand", prev.battery_brand, str(bdt.battery_brand or "")),
-                            ("Battery AH", str(prev.battery_ah or ""), str(bdt.battery_ah or "")),
-                            ("Battery Voltage", str(prev.battery_voltage or ""), str(bdt.battery_voltage or "")),
-                            ("# Strings", str(prev.num_strings or ""), str(bdt.num_strings or "")),
-                            ("# Batteries", str(prev.num_batteries or ""), str(getattr(bdt, "num_batteries", "") or "")),
-                            ("# Modules", str(prev.num_modules or ""), str(getattr(bdt, "num_modules", "") or "")),
-                            ("Rectifier", str(prev.rectifier_brand or ""), str(getattr(bdt, "rectifier_brand", "") or "")),
-                        ]
-                        self._bdt_history_table.setRowCount(len(fields))
-                        for i, (label, prev_val, curr_val) in enumerate(fields):
-                            self._bdt_history_table.setItem(i, 0, QTableWidgetItem(label))
-                            item_prev = QTableWidgetItem(prev_val)
-                            item_curr = QTableWidgetItem(curr_val)
-                            # Highlight changes in red
-                            if prev_val.strip().lower() != curr_val.strip().lower() and prev_val and curr_val:
-                                item_prev.setForeground(QColor("#f38ba8"))
-                                item_curr.setForeground(QColor("#f38ba8"))
-                            self._bdt_history_table.setItem(i, 1, item_prev)
-                            self._bdt_history_table.setItem(i, 2, item_curr)
 
-                        if comp.has_critical_change:
-                            self._bdt_history_label.setText(
-                                f"<span style='color:#f38ba8;'>Equipment change detected vs {prev.test_date}</span>")
-                        else:
-                            self._bdt_history_label.setText(
-                                f"<span style='color:#a6e3a1;'>No critical changes vs {prev.test_date}</span>")
+                # Fallback: when test_date is missing or no earlier test
+                # exists, grab the second most recent test for this site.
+                if prev is None:
+                    prev = load_second_most_recent_test(bdt.site_code)
+
+                if prev:
+                    comp = compare_tests(bdt, prev)
+                    fields = [
+                        ("Battery Brand", prev.battery_brand, str(bdt.battery_brand or "")),
+                        ("Battery AH", str(prev.battery_ah or ""), str(bdt.battery_ah or "")),
+                        ("Battery Voltage", str(prev.battery_voltage or ""), str(bdt.battery_voltage or "")),
+                        ("# Strings", str(prev.num_strings or ""), str(bdt.num_strings or "")),
+                        ("# Batteries", str(prev.num_batteries or ""), str(getattr(bdt, "num_batteries", "") or "")),
+                        ("# Modules", str(prev.num_modules or ""), str(getattr(bdt, "num_modules", "") or "")),
+                        ("Rectifier", str(prev.rectifier_brand or ""), str(getattr(bdt, "rectifier_brand", "") or "")),
+                    ]
+                    self._bdt_history_table.setRowCount(len(fields))
+                    for i, (label, prev_val, curr_val) in enumerate(fields):
+                        self._bdt_history_table.setItem(i, 0, QTableWidgetItem(label))
+                        item_prev = QTableWidgetItem(prev_val)
+                        item_curr = QTableWidgetItem(curr_val)
+                        # Highlight changes in red
+                        if prev_val.strip().lower() != curr_val.strip().lower() and prev_val and curr_val:
+                            item_prev.setForeground(QColor("#f38ba8"))
+                            item_curr.setForeground(QColor("#f38ba8"))
+                        self._bdt_history_table.setItem(i, 1, item_prev)
+                        self._bdt_history_table.setItem(i, 2, item_curr)
+
+                    if comp.has_critical_change:
+                        self._bdt_history_label.setText(
+                            f"<span style='color:#f38ba8;'>Equipment change detected vs {prev.test_date}</span>")
                     else:
                         self._bdt_history_label.setText(
-                            "—  no previous test history found")
+                            f"<span style='color:#a6e3a1;'>No critical changes vs {prev.test_date}</span>")
+                else:
+                    self._bdt_history_label.setText(
+                        "—  no previous test history found")
             except ImportError:
                 self._bdt_history_label.setText(
                     "—  history module not available")
