@@ -225,7 +225,7 @@ class BdtValidationPanel(QWidget):
         viewer._prog.setValue(0)
 
         self._bdt_thread = BDTValidationThread(
-            bdt_files, alarm_df, tolerance, health_pct)
+            bdt_files, alarm_df, tolerance, health_pct, skip_photos=viewer._skip_photos)
         self._bdt_thread.progress.connect(
             lambda v, m: (viewer._prog.setValue(v),
                           viewer._sbar.showMessage(m)))

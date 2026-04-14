@@ -6,11 +6,14 @@ Data is extracted by known cell positions (row, col) based on the standard
 BDT template.
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 
 import pandas as pd
 from openpyxl import load_workbook
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -48,10 +51,20 @@ class BDTData:
     ibat_before_test: float | None = None
     starting_ibattery_ampere: float | None = None
     battery_brand: str = ""
+    battery_model: str = ""
     battery_ah: float | None = None
     battery_voltage: float | None = None
     num_strings: int | None = None
     num_batteries: int | None = None
+
+    # Additional site and rectifier info
+    power_source: str = ""
+    site_category: str = ""
+    site_type: str = ""
+    rectifier_capacity: float | None = None
+
+    # Core layout detection result (A or B)
+    core_layout: str = ""  # "Layout A" or "Layout B"
     num_modules: int | None = None
     rectifier_brand: str = ""
     pld_value: str = ""
@@ -65,6 +78,17 @@ class BDTData:
     photo_layout_id: str = "LAYOUT_PHOTO_16"
     required_photo_count: int = 16
     photos_deferred: bool = False
+
+    # Layout family detection metadata (FR-001, FR-002)
+    core_layout_family: str = ""  # "A", "B1", "B2", "C", "UNKNOWN", "SUMMARY_EXCLUDED"
+    detection_confidence: str = ""  # "high", "medium", "low"
+    detection_reasons: list[str] = field(default_factory=list)
+
+    # Photo category mapping metadata (FR-003, FR-004)
+    photo_categories_found: list[str] = field(default_factory=list)
+    photo_mapping_confidence: str = ""  # "high", "medium", "low"
+    photo_detection_mode: str = ""  # "normal", "fallback"
+    required_photo_categories: list[str] = field(default_factory=list)
 
     # Parse errors
     errors: list[str] = field(default_factory=list)
@@ -159,8 +183,8 @@ _LAYOUT_A = {
     "site_name":      (4,  3),   # C4
     "site_code":      (4, 12),   # L4
     "test_date":      (3, 20),   # T3
-    "time_in":        (5, 20),   # T5
-    "time_out":       (6, 20),   # T6
+    "time_in":        (5, 21),   # U5
+    "time_out":       (6, 21),   # U6
     "battery_brand":  (28, 12),  # L28
     "num_batteries":  (30, 12),  # L30
     "battery_voltage":(32, 12),  # L32
@@ -168,7 +192,8 @@ _LAYOUT_A = {
     "num_strings":    (36, 12),  # L36
     "rectifier_brand":(13, 12),  # L13
     "num_modules":    (15, 12),  # L15
-    "pld_value":      (24, 12),  # L24  (approximate — keyword fallback handles variance)
+    "pld_value":      (36, 26),  # Z36  (PLVD set point location)
+    "power_source":   (11, 12),  # L11
 }
 
 _LAYOUT_B = {
@@ -185,6 +210,17 @@ _LAYOUT_B = {
     "rectifier_brand":(13,  9),  # I13
     "num_modules":    (17,  9),  # I17
     "pld_value":      (29,  9),  # I29
+    "power_source":   (11,  9),  # I11
+}
+
+# Layout C: "BDT sheet" production files (e.g. 0167DE) have an empty Excel row 1.
+# Calamine skips it, so calamine row N = Excel row N+1.
+# All row-sensitive positions are shifted by -1 relative to _LAYOUT_B.
+_LAYOUT_C = {
+    **_LAYOUT_B,
+    "rectifier_brand":(12,  9),  # Excel I13 → calamine row 12
+    "num_modules":    (16,  9),  # Excel I17 → calamine row 16
+    "pld_value":      (28,  9),  # Excel I29 → calamine row 28
 }
 
 
@@ -204,7 +240,7 @@ def _read_value_near_label(cell_fn, r: int, c: int, max_col: int):
     return ""
 
 
-def _parse_battery_info(max_column, cell_fn, data: BDTData, layout: dict):
+def _parse_battery_info(max_column, cell_fn, data: BDTData, layout: dict | None = None):
     """Extract battery specs from the BDT sheet.
 
     Uses layout-specific cell positions for fixed extraction, then falls
@@ -212,6 +248,8 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData, layout: dict):
     A second-pass broad scan (rows 1-150) catches templates with unusual
     layouts.
     """
+    if layout is None:
+        layout = _LAYOUT_A
     brand_raw = ""
     ah_raw = None
     voltage_raw = None
@@ -240,48 +278,12 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData, layout: dict):
     if parsed is not None and parsed > 0:
         strings_raw = int(parsed)
 
-    # ── Keyword-based scan (rows 20-100, cols 0-15) as fallback ──
-    scan_col_end = min(max(max_column, 9), 16)
-    for r in range(20, 101):
-        for c in range(1, scan_col_end + 1):
-            val = _safe_str(cell_fn(r, c)).lower()
-            if not val:
-                continue
-
-            # Battery brand
-            if not brand_raw and any(kw in val for kw in _BRAND_LABEL_KEYWORDS):
-                candidate = _read_value_near_label(cell_fn, r, c, max_column)
-                if candidate:
-                    brand_raw = candidate
-
-            # Nominal voltage
-            if voltage_raw is None and any(kw in val for kw in _VOLTAGE_LABEL_KEYWORDS):
-                raw = _read_value_near_label(cell_fn, r, c, max_column)
-                parsed = _safe_float(raw) if raw else None
-                if parsed is not None and parsed > 0:
-                    voltage_raw = parsed
-
-            # AH
-            if ah_raw is None and any(kw in val for kw in _AH_LABEL_KEYWORDS):
-                raw = _read_value_near_label(cell_fn, r, c, max_column)
-                parsed = _safe_float(raw) if raw else None
-                if parsed is not None and parsed > 0:
-                    ah_raw = parsed
-
-            # Number of strings
-            if strings_raw is None and any(kw in val for kw in _STRINGS_LABEL_KEYWORDS):
-                raw = _read_value_near_label(cell_fn, r, c, max_column)
-                parsed = _safe_float(raw) if raw else None
-                if parsed is not None and parsed > 0:
-                    strings_raw = int(parsed)
-
-        if brand_raw and voltage_raw is not None and ah_raw is not None and strings_raw is not None:
-            break
-
-    # ── Second-pass broad scan (rows 1-150) if still missing values ──
+    # ── Combined keyword-based scan (rows 1-150) - single pass with early exit ──
     # Use restricted keywords to avoid matching discharge table headers.
     _VOLTAGE_BROAD_KEYWORDS = ("nominal voltage", "battery voltage")
     _AH_BROAD_KEYWORDS = ("ampere hour", "battery capacity", "ampere-hour")
+    scan_col_end = min(max(max_column, 9), 16)
+    
     if not brand_raw or voltage_raw is None or ah_raw is None or strings_raw is None:
         for r in range(1, 151):
             for c in range(1, scan_col_end + 1):
@@ -289,16 +291,16 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData, layout: dict):
                 if not val:
                     continue
 
+                # Battery brand
                 if not brand_raw and any(kw in val for kw in _BRAND_LABEL_KEYWORDS):
-                    # Try cell to the right
                     candidate = _read_value_near_label(cell_fn, r, c, max_column)
                     if not candidate:
-                        # Try cell below
                         candidate = _safe_str(cell_fn(r + 1, c))
                     if candidate:
                         brand_raw = candidate
 
-                if voltage_raw is None and any(kw in val for kw in _VOLTAGE_BROAD_KEYWORDS):
+                # Nominal voltage
+                if voltage_raw is None and any(kw in val for kw in _VOLTAGE_LABEL_KEYWORDS + _VOLTAGE_BROAD_KEYWORDS):
                     raw = _read_value_near_label(cell_fn, r, c, max_column)
                     if not raw:
                         raw = _safe_str(cell_fn(r + 1, c))
@@ -306,7 +308,8 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData, layout: dict):
                     if parsed is not None and parsed > 0:
                         voltage_raw = parsed
 
-                if ah_raw is None and any(kw in val for kw in _AH_BROAD_KEYWORDS):
+                # AH
+                if ah_raw is None and any(kw in val for kw in _AH_LABEL_KEYWORDS + _AH_BROAD_KEYWORDS):
                     raw = _read_value_near_label(cell_fn, r, c, max_column)
                     if not raw:
                         raw = _safe_str(cell_fn(r + 1, c))
@@ -314,6 +317,7 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData, layout: dict):
                     if parsed is not None and parsed > 0:
                         ah_raw = parsed
 
+                # Number of strings
                 if strings_raw is None and any(kw in val for kw in _STRINGS_LABEL_KEYWORDS):
                     raw = _read_value_near_label(cell_fn, r, c, max_column)
                     if not raw:
@@ -375,44 +379,212 @@ def _extract_site_code_token(text: str) -> str:
     return best
 
 
-def _detect_layout(cell_fn, max_row: int, max_col: int) -> dict:
+def _detect_layout(cell_fn, max_row: int, max_col: int, sheet_name: str | None = None) -> dict:
     """Detect which BDT template layout this file uses.
 
     Strategy: check Layout A site_code position (L4 = row 4, col 12).
     If that cell contains a plausible site code token, use Layout A.
     Otherwise fall back to Layout B.
+
+    Layout B2 (Rec1/Rec2 family) uses Layout A coordinates - these are detected
+    as Layout A by the same signals since they share the coordinate system.
+    Layout B1 (Rectifier 1) uses Layout B coordinates - detected as Layout B.
+    Layout C (test_pms) has unreliable coordinates - falls back to Layout B + scanning.
     """
+    # Layout B2 check: if sheet name is Rec1/Rec2 variant, force Layout A coordinates
+    # These sheets use Layout A coordinate system despite different names
+    if sheet_name:
+        sheet_norm = str(sheet_name).strip()
+        layout_b2_variants = ["Rec1", "Rec2", "Rec 1", "Rec 2", "Rect.1", "Rect.2"]
+        if sheet_norm in layout_b2_variants:
+            logger.debug("Layout A selected: Layout B2 sheet name '%s' uses Layout A coordinates", sheet_name)
+            return _LAYOUT_A
+
+    # Layout B1 check: Rectifier 1 uses Layout B coordinates (A1:AC132 range)
+    if sheet_name and str(sheet_name).strip() == "Rectifier 1":
+        logger.debug("Layout B selected: Layout B1 sheet name 'Rectifier 1' uses Layout B coordinates")
+        return _LAYOUT_B
+
+    is_bdt_sheet = sheet_name and str(sheet_name).strip() == "BDT sheet"
+
     if max_col < 12:
+        logger.debug("Layout B selected: max_col < 12")
         return _LAYOUT_B
 
     # Layout A: site code at L4 (row=4, col=12)
     candidate_a = _safe_str(cell_fn(4, 12))
     if candidate_a and _extract_site_code_token(candidate_a):
+        logger.debug("Layout A selected: site code token found at L4")
         return _LAYOUT_A
 
     # Layout A: also check if test_date cell T3 (row=3, col=20) holds a valid date
     if max_col >= 20:
         date_val = cell_fn(3, 20)
         if _parse_test_date(date_val, "") is not None:
+            logger.debug("Layout A selected: valid date at T3")
             return _LAYOUT_A
 
+    # Third signal: check L13 (rectifier brand at Layout A row 13, col 12)
+    # A non-empty string there is strong evidence for Layout A even if L4 and T3 are blank
+    if max_col >= 12:
+        rectifier_a = _safe_str(cell_fn(13, 12))
+        if rectifier_a:
+            logger.debug("Layout A selected: rectifier brand at L13")
+            return _LAYOUT_A
+
+    # Layout C: "BDT sheet" production files where calamine skips an empty Excel row 1,
+    # shifting rectifier/modules/pld positions up by one row compared to _LAYOUT_B.
+    # Probe each of the three offset fields: if the C-position has content while the
+    # B-position is empty, the empty-row-1 offset is active.
+    if is_bdt_sheet:
+        offset_pairs = [
+            (12, 13),  # rectifier_brand: C=(12,9) vs B=(13,9)
+            (16, 17),  # num_modules:     C=(16,9) vs B=(17,9)
+            (28, 29),  # pld_value:       C=(28,9) vs B=(29,9)
+        ]
+        for c_row, b_row in offset_pairs:
+            at_c = _safe_str(cell_fn(c_row, 9))
+            at_b = _safe_str(cell_fn(b_row, 9))
+            if at_c and not at_b:
+                logger.debug(
+                    "Layout C detected: value at (%d,9) with empty (%d,9) confirms empty-row-1 offset",
+                    c_row, b_row,
+                )
+                return _LAYOUT_C
+        logger.debug("Layout B selected: 'BDT sheet' with no empty-row-1 offset detected")
+        return _LAYOUT_B
+
+    logger.debug("Layout B selected: no Layout A signals detected")
     return _LAYOUT_B
+
+
+def _detect_layout_family(cell_fn, max_row: int, max_col: int, sheet_name: str | None = None, all_sheet_names: list[str] | None = None) -> tuple[str, str, list[str]]:  # noqa: ARG001 (max_row reserved for future row-level probing)
+    """Detect layout family with metadata for FR-001.
+
+    Returns (family, confidence, reasons).
+    Family values: "A", "B1", "B2", "C", "UNKNOWN", "SUMMARY_EXCLUDED".
+    Confidence: "high", "medium", "low".
+    Reasons: list of machine-readable detection signals.
+    """
+    reasons: list[str] = []
+    all_sheet_names = all_sheet_names or []
+    
+    # Summary/aggregate exclusion check (FR-001)
+    normalized_sheets = [str(s).strip().lower() for s in all_sheet_names]
+    has_bdt_sheet = any("bdt" in s for s in normalized_sheets)
+    has_summary = any("summary" in s for s in normalized_sheets)
+    
+    if all_sheet_names and not has_bdt_sheet and has_summary:
+        reasons.append("summary_only_workbook")
+        return "SUMMARY_EXCLUDED", "high", reasons
+    
+    # Layout C detection
+    if sheet_name and str(sheet_name).strip() == "BDT sheet":
+        has_power_alarm = any("power alarm" in s.lower() for s in all_sheet_names)
+        has_config = any("config" in s.lower() for s in all_sheet_names)
+        if has_power_alarm or has_config:
+            reasons.append("multi_sheet_test_pms")
+            reasons.append("sheet_name_bdt_sheet")
+            return "C", "high", reasons
+        reasons.append("sheet_name_bdt_sheet_fallback")
+        return "C", "medium", reasons
+    
+    # Layout B2 detection
+    if sheet_name:
+        sheet_norm = str(sheet_name).strip()
+        layout_b2_variants = ["Rec1", "Rec2", "Rec 1", "Rec 2", "Rect.1", "Rect.2"]
+        if sheet_norm in layout_b2_variants:
+            reasons.append(f"sheet_name_{sheet_norm}")
+            reasons.append("layout_b2_family")
+            return "B2", "high", reasons
+    
+    # Layout B1 detection
+    if sheet_name and str(sheet_name).strip() == "Rectifier 1":
+        reasons.append("sheet_name_rectifier_1")
+        return "B1", "high", reasons
+    
+    # Layout A detection
+    if max_col < 12:
+        reasons.append("max_col_lt_12")
+        return "UNKNOWN", "low", reasons
+    
+    candidate_a = _safe_str(cell_fn(4, 12))
+    if candidate_a and _extract_site_code_token(candidate_a):
+        reasons.append("site_code_at_l4")
+        return "A", "high", reasons
+    
+    if max_col >= 20:
+        date_val = cell_fn(3, 20)
+        if _parse_test_date(date_val, "") is not None:
+            reasons.append("valid_date_at_t3")
+            return "A", "high", reasons
+    
+    rectifier_a = _safe_str(cell_fn(13, 12))
+    if rectifier_a:
+        reasons.append("rectifier_brand_at_l13")
+        return "A", "medium", reasons
+    
+    reasons.append("no_layout_a_signals")
+    return "UNKNOWN", "low", reasons
 
 
 def _resolve_bdt_sheet_name(sheet_names: list[str],
                             filename: str | None = None) -> str | None:
-    """Return the best matching BDT sheet name, with pragmatic fallbacks."""
+    """Return the best matching BDT sheet name, with pragmatic fallbacks.
+
+    Handles all production sheet name variants:
+    - Layout A: "BDT" (97.5% of files)
+    - Layout C: "BDT sheet" (test_pms multi-sheet format)
+    - Layout B2: "Rec1"/"Rec2", "Rec 1"/"Rec 2", "Rect.1"/"Rect.2" (1.4% - use Layout A coordinates)
+    - Layout B1: "Rectifier 1" (0.06% - uses Layout B coordinates)
+
+    Summary/aggregate exclusion (FR-001):
+    - Returns None for summary-only workbooks (no BDT sheet present)
+    - This allows early exclusion before parsing
+    """
     if not sheet_names:
         return None
 
-    # Exact canonical name first.
+    # Summary/aggregate exclusion check (FR-001)
+    # If only Summary sheet exists (or Summary + Config/Power Alarm without BDT), exclude early
+    normalized_sheets = [str(s).strip().lower() for s in sheet_names]
+    has_bdt_sheet = any("bdt" in s for s in normalized_sheets)
+    has_summary = any("summary" in s for s in normalized_sheets)
+    
+    if not has_bdt_sheet and has_summary:
+        logger.debug("Summary-only workbook detected (no BDT sheet), excluding from parsing")
+        return None
+
+    # Exact canonical names first.
     for name in sheet_names:
         if str(name).strip() == "BDT sheet":
             return name
-
-    # Case-insensitive match.
     for name in sheet_names:
-        if str(name).strip().lower() == "bdt sheet":
+        if str(name).strip() == "BDT":
+            return name
+
+    # Layout B1: Rectifier 1 singleton (uses Layout B coordinates)
+    for name in sheet_names:
+        if str(name).strip() == "Rectifier 1":
+            return name
+
+    # Layout B2: Rec1/Rec2 family (uses Layout A coordinates)
+    # These sheets use Layout A coordinate system but have different names
+    layout_b2_variants = ["Rec1", "Rec2", "Rec 1", "Rec 2", "Rect.1", "Rect.2"]
+    for name in sheet_names:
+        if str(name).strip() in layout_b2_variants:
+            return name
+
+    # Case-insensitive match for canonical names.
+    for name in sheet_names:
+        normalized = str(name).strip().lower()
+        if normalized == "bdt sheet":
+            return name
+        if normalized == "bdt":
+            return name
+        if normalized == "rectifier 1":
+            return name
+        if normalized in [v.lower() for v in layout_b2_variants]:
             return name
 
     # Flexible normalization: allow variants like "BDT_Sheet", "Bdt-Sheet", "BDT SHEET(1)".
@@ -430,8 +602,14 @@ def _resolve_bdt_sheet_name(sheet_names: list[str],
             return name
 
     # Last resort for BDT files: many real exports use a generic single/first sheet name.
+    # But exclude summary-only workbooks (FR-001)
     if filename and "bdt" in str(filename).lower():
-        return sheet_names[0]
+        # Check if the first sheet is a summary sheet
+        first_sheet = str(sheet_names[0]).strip().lower() if sheet_names else ""
+        if "summary" not in first_sheet:
+            return sheet_names[0]
+        # If first sheet is summary, don't use fallback
+        logger.debug("Fallback resolution skipped: first sheet appears to be summary sheet")
 
     return None
 
@@ -584,8 +762,22 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
             return None
         return row_data[c]
 
-    # Detect layout then extract site info from correct positions
-    layout = _detect_layout(cell, max_row, max_col)
+    # Detect layout for coordinate selection
+    layout = _detect_layout(cell, max_row, max_col, sheet_name=bdt_sheet_name)
+    data.core_layout = "Layout A" if layout is _LAYOUT_A else "Layout B"
+    
+    # Detect layout family for metadata (FR-001)
+    family, confidence, reasons = _detect_layout_family(
+        cell, max_row, max_col, sheet_name=bdt_sheet_name, all_sheet_names=all_sheet_names
+    )
+    data.core_layout_family = family
+    data.detection_confidence = confidence
+    data.detection_reasons = reasons
+    
+    # Skip parsing for summary-only workbooks (FR-001)
+    if family == "SUMMARY_EXCLUDED":
+        data.errors.append("Summary/aggregate workbook excluded from BDT validation")
+        return data
     data.site_name = _safe_str(cell(*layout["site_name"]))
     data.site_code = _safe_str(cell(*layout["site_code"]))
     data.test_date = _parse_test_date(cell(*layout["test_date"]), data.filename)
@@ -602,6 +794,29 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
             parsed = _parse_test_date(cell(rr, cc), data.filename)
             if parsed is not None:
                 data.test_date = parsed
+                break
+
+    # Fallback for time_in/time_out if not found at layout position
+    if not data.time_in or data.time_in in ("Time In", "Time in:", ""):
+        if layout is _LAYOUT_A:
+            alt_time_in_cells = ((5, 20), (5, 21), (5, 19))
+        else:
+            alt_time_in_cells = ((4, 15), (4, 16), (4, 14))
+        for rr, cc in alt_time_in_cells:
+            val = _safe_str(cell(rr, cc))
+            if val and val not in ("Time In", "Time in:", ""):
+                data.time_in = val
+                break
+
+    if not data.time_out or data.time_out in ("Time Out", "Time Out:", ""):
+        if layout is _LAYOUT_A:
+            alt_time_out_cells = ((6, 20), (6, 21), (6, 19))
+        else:
+            alt_time_out_cells = ((5, 15), (5, 16), (5, 14))
+        for rr, cc in alt_time_out_cells:
+            val = _safe_str(cell(rr, cc))
+            if val and val not in ("Time Out", "Time Out:", ""):
+                data.time_out = val
                 break
 
     # Keyword-based fallback scan for test_date
@@ -802,11 +1017,12 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
 
     _parse_battery_info(max_col, cell, data, layout)
 
-    # ── Rectifier / module / battery-count / PLVD fields ──
+    # ── Rectifier / module / battery-count / PLVD / power_source fields ──
     r_rect, c_rect = layout["rectifier_brand"]
     r_mod, c_mod = layout["num_modules"]
     r_batt2, c_batt2 = layout["num_batteries"]
     r_pld, c_pld = layout["pld_value"]
+    r_psrc, c_psrc = layout["power_source"]  # Now in both Layout A and Layout B maps
 
     data.rectifier_brand = _safe_str(cell(r_rect, c_rect))
     _mod_raw = _safe_float(cell(r_mod, c_mod))
@@ -816,6 +1032,7 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
     if _batt_raw is not None and _batt_raw > 0:
         data.num_batteries = int(_batt_raw)
     data.pld_value = _safe_str(cell(r_pld, c_pld))
+    data.power_source = _safe_str(cell(r_psrc, c_psrc))
 
     # Keyword-fallback scanning
     if not data.rectifier_brand:
@@ -870,10 +1087,17 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
             data.photo_count,
             data.photo_layout_id,
             data.required_photo_count,
+            data.photo_mapping_confidence,
+            data.photo_detection_mode,
+            data.photo_categories_found,
         ) = _extract_photo_slots(file_path)
         data.photos_deferred = False
+        # Set required photo categories from constants (FR-003)
+        from alarm_app.constants import BDT_REQUIRED_PHOTO_CATEGORIES
+        data.required_photo_categories = list(BDT_REQUIRED_PHOTO_CATEGORIES)
     else:
         data.photos_deferred = True
+        data.photo_detection_mode = "deferred"
 
     return data
 
@@ -888,8 +1112,14 @@ def load_bdt_photos(bdt: BDTData) -> None:
         bdt.photo_count,
         bdt.photo_layout_id,
         bdt.required_photo_count,
+        bdt.photo_mapping_confidence,
+        bdt.photo_detection_mode,
+        bdt.photo_categories_found,
     ) = _extract_photo_slots(bdt.file_path)
     bdt.photos_deferred = False
+    # Set required photo categories from constants (FR-003)
+    from alarm_app.constants import BDT_REQUIRED_PHOTO_CATEGORIES
+    bdt.required_photo_categories = list(BDT_REQUIRED_PHOTO_CATEGORIES)
 
 
 # ── Photo slot definitions by layout ───────────────────────────────
@@ -980,22 +1210,33 @@ def _select_photo_layout(anchor_count: int, max_anchor_col: int) -> tuple[str, i
     elif anchor_count >= 16:
         layout_id = "LAYOUT_PHOTO_16"
     else:
-        # Deterministic fallback for sparse/malformed files.
-        if max_anchor_col >= 27:
-            layout_id = "LAYOUT_PHOTO_16"
-        elif max_anchor_col >= 22:
-            layout_id = "LAYOUT_PHOTO_15"
+        # Dead zone: 8-12 anchors (corrupt 15-photo file with missing photos)
+        # Explicit rule: 8-12 anchors with max_anchor_col >= 22 maps to LAYOUT_PHOTO_15
+        # else LAYOUT_PHOTO_6. This handles corrupt files without changing behavior
+        # on observed files.
+        if 8 <= anchor_count <= 12:
+            if max_anchor_col >= 22:
+                layout_id = "LAYOUT_PHOTO_15"
+            else:
+                layout_id = "LAYOUT_PHOTO_6"
         else:
-            layout_id = "LAYOUT_PHOTO_6"
+            # Deterministic fallback for sparse/malformed files.
+            if max_anchor_col >= 27:
+                layout_id = "LAYOUT_PHOTO_16"
+            elif max_anchor_col >= 22:
+                layout_id = "LAYOUT_PHOTO_15"
+            else:
+                layout_id = "LAYOUT_PHOTO_6"
 
     required = int(_PHOTO_LAYOUTS[layout_id]["required_count"])
     return layout_id, required
 
 
-def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int, str, int]:
+def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int, str, int, str, str, list[str]]:
     """Extract labelled photo slots from a BDT xlsx file.
 
-    Returns (list_of_PhotoSlot, total_media_count, photo_layout_id, required_count).
+    Returns (list_of_PhotoSlot, total_media_count, photo_layout_id, required_count,
+             mapping_confidence, detection_mode, categories_found).
     """
     import zipfile
     import xml.etree.ElementTree as ET
@@ -1007,7 +1248,8 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int, str, int
     try:
         zf = zipfile.ZipFile(file_path)
     except Exception:
-        return [], 0, "LAYOUT_PHOTO_16", 16
+        logger.warning("Failed to open xlsx as zip, using conservative 6-photo fallback")
+        return [], 0, "LAYOUT_PHOTO_6", 6, "low", "fallback", []
 
     try:
         # Total media count (for backwards compat)
@@ -1070,7 +1312,8 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int, str, int
                 drawing_paths = [fallback]
 
         if not drawing_paths:
-            return [], total_media, "LAYOUT_PHOTO_16", 16
+            logger.warning("No drawing path found for BDT sheet, using conservative 6-photo fallback")
+            return [], total_media, "LAYOUT_PHOTO_6", 6, "low", "fallback", []
 
         # Build rId → media zip path map from BDT drawing rels only
         rid_to_path: dict[str, str] = {}
@@ -1111,10 +1354,6 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int, str, int
                 if not rid or rid not in rid_to_path:
                     continue
 
-                valid_anchor_count += 1
-                if from_col > max_anchor_col:
-                    max_anchor_col = from_col
-
                 slot_idx = _anchor_to_slot(
                     from_row,
                     from_col,
@@ -1122,7 +1361,12 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int, str, int
                     _PHOTO_LAYOUTS["LAYOUT_PHOTO_16"]["col_groups"],
                 )
                 if slot_idx is None:
-                    continue
+                    continue  # Non-slot image, don't count it
+
+                # Only count anchors that map to valid photo slots
+                valid_anchor_count += 1
+                if from_col > max_anchor_col:
+                    max_anchor_col = from_col
                 # On duplicate, keep the anchor whose row is closest to the
                 # slot's expected label row so the right image wins.
                 full_slot_defs = _PHOTO_LAYOUTS["LAYOUT_PHOTO_16"]["slot_defs"]
@@ -1189,7 +1433,24 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int, str, int
             ))
 
         wb.close()
-        return slots, total_media, photo_layout_id, required_photo_count
+        
+        # Extract category metadata (FR-003, FR-004)
+        categories_found: list[str] = []
+        for slot in slots:
+            if slot.image_data and slot.category:
+                cat = slot.category.lower()
+                if cat not in categories_found:
+                    categories_found.append(cat)
+        
+        # Determine mapping confidence based on anchor-to-slot mapping success
+        filled_slots = sum(1 for s in slots if s.image_data)
+        mapping_confidence = "high" if filled_slots >= required_photo_count else "medium"
+        if filled_slots == 0:
+            mapping_confidence = "low"
+        
+        detection_mode = "normal"  # Could be "fallback" if we used non-standard mapping
+        
+        return slots, total_media, photo_layout_id, required_photo_count, mapping_confidence, detection_mode, categories_found
 
     finally:
         zf.close()

@@ -112,6 +112,7 @@ class AlarmViewer(QMainWindow):
         self._zoom_shortcuts: list[QShortcut] = []
         self._font_size_px_re = re.compile(r"(font-size\s*:\s*)(\d+(?:\.\d+)?)px", re.IGNORECASE)
         self._theme_mode = "auto"  # will be overridden by state restore
+        self._skip_photos = False  # skip photo extraction toggle state
         self._build_ui()
         self._setup_zoom_shortcuts()
         self.setStyleSheet(self._resolve_theme_style())
@@ -308,6 +309,13 @@ class AlarmViewer(QMainWindow):
         self._btn_theme.setObjectName("btn_theme")
         self._btn_theme.clicked.connect(self._toggle_theme)
         l.addWidget(self._btn_theme)
+
+        # Skip photos toggle
+        self._chk_skip_photos = QCheckBox("Skip Photos")
+        self._chk_skip_photos.setObjectName("chk_skip_photos")
+        self._chk_skip_photos.setChecked(self._skip_photos)
+        self._chk_skip_photos.toggled.connect(self._toggle_skip_photos)
+        l.addWidget(self._chk_skip_photos)
 
         self._lbl_count = QLabel("")
         self._lbl_count.setObjectName("lbl_green")
@@ -1187,6 +1195,10 @@ class AlarmViewer(QMainWindow):
         new_mode = cycle[self._theme_mode]
         self._set_theme(new_mode)
         self._update_theme_button_label()
+
+    def _toggle_skip_photos(self, checked: bool):
+        """Toggle skip photos state."""
+        self._skip_photos = checked
 
     def _update_theme_button_label(self):
         labels = {"auto": "Theme: Auto", "dark": "Theme: Dark", "light": "Theme: Light"}

@@ -89,7 +89,7 @@ class LoaderThread(QThread):
                         _log.warning("File-level dedup check failed for %s", fp, exc_info=True)
                 infos_to_parse.append((idx, info))
 
-            workers = min(max(len(infos_to_parse), 1), os.cpu_count() or 1, 6)
+            workers = min(max(len(infos_to_parse), 1), (os.cpu_count() or 1) * 2, 12)
             done_count = 0
             parse_total = len(infos_to_parse) or 1
 
@@ -316,12 +316,13 @@ class BDTValidationThread(QThread):
     error    = pyqtSignal(str)
 
     def __init__(self, bdt_files: list[str], alarm_df,
-                 tolerance: float, health_pct: float):
+                 tolerance: float, health_pct: float, skip_photos: bool = False):
         super().__init__()
         self._files = bdt_files
         self._alarm_df = alarm_df
         self._tolerance = tolerance
         self._health_pct = health_pct
+        self._skip_photos = skip_photos
 
     @staticmethod
     def _is_invalid_bdt_payload(bdt_data) -> bool:
@@ -363,11 +364,11 @@ class BDTValidationThread(QThread):
             done = 0
             summary_lookup = _loaders._load_external_summary_lookup(self._files)
 
-            # Photo extraction is I/O-bound (zip reads); use more threads than CPU count.
+            # xlsx parsing is I/O-bound (zip extraction + XML parse); GIL releases on I/O so more threads help.
             workers = min(total, (os.cpu_count() or 1) * 4, 32)
 
             def _parse_and_validate(file_path: str):
-                bdt_data = parse_bdt_file(file_path, skip_photos=False)
+                bdt_data = parse_bdt_file(file_path, skip_photos=self._skip_photos)
                 if self._is_invalid_bdt_payload(bdt_data):
                     return None
 
@@ -411,6 +412,27 @@ class BDTValidationThread(QThread):
                         "validation_result": result,
                     })
 
+                    # FR-005 Section 9: structured per-result audit log
+                    r1_rule = next(
+                        (r for r in getattr(result, "rules", []) if getattr(r, "rule_id", "") == "R1"),
+                        None,
+                    )
+                    overall = getattr(result, "overall", "") or ""
+                    _log.info(
+                        "BDT validation result: site=%s date=%s overall=%s "
+                        "file_path=%s layout_family=%s photo_detection_mode=%s "
+                        "photo_mapping_confidence=%s r1_verdict=%s failure_reason_code=%s",
+                        getattr(bdt_data, "site_code", "") or "",
+                        getattr(bdt_data, "test_date", "") or "",
+                        overall,
+                        getattr(bdt_data, "file_path", "") or fp,
+                        getattr(bdt_data, "core_layout_family", "") or "",
+                        getattr(bdt_data, "photo_detection_mode", "") or "",
+                        getattr(bdt_data, "photo_mapping_confidence", "") or "",
+                        getattr(r1_rule, "verdict", "") if r1_rule else "",
+                        overall if overall not in ("Accepted", "") else "",
+                    )
+
                     if bdt_data.site_code:
                         key = bdt_data.site_code.strip().upper()
                         by_site.setdefault(key, []).append(bdt_data)
@@ -429,7 +451,7 @@ class BDTValidationThread(QThread):
             if persist_items:
                 try:
                     from alarm_app.bdt.history import save_validation_batch
-                    run_payloads, photo_jobs = save_validation_batch(
+                    run_payloads, photo_jobs, failed_items = save_validation_batch(
                         items=persist_items,
                         alarm_df=self._alarm_df,
                         params={
@@ -454,6 +476,17 @@ class BDTValidationThread(QThread):
                                 },
                             })
                         state.append_outbox_events(outbox_events)
+
+                    if failed_items:
+                        # FR-005: log each failure with site/date identifiers
+                        for fi in failed_items:
+                            _log.error(
+                                "BDT persistence failure: site=%s date=%s error_type=%s error=%s",
+                                fi.get("site_code", ""),
+                                fi.get("test_date", ""),
+                                fi.get("error_type", ""),
+                                fi.get("error_message", ""),
+                            )
 
                     if photo_jobs:
                         Thread(

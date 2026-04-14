@@ -200,12 +200,12 @@ class TestParseBatteryInfo:
         return cell_fn
 
     def test_fixed_positions_return_correct_values(self):
-        """Fixed-position cells at rows 40/44/46/48, col 9."""
+        """Fixed-position cells use Layout A defaults: brand(28,12), voltage(32,12), ah(34,12), strings(36,12)."""
         cell_map = {
-            (40, 9): "Lithium",
-            (44, 9): 48.0,
-            (46, 9): "100 AH",
-            (48, 9): 2.0,
+            (28, 12): "Lithium",
+            (32, 12): 48.0,
+            (34, 12): "100 AH",
+            (36, 12): 2.0,
         }
         data = BDTData()
         _parse_battery_info(20, self._make_cell_fn(cell_map), data)
@@ -216,18 +216,18 @@ class TestParseBatteryInfo:
         assert data.num_strings == 2
 
     def test_keyword_fallback_when_fixed_positions_empty(self):
-        """If fixed positions are empty, keyword scanning finds values."""
+        """If fixed positions are empty, keyword scanning finds values 1 col right of the label."""
         cell_map = {
             # Fixed positions all None (not in map)
-            # Keyword rows in range 35-65
-            (50, 1): "Battery brand",
-            (50, 9): "Narada",
-            (52, 1): "Battery nominal voltage",
-            (52, 9): 48.0,
-            (54, 2): "Battery ampere hour",
-            (54, 9): "200AH",
-            (56, 1): "Number of strings",
-            (56, 9): 4.0,
+            # Labels at col 11, values at col 12 (Layout A style: 1 col to the right)
+            (50, 11): "Battery brand",
+            (50, 12): "Narada",
+            (52, 11): "Battery nominal voltage",
+            (52, 12): 48.0,
+            (54, 11): "Battery ampere hour",
+            (54, 12): "200AH",
+            (56, 11): "Number of strings",
+            (56, 12): 4.0,
         }
         data = BDTData()
         _parse_battery_info(20, self._make_cell_fn(cell_map), data)
@@ -291,10 +291,10 @@ class TestParseBatteryInfo:
         assert data.battery_ah is None
 
     def test_keyword_in_col2_fallback(self):
-        """Keyword label found in col 2 when col 1 is empty."""
+        """Keyword label found in col 2 when col 1 is empty; value is 1 col to the right."""
         cell_map = {
             (60, 2): "Battery ampere hour",
-            (60, 9): "150AH",
+            (60, 3): "150AH",
         }
         data = BDTData()
         _parse_battery_info(20, self._make_cell_fn(cell_map), data)
@@ -935,7 +935,9 @@ class TestNewBDTFields:
 
     def test_rectifier_brand_extracted(self):
         rows = self._make_rows()
-        rows[12][8] = "Delta 2"  # cell(13, 9)
+        # _LAYOUT_C rectifier_brand = (12, 9) → rows[11][8]
+        # (BDT sheet files have empty Excel row 1; calamine row 12 = Excel row 13)
+        rows[11][8] = "Delta 2"
         result = self._run_with_calamine(
             "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
         )
@@ -943,7 +945,8 @@ class TestNewBDTFields:
 
     def test_num_modules_extracted(self):
         rows = self._make_rows()
-        rows[16][8] = 3  # cell(17, 9)
+        # _LAYOUT_C num_modules = (16, 9) → rows[15][8]
+        rows[15][8] = 3
         result = self._run_with_calamine(
             "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
         )
@@ -951,7 +954,7 @@ class TestNewBDTFields:
 
     def test_num_batteries_extracted(self):
         rows = self._make_rows()
-        rows[42][8] = 2  # cell(43, 9)
+        rows[42][8] = 2  # cell(43, 9) — unchanged in _LAYOUT_C
         result = self._run_with_calamine(
             "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
         )
@@ -959,7 +962,8 @@ class TestNewBDTFields:
 
     def test_pld_value_extracted(self):
         rows = self._make_rows()
-        rows[28][8] = 44  # cell(29, 9)
+        # _LAYOUT_C pld_value = (28, 9) → rows[27][8]
+        rows[27][8] = 44
         result = self._run_with_calamine(
             "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
         )

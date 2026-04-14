@@ -116,38 +116,77 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
 
 # ── Rule implementations ──────────────────────────────────
 
-_REQUIRED_PHOTO_CATEGORIES = ("rectifier", "batteries")
-
-
-def _slot_category(slot) -> str:
-    """Return normalized slot category from parser metadata."""
-    category = getattr(slot, "category", "")
-    if category:
-        return str(category).strip().lower()
-
-    # Compatibility fallback for older parsed objects without slot.category
-    label = str(getattr(slot, "label", "")).strip().lower()
-    if "rectifier" in label:
-        return "rectifier"
-    if "batter" in label:
-        return "batteries"
-    return ""
-
 
 def _rule_1_photos(bdt: BDTData) -> RuleResult:
-    """R1: Photo completeness — count + required categories (rectifier & batteries)."""
+    """R1: Photo completeness — category-based validation with count fallback.
+
+    Decision tree:
+    1. deferred + no slots  → count-based fallback
+    2. low mapping confidence → N/A
+    3. photo_categories_found populated → category-based path
+    4. slots present but no categories → count-based path
+    5. no slots → count-based fallback on photo_count integer
+    """
+    detection_mode = getattr(bdt, "photo_detection_mode", "") or ""
+    photo_categories_found: list[str] = list(getattr(bdt, "photo_categories_found", []) or [])
+    mapping_confidence: str = getattr(bdt, "photo_mapping_confidence", "") or ""
     required_photo_count = int(
         getattr(bdt, "required_photo_count", BDT_REQUIRED_PHOTO_COUNT)
         or BDT_REQUIRED_PHOTO_COUNT
     )
 
-    if bdt.photos_deferred:
+    # ── Branch 1: deferred mode with no slots → count-based fallback ──────────
+    if detection_mode == "deferred" and not bdt.photo_slots:
+        count = int(bdt.photo_count or 0)
+        if count == 0:
+            return RuleResult(
+                rule_id="R1", rule_name="Photos",
+                passed=False, verdict="Rejected",
+                detail="No photos embedded in file",
+            )
+        if count >= required_photo_count:
+            return RuleResult(
+                rule_id="R1", rule_name="Photos",
+                passed=True, verdict="Accepted",
+                detail=f"Photo count: {count}/{required_photo_count}",
+            )
+        missing_n = required_photo_count - count
+        return RuleResult(
+            rule_id="R1", rule_name="Photos",
+            passed=False, verdict="Revise",
+            detail=f"Photo count: {count}/{required_photo_count} (missing {missing_n})",
+        )
+
+    # ── Branch 2: low confidence → N/A ────────────────────────────────────────
+    if mapping_confidence == "low":
         return RuleResult(
             rule_id="R1", rule_name="Photos",
             passed=None, verdict="N/A",
-            detail="Photo validation deferred; photos not loaded yet",
+            detail="Photo mapping confidence too low to evaluate categories",
         )
 
+    # ── Branch 3: category-based path ─────────────────────────────────────────
+    if photo_categories_found:
+        required_cats: list[str] = list(
+            getattr(bdt, "required_photo_categories", []) or ["rectifier", "batteries"]
+        ) or ["rectifier", "batteries"]
+        missing = [c for c in required_cats if c not in photo_categories_found]
+        if not missing:
+            return RuleResult(
+                rule_id="R1", rule_name="Photos",
+                passed=True, verdict="Accepted",
+                detail=f"Required categories present: {sorted(photo_categories_found)}",
+            )
+        return RuleResult(
+            rule_id="R1", rule_name="Photos",
+            passed=False, verdict="Rejected",
+            detail=(
+                f"Missing required photo categories: {missing}; "
+                f"found: {photo_categories_found}"
+            ),
+        )
+
+    # ── Branch 4: slots present, no category metadata → count-based ───────────
     if bdt.photo_slots:
         total_slots = len(bdt.photo_slots)
         filled_slots = sum(
@@ -159,43 +198,20 @@ def _rule_1_photos(bdt: BDTData) -> RuleResult:
                 passed=False, verdict="Rejected",
                 detail=f"No photos embedded in file (0/{total_slots} slots filled)",
             )
-
-        # Check required categories: must have at least one rectifier AND one batteries photo
-        filled_categories = set()
-        for slot in bdt.photo_slots:
-            if bool(getattr(slot, "image_data", None)):
-                cat = _slot_category(slot)
-                if cat:
-                    filled_categories.add(cat)
-
-        missing_cats = [
-            c for c in _REQUIRED_PHOTO_CATEGORIES if c not in filled_categories
-        ]
-
-        if filled_slots >= required_photo_count and not missing_cats:
+        if filled_slots >= required_photo_count:
             return RuleResult(
                 rule_id="R1", rule_name="Photos",
                 passed=True, verdict="Accepted",
-                detail=(f"All required photos available "
-                        f"({filled_slots}/{required_photo_count}), "
-                        f"categories: {', '.join(sorted(filled_categories))}"),
+                detail=f"Photo count: {filled_slots}/{required_photo_count}",
             )
-
-        # Build detail about what's incomplete
-        parts = []
-        if filled_slots < required_photo_count:
-            missing_n = required_photo_count - filled_slots
-            parts.append(f"{filled_slots}/{required_photo_count} (missing {missing_n})")
-        if missing_cats:
-            parts.append(f"missing category: {', '.join(missing_cats)}")
-
+        missing_n = required_photo_count - filled_slots
         return RuleResult(
             rule_id="R1", rule_name="Photos",
             passed=False, verdict="Revise",
-            detail=f"Photo set incomplete: {'; '.join(parts)}",
+            detail=f"Photo count: {filled_slots}/{required_photo_count} (missing {missing_n})",
         )
 
-    # Fallback when per-slot metadata is unavailable (no category check possible).
+    # ── Branch 5: no slots at all → integer count fallback ────────────────────
     count = int(bdt.photo_count or 0)
     if count == 0:
         return RuleResult(
@@ -207,15 +223,13 @@ def _rule_1_photos(bdt: BDTData) -> RuleResult:
         return RuleResult(
             rule_id="R1", rule_name="Photos",
             passed=True, verdict="Accepted",
-            detail=f"All required photos are available ({count}/{required_photo_count})",
+            detail=f"Photo count: {count}/{required_photo_count}",
         )
-    missing_count = required_photo_count - count
+    missing_n = required_photo_count - count
     return RuleResult(
         rule_id="R1", rule_name="Photos",
-        passed=False,
-        verdict="Revise",
-        detail=(f"Photo set incomplete: {count}/{required_photo_count} "
-                f"(missing {missing_count})"),
+        passed=False, verdict="Revise",
+        detail=f"Photo count: {count}/{required_photo_count} (missing {missing_n})",
     )
 
 

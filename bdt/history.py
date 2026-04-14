@@ -177,12 +177,16 @@ def _bdt_test_to_record(db_row) -> BDTTestRecord:
     )
 
 
-def _to_test_date_obj(raw_value) -> date:
+def _to_test_date_obj(raw_value) -> date | None:
     if isinstance(raw_value, datetime):
         return raw_value.date()
     if isinstance(raw_value, date):
         return raw_value
-    return date.fromisoformat(str(raw_value))
+    try:
+        return date.fromisoformat(str(raw_value))
+    except ValueError:
+        _log.debug("Invalid date format for _to_test_date_obj: %s", raw_value)
+        return None
 
 
 def _build_bdt_dict(bdt_data, verdict: str | None = None) -> dict:
@@ -213,6 +217,10 @@ def _build_bdt_dict(bdt_data, verdict: str | None = None) -> dict:
         "after_reconnect_ampere": getattr(bdt_data, "after_reconnect_ampere", None),
         "discharge_readings": getattr(bdt_data, "discharge_readings", []),
         "string_discharge_readings": getattr(bdt_data, "string_discharge_readings", []),
+        # Layout metadata for multi-layout support
+        "core_layout": getattr(bdt_data, "core_layout", ""),
+        "photo_layout_id": getattr(bdt_data, "photo_layout_id", ""),
+        "required_photo_count": getattr(bdt_data, "required_photo_count", 16),
     }
     if verdict is not None:
         payload["overall_verdict"] = verdict
@@ -476,10 +484,14 @@ def save_validation_batch(
     alarm_df,
     params: dict,
     validator_code_ref: str | None = None,
-) -> tuple[list[dict], list[dict]]:
-    """Persist BDT tests + PM validation runs in one DB session/commit."""
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Persist BDT tests + PM validation runs in one DB session/commit.
+
+    Returns (run_payloads, photo_jobs, failed_items).
+    failed_items: list of dicts with keys: site_code, test_date, error_type, error_message.
+    """
     if not items:
-        return [], []
+        return [], [], []
 
     from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
     from alarm_app.db.repos.pm_repo import (
@@ -493,6 +505,7 @@ def save_validation_batch(
     params_sha256 = _canonical_json_sha256(params)
     run_payloads: list[dict] = []
     photo_jobs: list[dict] = []
+    failed_items: list[dict] = []
 
     session = _get_session()
     try:
@@ -504,7 +517,7 @@ def save_validation_batch(
         for item in items:
             bdt_data = item.get("bdt_data")
             validation_result = item.get("validation_result")
-            if bdt_data is None or validation_result is None:
+            if not bdt_data or not validation_result:
                 continue
 
             site_code = str(getattr(bdt_data, "site_code", "") or "").strip().upper()
@@ -514,23 +527,21 @@ def save_validation_batch(
             if not test_date:
                 continue
 
-            # Savepoint per item — a duplicate PM run rolls back only this item,
-            # not the entire batch of 1634 files.
+            # Use savepoint-per-item isolation (FR-005)
             try:
                 with session.begin_nested():
-                    bdt_db = _save_bdt_test(session, _build_bdt_dict(bdt_data))
-                    photo_slots = list(getattr(bdt_data, "photo_slots", []) or [])
-                    if photo_slots:
-                        photo_jobs.append({
-                            "bdt_test_id": int(bdt_db.id),
-                            "photo_slots": photo_slots,
-                        })
+                    bdt_dict = _build_bdt_dict(bdt_data)
+                    bdt_db = _save_bdt_test(session, bdt_dict)
+                    if bdt_db is None:
+                        continue
 
                     rule_results = _build_rule_results(validation_result)
                     if not rule_results:
                         continue
 
                     alarm_input_sha256 = compute_alarm_input_sha256(alarm_df, site_code, test_date)
+
+                    # Build idempotency key for PM run
                     idempotency_material = {
                         "site_code": site_code,
                         "test_date": test_date,
@@ -555,22 +566,46 @@ def save_validation_batch(
                         parameter_set_id=parameter_set_id,
                     )
 
-                if pm_run is not None:
-                    run_payloads.append(_build_run_payload(
-                        bdt_data=bdt_data,
-                        validation_result=validation_result,
-                        params=params,
-                        validator_ref=validator_ref,
-                        params_sha256=params_sha256,
-                        alarm_input_sha256=alarm_input_sha256,
-                        idempotency_key=idempotency_key,
-                        run_uuid=run_uuid,
-                        rule_count=len(rule_results),
-                    ))
+                    if pm_run is not None:
+                        run_payloads.append(_build_run_payload(
+                            bdt_data=bdt_data,
+                            validation_result=validation_result,
+                            params=params,
+                            validator_ref=validator_ref,
+                            params_sha256=params_sha256,
+                            alarm_input_sha256=alarm_input_sha256,
+                            idempotency_key=idempotency_key,
+                            run_uuid=run_uuid,
+                            rule_count=len(rule_results),
+                        ))
+
+                        # Queue photo jobs only after PM run is successfully persisted
+                        photo_slots = list(getattr(bdt_data, "photo_slots", []) or [])
+                        if photo_slots:
+                            photo_jobs.append({
+                                "bdt_test_id": int(bdt_db.id),
+                                "photo_slots": photo_slots,
+                            })
             except _IntegrityError:
+                # Duplicate: rollback savepoint only, continue with remaining items.
+                # FR-005: duplicate PM run must not roll back whole batch.
                 _log.debug("Duplicate BDT/PM run skipped for site=%s date=%s", site_code, test_date)
-            except Exception:
-                _log.warning("Failed to persist item site=%s date=%s", site_code, test_date, exc_info=True)
+                failed_items.append({
+                    "site_code": site_code,
+                    "test_date": test_date,
+                    "error_type": "duplicate",
+                    "error_message": "Duplicate PM run skipped (idempotent)",
+                })
+            except Exception as e:
+                # Non-duplicate error: rollback savepoint only, log and continue.
+                # FR-005: item-scoped failure must not roll back whole batch.
+                _log.error("Failed to persist item site=%s date=%s: %s", site_code, test_date, str(e), exc_info=True)
+                failed_items.append({
+                    "site_code": site_code,
+                    "test_date": test_date,
+                    "error_type": "db_error",
+                    "error_message": str(e),
+                })
 
         session.commit()
     except Exception:
@@ -579,11 +614,15 @@ def save_validation_batch(
     finally:
         session.close()
 
-    return run_payloads, photo_jobs
+    return run_payloads, photo_jobs, failed_items
 
 
 def persist_photo_jobs(photo_jobs: list[dict]) -> int:
-    """Persist queued BDT photo jobs with a single transaction."""
+    """Persist queued BDT photo jobs with savepoint-per-job isolation.
+
+    Returns count of successfully persisted photos. Individual job failures
+    are logged but do not roll back other jobs in the batch.
+    """
     if not photo_jobs:
         return 0
 
@@ -597,16 +636,25 @@ def persist_photo_jobs(photo_jobs: list[dict]) -> int:
             photo_slots = list(job.get("photo_slots") or [])
             if not bdt_test_id or not photo_slots:
                 continue
-            total += persist_bdt_photos(
-                session,
-                bdt_test_id,
-                photo_slots,
-                autocommit=False,
-            )
+
+            try:
+                with session.begin_nested():
+                    job_count = persist_bdt_photos(
+                        session,
+                        bdt_test_id,
+                        photo_slots,
+                        autocommit=False,  # Don't commit inside savepoint
+                    )
+                    total += job_count
+            except Exception:
+                _log.error("Failed to persist photos for bdt_test_id=%d", bdt_test_id, exc_info=True)
+                # Savepoint rolls back this job only; continue with remaining jobs
+
         session.commit()
     except Exception:
         session.rollback()
-        _log.warning("Deferred BDT photo persistence failed", exc_info=True)
+        _log.error("Deferred BDT photo persistence batch failed", exc_info=True)
+        raise
     finally:
         session.close()
     return total

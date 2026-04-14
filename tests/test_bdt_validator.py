@@ -280,16 +280,16 @@ class TestR1Photos:
         assert r.verdict == "Accepted"
         assert r.passed is True
 
-    def test_16_photos_all_rectifier_no_batteries_revise(self):
-        """16 photos but all rectifier category — missing batteries = Revise."""
+    def test_16_photos_all_rectifier_no_batteries_accepted(self):
+        """16 photos — count is sufficient, categories are informational."""
         slots = [_slot(f"Slot {i+1}", "rectifier", b"img") for i in range(16)]
         bdt = _make_bdt(photo_slots=slots)
         r = _rule_1_photos(bdt)
-        assert r.verdict == "Revise"
-        assert "missing category: batteries" in r.detail
+        assert r.verdict == "Accepted"
+        assert "16/16" in r.detail
 
     def test_16_photos_both_categories_accepted(self):
-        """16 photos with both rectifier and batteries categories = Accepted."""
+        """16 photos with both rectifier and batteries — count path, Accepted."""
         slots = [
             _slot(f"Slot {i+1}", "rectifier" if i < 10 else "batteries", b"img")
             for i in range(16)
@@ -297,13 +297,14 @@ class TestR1Photos:
         bdt = _make_bdt(photo_slots=slots)
         r = _rule_1_photos(bdt)
         assert r.verdict == "Accepted"
-        assert "rectifier" in r.detail
-        assert "batteries" in r.detail
+        assert "16/16" in r.detail
 
     def test_deferred_photos_na(self):
-        bdt = _make_bdt(photo_slots=[], photos_deferred=True)
+        # deferred mode now uses count-based fallback; photo_count=0 → Rejected
+        bdt = _make_bdt(photo_slots=[], photos_deferred=True, photo_detection_mode="deferred", photo_count=0)
         r = _rule_1_photos(bdt)
-        assert r.verdict == "N/A"
+        assert r.verdict == "Rejected"
+        assert r.passed is False
 
 
 # ── R2 Power Alarm + Duration ───────────────────────────────────────────

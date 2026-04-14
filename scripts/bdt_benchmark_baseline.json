@@ -1,0 +1,13 @@
+{
+  "files": 100,
+  "workers": 32,
+  "elapsed_s": 0.143,
+  "files_per_sec": 699.3,
+  "errors": 0,
+  "by_family": {
+    "A": 97,
+    "UNKNOWN": 1,
+    "B1": 1,
+    "B2": 1
+  }
+}
