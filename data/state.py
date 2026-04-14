@@ -388,6 +388,29 @@ def append_outbox_event(
         session.close()
 
 
+def append_outbox_events(events: list[dict]) -> int:
+    """Append multiple sync events to durable local outbox journal."""
+    from alarm_app.db.repos.sync_repo import append_outbox_events as _append_many
+    if not events:
+        return 0
+    session = _get_session()
+    try:
+        normalized = []
+        for event in events:
+            normalized.append({
+                "event_id": str(event.get("event_id") or uuid4()),
+                "origin_device_id": str(event.get("origin_device_id") or get_or_create_device_id()),
+                "entity_type": str(event.get("entity_type") or ""),
+                "entity_local_id": str(event.get("entity_local_id") or ""),
+                "op": str(event.get("op") or "upsert"),
+                "entity_hash": str(event.get("entity_hash") or ""),
+                "payload": event.get("payload") or {},
+            })
+        return _append_many(session, normalized)
+    finally:
+        session.close()
+
+
 def load_pending_outbox(limit: int | None = None) -> list[dict]:
     """Return pending outbox events that are not yet marked synced."""
     from alarm_app.db.repos.sync_repo import load_pending_outbox as _load

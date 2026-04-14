@@ -6,6 +6,7 @@ import logging
 import os
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Thread
 from uuid import uuid4
 
 import pandas as pd
@@ -322,8 +323,35 @@ class BDTValidationThread(QThread):
         self._tolerance = tolerance
         self._health_pct = health_pct
 
+    @staticmethod
+    def _is_invalid_bdt_payload(bdt_data) -> bool:
+        parse_errors_lc = [str(e).lower() for e in getattr(bdt_data, "errors", [])]
+        hard_file_error = any(
+            ("cannot open file" in err) or ("failed to read bdt sheet" in err)
+            for err in parse_errors_lc
+        )
+        no_extractable_data = (
+            not getattr(bdt_data, "site_code", "")
+            and not getattr(bdt_data, "test_date", None)
+            and not getattr(bdt_data, "discharge_readings", [])
+            and getattr(bdt_data, "start_voltage", None) is None
+            and getattr(bdt_data, "start_ampere", None) is None
+        )
+        return bool(hard_file_error or no_extractable_data)
+
+    @staticmethod
+    def _persist_deferred_photos(photo_jobs: list[dict]) -> None:
+        if not photo_jobs:
+            return
+        try:
+            from alarm_app.bdt.history import persist_photo_jobs
+            stored = persist_photo_jobs(photo_jobs)
+            _log.info("Deferred BDT photo jobs completed: photos=%d", stored)
+        except Exception:
+            _log.warning("Deferred BDT photo jobs failed", exc_info=True)
+
     def run(self):
-        from alarm_app.bdt.parser import parse_bdt_file, load_bdt_photos
+        from alarm_app.bdt.parser import parse_bdt_file
         from alarm_app.bdt.validator import validate_bdt
         from datetime import datetime
 
@@ -331,14 +359,32 @@ class BDTValidationThread(QThread):
             total = len(self._files)
             results = []
             by_site: dict[str, list] = {}
+            persist_items: list[dict] = []
             done = 0
             summary_lookup = _loaders._load_external_summary_lookup(self._files)
 
-            workers = min(total, os.cpu_count() or 1, 8)
+            # Photo extraction is I/O-bound (zip reads); use more threads than CPU count.
+            workers = min(total, (os.cpu_count() or 1) * 4, 32)
+
+            def _parse_and_validate(file_path: str):
+                bdt_data = parse_bdt_file(file_path, skip_photos=False)
+                if self._is_invalid_bdt_payload(bdt_data):
+                    return None
+
+                if summary_lookup:
+                    matched_summary = _loaders._match_external_summary_row(
+                        bdt_data, summary_lookup)
+                    if matched_summary:
+                        bdt_data.summary_data = matched_summary
+
+                result = validate_bdt(
+                    bdt_data, self._alarm_df,
+                    self._tolerance, self._health_pct)
+                return result, bdt_data
 
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
-                    pool.submit(parse_bdt_file, fp, skip_photos=True): fp
+                    pool.submit(_parse_and_validate, fp): fp
                     for fp in self._files
                 }
                 for future in as_completed(futures):
@@ -350,74 +396,20 @@ class BDTValidationThread(QThread):
                         pct, f"[{done}/{total}]  {fname}")
 
                     try:
-                        bdt_data = future.result()
+                        payload = future.result()
                     except Exception:
                         continue
-
-                    # Skip non-template files and hard parser failures to avoid
-                    # polluting validation table with unusable "Unknown" rows.
-                    parse_errors_lc = [str(e).lower() for e in getattr(bdt_data, "errors", [])]
-                    hard_file_error = any(
-                        ("cannot open file" in err) or ("failed to read bdt sheet" in err)
-                        for err in parse_errors_lc
-                    )
-                    no_extractable_data = (
-                        not getattr(bdt_data, "site_code", "")
-                        and not getattr(bdt_data, "test_date", None)
-                        and not getattr(bdt_data, "discharge_readings", [])
-                        and getattr(bdt_data, "start_voltage", None) is None
-                        and getattr(bdt_data, "start_ampere", None) is None
-                    )
-                    if hard_file_error or no_extractable_data:
+                    if not payload:
                         self.progress.emit(
                             pct, f"[{done}/{total}]  skipped invalid BDT: {fname}")
                         continue
 
-                    # R1 photo rule must evaluate actual image availability.
-                    # Bulk parsing may defer photos for speed, so load now.
-                    if getattr(bdt_data, "photos_deferred", False):
-                        load_bdt_photos(bdt_data)
-
-                    if summary_lookup:
-                        matched_summary = _loaders._match_external_summary_row(
-                            bdt_data, summary_lookup)
-                        if matched_summary:
-                            bdt_data.summary_data = matched_summary
-
-                    result = validate_bdt(
-                        bdt_data, self._alarm_df,
-                        self._tolerance, self._health_pct)
+                    result, bdt_data = payload
                     results.append(result)
-
-                    # Persist test record for historical comparison
-                    try:
-                        from alarm_app.bdt.history import save_test_record, save_validation_run
-                        save_test_record(bdt_data, result.overall)
-
-                        run_data = save_validation_run(
-                            bdt_data=bdt_data,
-                            validation_result=result,
-                            alarm_df=self._alarm_df,
-                            params={
-                                "tolerance": self._tolerance,
-                                "health_pct": self._health_pct,
-                            },
-                        )
-                        if run_data:
-                            state.append_outbox_event(
-                                entity_type="pm_run",
-                                entity_local_id=run_data["run_id"],
-                                op="upsert",
-                                entity_hash=run_data["idempotency_key"],
-                                payload={
-                                    "site_code": run_data["site_code"],
-                                    "test_date": run_data["test_date"],
-                                    "overall_verdict": run_data["overall_verdict"],
-                                    "rule_count": run_data["rule_count"],
-                                },
-                            )
-                    except Exception:
-                        pass  # history saving is best-effort
+                    persist_items.append({
+                        "bdt_data": bdt_data,
+                        "validation_result": result,
+                    })
 
                     if bdt_data.site_code:
                         key = bdt_data.site_code.strip().upper()
@@ -433,6 +425,44 @@ class BDTValidationThread(QThread):
 
             self.progress.emit(100, "Done!")
             self.finished.emit(results, by_site)
+
+            if persist_items:
+                try:
+                    from alarm_app.bdt.history import save_validation_batch
+                    run_payloads, photo_jobs = save_validation_batch(
+                        items=persist_items,
+                        alarm_df=self._alarm_df,
+                        params={
+                            "tolerance": self._tolerance,
+                            "health_pct": self._health_pct,
+                        },
+                    )
+
+                    if run_payloads:
+                        outbox_events = []
+                        for run_data in run_payloads:
+                            outbox_events.append({
+                                "entity_type": "pm_run",
+                                "entity_local_id": run_data["run_id"],
+                                "op": "upsert",
+                                "entity_hash": run_data["idempotency_key"],
+                                "payload": {
+                                    "site_code": run_data["site_code"],
+                                    "test_date": run_data["test_date"],
+                                    "overall_verdict": run_data["overall_verdict"],
+                                    "rule_count": run_data["rule_count"],
+                                },
+                            })
+                        state.append_outbox_events(outbox_events)
+
+                    if photo_jobs:
+                        Thread(
+                            target=self._persist_deferred_photos,
+                            args=(photo_jobs,),
+                            daemon=True,
+                        ).start()
+                except Exception:
+                    _log.warning("Deferred BDT persistence failed", exc_info=True)
 
         except Exception:
             self.error.emit(traceback.format_exc())

@@ -86,14 +86,17 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
                         validator_code_ref: str | None,
                         overall_verdict: str,
                         rule_results: list[dict],
-                        params: dict | None = None) -> PMValidationRun | None:
+                        params: dict | None = None,
+                        autocommit: bool = True,
+                        catalog_map: dict[str, int] | None = None,
+                        parameter_set_id: int | None = None) -> PMValidationRun | None:
     """Save a PM validation run with all rule results.
 
     Returns None if an identical run already exists (idempotent).
     rule_results: list of {"rule_code": "R1", "verdict": "Accepted", "detail": "..."}
     """
-    param_set_id = None
-    if params:
+    param_set_id = parameter_set_id
+    if param_set_id is None and params:
         params_sha = compute_canonical_json_sha256(params)
         ps = session.query(PMParameterSet).filter_by(params_sha256=params_sha).first()
         if not ps:
@@ -125,11 +128,13 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
     try:
         session.flush()
     except IntegrityError:
-        session.rollback()
-        _log.warning("Duplicate validation run skipped (IntegrityError): bdt_test_id=%d", bdt_test_id)
-        return None
+        if autocommit:
+            session.rollback()
+            _log.warning("Duplicate validation run skipped (IntegrityError): bdt_test_id=%d", bdt_test_id)
+            return None
+        raise
 
-    catalog = get_or_create_rule_catalog(session)
+    catalog = catalog_map or get_or_create_rule_catalog(session)
 
     for rr in rule_results:
         rule_code = rr["rule_code"]
@@ -143,7 +148,10 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
             evidence_json=json.dumps(rr.get("detail", ""), default=str),
         ))
 
-    session.commit()
+    if autocommit:
+        session.commit()
+    else:
+        session.flush()
     _log.info("Validation run saved: bdt_test_id=%d, verdict=%s", bdt_test_id, overall_verdict)
     return run
 

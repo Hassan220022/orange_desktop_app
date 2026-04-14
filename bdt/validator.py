@@ -136,6 +136,11 @@ def _slot_category(slot) -> str:
 
 def _rule_1_photos(bdt: BDTData) -> RuleResult:
     """R1: Photo completeness — count + required categories (rectifier & batteries)."""
+    required_photo_count = int(
+        getattr(bdt, "required_photo_count", BDT_REQUIRED_PHOTO_COUNT)
+        or BDT_REQUIRED_PHOTO_COUNT
+    )
+
     if bdt.photos_deferred:
         return RuleResult(
             rule_id="R1", rule_name="Photos",
@@ -167,20 +172,20 @@ def _rule_1_photos(bdt: BDTData) -> RuleResult:
             c for c in _REQUIRED_PHOTO_CATEGORIES if c not in filled_categories
         ]
 
-        if filled_slots >= BDT_REQUIRED_PHOTO_COUNT and not missing_cats:
+        if filled_slots >= required_photo_count and not missing_cats:
             return RuleResult(
                 rule_id="R1", rule_name="Photos",
                 passed=True, verdict="Accepted",
                 detail=(f"All required photos available "
-                        f"({filled_slots}/{BDT_REQUIRED_PHOTO_COUNT}), "
+                        f"({filled_slots}/{required_photo_count}), "
                         f"categories: {', '.join(sorted(filled_categories))}"),
             )
 
         # Build detail about what's incomplete
         parts = []
-        if filled_slots < BDT_REQUIRED_PHOTO_COUNT:
-            missing_n = BDT_REQUIRED_PHOTO_COUNT - filled_slots
-            parts.append(f"{filled_slots}/{BDT_REQUIRED_PHOTO_COUNT} (missing {missing_n})")
+        if filled_slots < required_photo_count:
+            missing_n = required_photo_count - filled_slots
+            parts.append(f"{filled_slots}/{required_photo_count} (missing {missing_n})")
         if missing_cats:
             parts.append(f"missing category: {', '.join(missing_cats)}")
 
@@ -198,18 +203,18 @@ def _rule_1_photos(bdt: BDTData) -> RuleResult:
             passed=False, verdict="Rejected",
             detail="No photos embedded in file",
         )
-    if count >= BDT_REQUIRED_PHOTO_COUNT:
+    if count >= required_photo_count:
         return RuleResult(
             rule_id="R1", rule_name="Photos",
             passed=True, verdict="Accepted",
-            detail=f"All required photos are available ({count}/{BDT_REQUIRED_PHOTO_COUNT})",
+            detail=f"All required photos are available ({count}/{required_photo_count})",
         )
-    missing_count = BDT_REQUIRED_PHOTO_COUNT - count
+    missing_count = required_photo_count - count
     return RuleResult(
         rule_id="R1", rule_name="Photos",
         passed=False,
         verdict="Revise",
-        detail=(f"Photo set incomplete: {count}/{BDT_REQUIRED_PHOTO_COUNT} "
+        detail=(f"Photo set incomplete: {count}/{required_photo_count} "
                 f"(missing {missing_count})"),
     )
 
@@ -1104,4 +1109,3 @@ def _rule_11_summary_checklist(bdt: BDTData) -> RuleResult:
         passed=False, verdict="Revise",
         detail=detail,
     )
-

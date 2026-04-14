@@ -62,6 +62,8 @@ class BDTData:
     # Photos
     photo_count: int = 0
     photo_slots: list[PhotoSlot] = field(default_factory=list)
+    photo_layout_id: str = "LAYOUT_PHOTO_16"
+    required_photo_count: int = 16
     photos_deferred: bool = False
 
     # Parse errors
@@ -147,10 +149,43 @@ _AH_LABEL_KEYWORDS = ("ampere hour", "ampere-hour", "capacity", "ah",
                        "battery capacity")
 _STRINGS_LABEL_KEYWORDS = ("number of string", "number of strings",
                            "no. of string", "strings", "string count")
-_NUM_BATTERIES_LABEL_KEYWORDS = ("number of batteries", "no. of batteries",
-                                 "batteries count", "battery count")
-_NUM_MODULES_LABEL_KEYWORDS = ("modules", "module count", "number of modules",
-                               "no. of modules")
+
+# ── Layout cell-position maps ─────────────────────────────────
+# All positions are 1-indexed (row, col) matching Excel coordinates.
+# Layout A = real production template confirmed on 11 files.
+# Layout B = older template variant (fallback).
+
+_LAYOUT_A = {
+    "site_name":      (4,  3),   # C4
+    "site_code":      (4, 12),   # L4
+    "test_date":      (3, 20),   # T3
+    "time_in":        (5, 20),   # T5
+    "time_out":       (6, 20),   # T6
+    "battery_brand":  (28, 12),  # L28
+    "num_batteries":  (30, 12),  # L30
+    "battery_voltage":(32, 12),  # L32
+    "battery_ah":     (34, 12),  # L34
+    "num_strings":    (36, 12),  # L36
+    "rectifier_brand":(13, 12),  # L13
+    "num_modules":    (15, 12),  # L15
+    "pld_value":      (24, 12),  # L24  (approximate — keyword fallback handles variance)
+}
+
+_LAYOUT_B = {
+    "site_name":      (4,  3),   # C4  (same)
+    "site_code":      (4,  9),   # I4
+    "test_date":      (3, 15),   # O3
+    "time_in":        (4, 15),   # O4
+    "time_out":       (5, 15),   # O5
+    "battery_brand":  (40,  9),  # I40
+    "num_batteries":  (43,  9),  # I43
+    "battery_voltage":(44,  9),  # I44
+    "battery_ah":     (46,  9),  # I46
+    "num_strings":    (48,  9),  # I48
+    "rectifier_brand":(13,  9),  # I13
+    "num_modules":    (17,  9),  # I17
+    "pld_value":      (29,  9),  # I29
+}
 
 
 def _read_value_near_label(cell_fn, r: int, c: int, max_col: int):
@@ -160,25 +195,20 @@ def _read_value_near_label(cell_fn, r: int, c: int, max_col: int):
             val = _safe_str(cell_fn(r, c + offset))
             if val:
                 return val
-    # Also try the canonical value column 9
-    if c < 9:
-        val = _safe_str(cell_fn(r, 9))
-        if val:
-            return val
+    # Try up to 3 more columns to the right as last resort
+    for offset in (3, 4, 5):
+        if c + offset <= max_col:
+            val = _safe_str(cell_fn(r, c + offset))
+            if val:
+                return val
     return ""
 
 
-def _parse_battery_info(max_column, cell_fn, data: BDTData):
+def _parse_battery_info(max_column, cell_fn, data: BDTData, layout: dict):
     """Extract battery specs from the BDT sheet.
 
-    Standard BDT template layout (col 1 = label, col 9 = value):
-        row 40: Battery brand
-        row 42: Number of batteries connected to the rectifier
-        row 44: Battery nominal voltage
-        row 46: Battery ampere hour
-        row 48: Number of strings
-
-    Falls back to keyword scanning rows 20-100 if fixed positions miss.
+    Uses layout-specific cell positions for fixed extraction, then falls
+    back to keyword scanning rows 20-100 if fixed positions miss.
     A second-pass broad scan (rows 1-150) catches templates with unusual
     layouts.
     """
@@ -187,20 +217,26 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData):
     voltage_raw = None
     strings_raw = None
 
-    # ── Fixed-position extraction — standard BDT template ──
-    candidate = _safe_str(cell_fn(40, 9))
+    # ── Layout-based fixed-position extraction ──
+    r_brand, c_brand = layout["battery_brand"]
+    r_batt, c_batt = layout["num_batteries"]
+    r_volt, c_volt = layout["battery_voltage"]
+    r_ah, c_ah = layout["battery_ah"]
+    r_str, c_str = layout["num_strings"]
+
+    candidate = _safe_str(cell_fn(r_brand, c_brand))
     if candidate:
         brand_raw = candidate
 
-    parsed = _safe_float(cell_fn(44, 9))
+    parsed = _safe_float(cell_fn(r_volt, c_volt))
     if parsed is not None and parsed > 0:
         voltage_raw = parsed
 
-    parsed = _safe_float(cell_fn(46, 9))
+    parsed = _safe_float(cell_fn(r_ah, c_ah))
     if parsed is not None and parsed > 0:
         ah_raw = parsed
 
-    parsed = _safe_float(cell_fn(48, 9))
+    parsed = _safe_float(cell_fn(r_str, c_str))
     if parsed is not None and parsed > 0:
         strings_raw = int(parsed)
 
@@ -337,6 +373,30 @@ def _extract_site_code_token(text: str) -> str:
             first_idx[token] = i
     best = sorted(counts.keys(), key=lambda k: (-counts[k], first_idx[k]))[0]
     return best
+
+
+def _detect_layout(cell_fn, max_row: int, max_col: int) -> dict:
+    """Detect which BDT template layout this file uses.
+
+    Strategy: check Layout A site_code position (L4 = row 4, col 12).
+    If that cell contains a plausible site code token, use Layout A.
+    Otherwise fall back to Layout B.
+    """
+    if max_col < 12:
+        return _LAYOUT_B
+
+    # Layout A: site code at L4 (row=4, col=12)
+    candidate_a = _safe_str(cell_fn(4, 12))
+    if candidate_a and _extract_site_code_token(candidate_a):
+        return _LAYOUT_A
+
+    # Layout A: also check if test_date cell T3 (row=3, col=20) holds a valid date
+    if max_col >= 20:
+        date_val = cell_fn(3, 20)
+        if _parse_test_date(date_val, "") is not None:
+            return _LAYOUT_A
+
+    return _LAYOUT_B
 
 
 def _resolve_bdt_sheet_name(sheet_names: list[str],
@@ -524,17 +584,21 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
             return None
         return row_data[c]
 
-    # Site info (fixed positions + fallback keyword scan)
-    data.site_name = _safe_str(cell(4, 3))
-    data.site_code = _safe_str(cell(4, 9))
-    data.test_date = _parse_test_date(cell(3, 15), data.filename)
-    data.time_in = _safe_str(cell(4, 15))
-    data.time_out = _safe_str(cell(5, 15))
+    # Detect layout then extract site info from correct positions
+    layout = _detect_layout(cell, max_row, max_col)
+    data.site_name = _safe_str(cell(*layout["site_name"]))
+    data.site_code = _safe_str(cell(*layout["site_code"]))
+    data.test_date = _parse_test_date(cell(*layout["test_date"]), data.filename)
+    data.time_in = _safe_str(cell(*layout["time_in"]))
+    data.time_out = _safe_str(cell(*layout["time_out"]))
 
-    # Alternate fixed positions for test_date when the default cell is empty.
-    # (4,15) and (5,15) are excluded — they hold time_in and time_out.
+    # Try alternate fixed positions based on detected layout
     if data.test_date is None:
-        for rr, cc in ((2, 15), (3, 14), (3, 16), (1, 15)):
+        if layout is _LAYOUT_A:
+            alt_date_cells = ((2, 20), (3, 19), (3, 21), (4, 20))
+        else:
+            alt_date_cells = ((2, 15), (3, 14), (3, 16), (1, 15))
+        for rr, cc in alt_date_cells:
             parsed = _parse_test_date(cell(rr, cc), data.filename)
             if parsed is not None:
                 data.test_date = parsed
@@ -736,57 +800,77 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
         data.end_ampere  = last_filled_ampere
         data.string_discharge_readings = all_string_readings
 
-    _parse_battery_info(max_col, cell, data)
+    _parse_battery_info(max_col, cell, data, layout)
 
     # ── Rectifier / module / battery-count / PLVD fields ──
-    # Fixed-position extraction
-    data.rectifier_brand = _safe_str(cell(13, 9))
-    _mod_raw = _safe_float(cell(17, 9))
+    r_rect, c_rect = layout["rectifier_brand"]
+    r_mod, c_mod = layout["num_modules"]
+    r_batt2, c_batt2 = layout["num_batteries"]
+    r_pld, c_pld = layout["pld_value"]
+
+    data.rectifier_brand = _safe_str(cell(r_rect, c_rect))
+    _mod_raw = _safe_float(cell(r_mod, c_mod))
     if _mod_raw is not None and _mod_raw > 0:
         data.num_modules = int(_mod_raw)
-    _batt_raw = _safe_float(cell(43, 9))
+    _batt_raw = _safe_float(cell(r_batt2, c_batt2))
     if _batt_raw is not None and _batt_raw > 0:
         data.num_batteries = int(_batt_raw)
-    data.pld_value = _safe_str(cell(29, 9))
+    data.pld_value = _safe_str(cell(r_pld, c_pld))
 
     # Keyword-fallback scanning
     if not data.rectifier_brand:
         _r, _c = _find_text_in_row_window(cell, max_col, 10, 16,
                                            needles=("rectifier", "type"))
         if _r is not None:
-            data.rectifier_brand = _safe_str(cell(_r, 9))
+            val = (_safe_str(cell(_r, _c + 1))
+                   or _safe_str(cell(_r, _c))
+                   or _safe_str(cell(_r, c_rect))
+                   or _safe_str(cell(_r, c_rect - 1))
+                   or _safe_str(cell(_r, c_rect + 1)))
+            data.rectifier_brand = val
 
     if data.num_modules is None:
-        _r, _c = _find_text_in_row_window(cell, max_col, 15, 20,
+        _r, _c = _find_text_in_row_window(cell, max_col, 13, 18,
                                            needles=("number", "modules"))
         if _r is not None:
-            _v = _safe_float(cell(_r, 9))
+            _v = (_safe_float(cell(_r, c_mod))
+                  or _safe_float(cell(_r, _c + 1))
+                  or _safe_float(cell(_r, _c)))
             if _v is not None and _v > 0:
                 data.num_modules = int(_v)
 
     if data.num_batteries is None:
-        _r, _c = _find_text_in_row_window(cell, max_col, 40, 46,
+        _r, _c = _find_text_in_row_window(cell, max_col, 28, 46,
                                            needles=("number", "batteries", "connected"))
         if _r is not None:
-            _v = _safe_float(cell(_r, 9))
+            _v = (_safe_float(cell(_r, c_batt2))
+                  or _safe_float(cell(_r, _c + 1))
+                  or _safe_float(cell(_r, _c)))
             if _v is not None and _v > 0:
                 data.num_batteries = int(_v)
 
     if not data.pld_value:
-        _r, _c = _find_text_in_row_window(cell, max_col, 25, 32,
+        _r, _c = _find_text_in_row_window(cell, max_col, 20, 35,
                                            needles=("plvd", "set"))
         if _r is None:
-            _r, _c = _find_text_in_row_window(cell, max_col, 25, 32,
+            _r, _c = _find_text_in_row_window(cell, max_col, 20, 35,
                                                needles=("lvd", "disconnect"))
         if _r is not None:
-            data.pld_value = _safe_str(cell(_r, 9))
+            data.pld_value = (_safe_str(cell(_r, c_pld))
+                              or _safe_str(cell(_r, _c + 1))
+                              or _safe_str(cell(_r, _c)))
 
     # Summary sheet
     data.summary_data = _parse_summary_sheet(file_path, all_sheet_names)
 
     # Photo slots
     if not skip_photos:
-        data.photo_slots, data.photo_count = _extract_photo_slots(file_path)
+        (
+            data.photo_slots,
+            data.photo_count,
+            data.photo_layout_id,
+            data.required_photo_count,
+        ) = _extract_photo_slots(file_path)
         data.photos_deferred = False
     else:
         data.photos_deferred = True
@@ -799,49 +883,77 @@ def load_bdt_photos(bdt: BDTData) -> None:
     if bdt.photo_slots:
         bdt.photos_deferred = False
         return  # already loaded
-    bdt.photo_slots, bdt.photo_count = _extract_photo_slots(bdt.file_path)
+    (
+        bdt.photo_slots,
+        bdt.photo_count,
+        bdt.photo_layout_id,
+        bdt.required_photo_count,
+    ) = _extract_photo_slots(bdt.file_path)
     bdt.photos_deferred = False
 
 
-# ── Photo slot definitions ────────────────────────────────────
-# Each slot: (label_row_1indexed, label_col_1indexed)
-# 5 row bands × 3 column groups = 15 photo placeholders.
-# Row bands (0-indexed anchor rows) and column groups for photo slot mapping.
-# 4 column groups per band = 20 total slots (5 bands × 4 cols).
-_SLOT_DEFS: list[tuple[int, int]] = [
-    # Band 0 — Rectifier (outside, inside, modules, extra)
-    (9, 13), (9, 18), (9, 23), (9, 28),
-    # Band 1 — Batteries (photo1, photo2, settings, extra)
-    (21, 13), (21, 18), (21, 23), (21, 28),
-    # Band 2 — CBs / Rack / LVD / extra
-    (34, 13), (34, 18), (34, 23), (34, 28),
-    # Band 3 — Current / Load / PLVD / extra
-    (46, 13), (46, 18), (46, 23), (46, 28),
-    # Band 4 — Charging / Disconnect / Reconnect / After-reconnect current
-    (58, 13), (58, 18), (58, 23), (58, 28),
-]
-
-_BAND_CATEGORIES = {
-    0: "rectifier",
-    1: "batteries",
-    2: "modules",
-    3: "load",
-    4: "charging",
+# ── Photo slot definitions by layout ───────────────────────────────
+_PHOTO_LAYOUTS = {
+    # 6-photo template (rectifier + batteries only, 3 cols per band)
+    "LAYOUT_PHOTO_6": {
+        "slot_defs": [
+            (9, 13), (9, 18), (9, 23),
+            (21, 13), (21, 18), (21, 23),
+        ],
+        "band_ranges": [(8, 21), (21, 34)],
+        "col_groups": [(11, 16), (17, 21), (22, 26)],
+        "band_categories": {0: "rectifier", 1: "batteries"},
+        "required_count": 6,
+    },
+    # 15-photo template (5 bands x 3 cols)
+    "LAYOUT_PHOTO_15": {
+        "slot_defs": [
+            (9, 13), (9, 18), (9, 23),
+            (21, 13), (21, 18), (21, 23),
+            (34, 13), (34, 18), (34, 23),
+            (46, 13), (46, 18), (46, 23),
+            (58, 13), (58, 18), (58, 23),
+        ],
+        "band_ranges": [(8, 21), (21, 34), (34, 46), (46, 58), (58, 70)],
+        "col_groups": [(11, 16), (17, 21), (22, 26)],
+        "band_categories": {
+            0: "rectifier",
+            1: "batteries",
+            2: "modules",
+            3: "load",
+            4: "charging",
+        },
+        "required_count": 15,
+    },
+    # 16-photo+ template using 4th extra column group; require 16 minimum
+    "LAYOUT_PHOTO_16": {
+        "slot_defs": [
+            (9, 13), (9, 18), (9, 23), (9, 28),
+            (21, 13), (21, 18), (21, 23), (21, 28),
+            (34, 13), (34, 18), (34, 23), (34, 28),
+            (46, 13), (46, 18), (46, 23), (46, 28),
+            (58, 13), (58, 18), (58, 23), (58, 28),
+        ],
+        "band_ranges": [(8, 21), (21, 34), (34, 46), (46, 58), (58, 70)],
+        "col_groups": [(11, 16), (17, 21), (22, 26), (27, 31)],
+        "band_categories": {
+            0: "rectifier",
+            1: "batteries",
+            2: "modules",
+            3: "load",
+            4: "charging",
+        },
+        "required_count": 16,
+    },
 }
 
-# Band ranges use exclusive upper bound (lo <= row < hi) to avoid overlap.
-# Widened by 1 row on each side to catch boundary-anchored images.
-_BAND_RANGES = [(8, 21), (21, 34), (34, 46), (46, 58), (58, 70)]
-# 4 column groups: original 3 + cols 27-31 for extra photo slot.
-# Start at col 11 to catch images placed 1 column left of the expected position.
-_COL_GROUPS = [(11, 16), (17, 21), (22, 26), (27, 31)]
-_COLS_PER_BAND = len(_COL_GROUPS)  # 4
 
-
-def _anchor_to_slot(from_row: int, from_col: int) -> int | None:
-    """Map a 0-indexed anchor position to a slot index (0-19), or None."""
+def _anchor_to_slot(from_row: int, from_col: int,
+                    band_ranges: list[tuple[int, int]],
+                    col_groups: list[tuple[int, int]]) -> int | None:
+    """Map a 0-indexed anchor position to a slot index, or None."""
     band = None
-    for bi, (lo, hi) in enumerate(_BAND_RANGES):
+    for bi, (lo, hi) in enumerate(band_ranges):
         if lo <= from_row < hi:  # exclusive upper bound prevents overlap
             band = bi
             break
@@ -849,20 +961,41 @@ def _anchor_to_slot(from_row: int, from_col: int) -> int | None:
         return None
 
     col_grp = None
-    for ci, (lo, hi) in enumerate(_COL_GROUPS):
+    for ci, (lo, hi) in enumerate(col_groups):
         if lo <= from_col <= hi:
             col_grp = ci
             break
     if col_grp is None:
         return None
 
-    return band * _COLS_PER_BAND + col_grp
+    return band * len(col_groups) + col_grp
 
 
-def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int]:
+def _select_photo_layout(anchor_count: int, max_anchor_col: int) -> tuple[str, int]:
+    """Select photo layout ID and required photo count from anchor count."""
+    if anchor_count <= 7:
+        layout_id = "LAYOUT_PHOTO_6"
+    elif 13 <= anchor_count <= 15:
+        layout_id = "LAYOUT_PHOTO_15"
+    elif anchor_count >= 16:
+        layout_id = "LAYOUT_PHOTO_16"
+    else:
+        # Deterministic fallback for sparse/malformed files.
+        if max_anchor_col >= 27:
+            layout_id = "LAYOUT_PHOTO_16"
+        elif max_anchor_col >= 22:
+            layout_id = "LAYOUT_PHOTO_15"
+        else:
+            layout_id = "LAYOUT_PHOTO_6"
+
+    required = int(_PHOTO_LAYOUTS[layout_id]["required_count"])
+    return layout_id, required
+
+
+def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int, str, int]:
     """Extract labelled photo slots from a BDT xlsx file.
 
-    Returns (list_of_PhotoSlot, total_media_count).
+    Returns (list_of_PhotoSlot, total_media_count, photo_layout_id, required_count).
     """
     import zipfile
     import xml.etree.ElementTree as ET
@@ -870,12 +1003,11 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int]:
     ns_xdr = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
     ns_a = "http://schemas.openxmlformats.org/drawingml/2006/main"
     ns_r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-    ns_rel = "http://schemas.openxmlformats.org/package/2006/relationships"
 
     try:
         zf = zipfile.ZipFile(file_path)
     except Exception:
-        return [], 0
+        return [], 0, "LAYOUT_PHOTO_16", 16
 
     try:
         # Total media count (for backwards compat)
@@ -938,7 +1070,7 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int]:
                 drawing_paths = [fallback]
 
         if not drawing_paths:
-            return [], total_media
+            return [], total_media, "LAYOUT_PHOTO_16", 16
 
         # Build rId → media zip path map from BDT drawing rels only
         rid_to_path: dict[str, str] = {}
@@ -954,7 +1086,9 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int]:
                         rid_to_path[rid] = "xl/media/" + target.split("/")[-1]
 
         # Parse BDT drawing only — extract twoCellAnchor positions + rIds
-        slot_images: dict[int, tuple[str, str, int]] = {}  # slot_idx -> (rId, media_path, anchor_row)
+        all_slot_images: dict[int, tuple[str, str, int]] = {}
+        valid_anchor_count = 0
+        max_anchor_col = -1
 
         for dp in drawing_paths:
             drawing_xml = ET.fromstring(zf.read(dp))
@@ -969,17 +1103,6 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int]:
                 if from_col < 11:
                     continue
 
-                slot_idx = _anchor_to_slot(from_row, from_col)
-                if slot_idx is None:
-                    continue
-                # On duplicate, keep the anchor whose row is closest to the
-                # slot's expected label row so the right image wins.
-                if slot_idx in slot_images:
-                    expected_row = _SLOT_DEFS[slot_idx][0] if slot_idx < len(_SLOT_DEFS) else 0
-                    prev_row = slot_images[slot_idx][2]
-                    if abs(from_row - expected_row) >= abs(prev_row - expected_row):
-                        continue  # existing anchor is closer, keep it
-
                 # Find embedded image rId
                 blip = anchor.find(f".//{{{ns_a}}}blip")
                 if blip is None:
@@ -987,15 +1110,59 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int]:
                 rid = blip.get(f"{{{ns_r}}}embed", "")
                 if not rid or rid not in rid_to_path:
                     continue
-                slot_images[slot_idx] = (rid, rid_to_path[rid], from_row)
+
+                valid_anchor_count += 1
+                if from_col > max_anchor_col:
+                    max_anchor_col = from_col
+
+                slot_idx = _anchor_to_slot(
+                    from_row,
+                    from_col,
+                    _PHOTO_LAYOUTS["LAYOUT_PHOTO_16"]["band_ranges"],
+                    _PHOTO_LAYOUTS["LAYOUT_PHOTO_16"]["col_groups"],
+                )
+                if slot_idx is None:
+                    continue
+                # On duplicate, keep the anchor whose row is closest to the
+                # slot's expected label row so the right image wins.
+                full_slot_defs = _PHOTO_LAYOUTS["LAYOUT_PHOTO_16"]["slot_defs"]
+                if slot_idx in all_slot_images:
+                    expected_row = full_slot_defs[slot_idx][0] if slot_idx < len(full_slot_defs) else 0
+                    prev_row = all_slot_images[slot_idx][2]
+                    if abs(from_row - expected_row) >= abs(prev_row - expected_row):
+                        continue  # existing anchor is closer, keep it
+
+                all_slot_images[slot_idx] = (rid, rid_to_path[rid], from_row)
+
+        photo_layout_id, required_photo_count = _select_photo_layout(
+            valid_anchor_count,
+            max_anchor_col,
+        )
+        layout = _PHOTO_LAYOUTS[photo_layout_id]
+        slot_defs = layout["slot_defs"]
+        band_categories = layout["band_categories"]
+        target_cols_per_band = len(layout["col_groups"])
+
+        # Remap from full 4-col index to selected layout index when needed.
+        slot_images: dict[int, tuple[str, str, int]] = {}
+        for idx4, meta in all_slot_images.items():
+            band = idx4 // 4
+            col_in_band = idx4 % 4
+            if col_in_band >= target_cols_per_band:
+                continue
+            mapped_idx = band * target_cols_per_band + col_in_band
+            if mapped_idx >= len(slot_defs):
+                continue
+            slot_images[mapped_idx] = meta
 
         # Read labels from the worksheet and build PhotoSlot list
         # Re-open with openpyxl just for label reading
         wb = load_workbook(file_path, data_only=True)
-        ws = wb["BDT sheet"] if "BDT sheet" in wb.sheetnames else None
+        sheet_name = _resolve_bdt_sheet_name(list(wb.sheetnames))
+        ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else None
 
         slots: list[PhotoSlot] = []
-        for idx, (label_row, label_col) in enumerate(_SLOT_DEFS):
+        for idx, (label_row, label_col) in enumerate(slot_defs):
             # Read label from worksheet
             label = ""
             if ws is not None:
@@ -1018,11 +1185,11 @@ def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int]:
                 label=label,
                 image_data=img_data,
                 image_ext=img_ext,
-                category=_BAND_CATEGORIES.get(idx // _COLS_PER_BAND, "other"),
+                category=band_categories.get(idx // target_cols_per_band, "other"),
             ))
 
         wb.close()
-        return slots, total_media
+        return slots, total_media, photo_layout_id, required_photo_count
 
     finally:
         zf.close()

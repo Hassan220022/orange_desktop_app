@@ -10,7 +10,7 @@ _log = logging.getLogger(__name__)
 
 
 def persist_bdt_photos(session: Session, bdt_test_id: int,
-                       photo_slots: list) -> int:
+                       photo_slots: list, *, autocommit: bool = True) -> int:
     """Store all photos from a BDT test. Returns count of photos stored.
 
     photo_slots: list of objects with .image_data (bytes), .image_ext (str),
@@ -28,7 +28,6 @@ def persist_bdt_photos(session: Session, bdt_test_id: int,
             session, slot.image_data,
             mime_type=mime,
         )
-        session.flush()
 
         # Compute perceptual hash from the stored file
         if asset.local_path and not asset.perceptual_hash:
@@ -36,7 +35,6 @@ def persist_bdt_photos(session: Session, bdt_test_id: int,
                 asset.perceptual_hash = compute_perceptual_hash(
                     asset.local_path,
                 )
-                session.flush()
             except Exception:
                 pass  # perceptual hash is optional
 
@@ -46,6 +44,7 @@ def persist_bdt_photos(session: Session, bdt_test_id: int,
                        blob_asset_id=asset.id)
         stored += 1
 
-    session.commit()
+    if autocommit:
+        session.commit()
     _log.info("Photos persisted for BDT test_id=%d: count=%d", bdt_test_id, stored)
     return stored

@@ -31,6 +31,28 @@ def append_outbox_event(session: Session, *, entity_type: str,
     return evt
 
 
+def append_outbox_events(session: Session, events: list[dict]) -> int:
+    """Append multiple sync events and commit once."""
+    if not events:
+        return 0
+
+    for raw in events:
+        session.add(SyncOutboxEvent(
+            event_id=str(raw.get("event_id") or str(uuid4())),
+            origin_device_id=str(raw.get("origin_device_id") or ""),
+            entity_type=str(raw.get("entity_type") or ""),
+            entity_local_id=str(raw.get("entity_local_id") or ""),
+            op=str(raw.get("op") or "upsert"),
+            entity_hash=str(raw.get("entity_hash") or ""),
+            payload_json=json.dumps(raw.get("payload") or {}, default=str),
+            status="pending",
+        ))
+
+    session.commit()
+    _log.info("Outbox events appended in batch: count=%d", len(events))
+    return len(events)
+
+
 def load_pending_outbox(session: Session, limit: int | None = None) -> list[dict]:
     """Load pending outbox events as dicts."""
     q = session.query(SyncOutboxEvent).filter_by(status="pending").order_by(

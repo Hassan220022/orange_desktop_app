@@ -7,7 +7,8 @@ between consecutive PM visits (battery type, count, rectifier, modules).
 
 import json
 import hashlib
-from dataclasses import dataclass, asdict
+import logging
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from uuid import uuid5, NAMESPACE_URL
@@ -23,6 +24,7 @@ except ImportError:
 HISTORY_DIR = Path.home() / ".alarm_viewer" / "bdt_history"
 PM_RUNS_DIR = HISTORY_DIR / "_pm_runs"
 PM_RULE_RESULTS_DIR = HISTORY_DIR / "_pm_rule_results"
+_log = logging.getLogger(__name__)
 
 
 _engine = None
@@ -175,6 +177,96 @@ def _bdt_test_to_record(db_row) -> BDTTestRecord:
     )
 
 
+def _to_test_date_obj(raw_value) -> date:
+    if isinstance(raw_value, datetime):
+        return raw_value.date()
+    if isinstance(raw_value, date):
+        return raw_value
+    return date.fromisoformat(str(raw_value))
+
+
+def _build_bdt_dict(bdt_data, verdict: str | None = None) -> dict:
+    test_date_obj = _to_test_date_obj(getattr(bdt_data, "test_date", ""))
+    payload = {
+        "site_code": str(getattr(bdt_data, "site_code", "") or ""),
+        "test_date": test_date_obj,
+        "file_path": str(getattr(bdt_data, "file_path", "") or ""),
+        "battery_brand": str(getattr(bdt_data, "battery_brand", "") or ""),
+        "battery_ah": getattr(bdt_data, "battery_ah", None),
+        "battery_voltage": getattr(bdt_data, "battery_voltage", None),
+        "num_strings": getattr(bdt_data, "num_strings", None),
+        "num_batteries": getattr(bdt_data, "num_batteries", None),
+        "num_modules": getattr(bdt_data, "num_modules", None),
+        "rectifier_brand": str(getattr(bdt_data, "rectifier_brand", "") or ""),
+        "start_voltage": getattr(bdt_data, "start_voltage", None),
+        "end_voltage": getattr(bdt_data, "end_voltage", None),
+        "start_ampere": getattr(bdt_data, "start_ampere", None),
+        "end_ampere": getattr(bdt_data, "end_ampere", None),
+        "discharge_minutes": getattr(bdt_data, "discharge_minutes", None),
+        "pld_value": getattr(bdt_data, "pld_value", None),
+        "site_name": getattr(bdt_data, "site_name", ""),
+        "time_in": getattr(bdt_data, "time_in", ""),
+        "time_out": getattr(bdt_data, "time_out", ""),
+        "ibat_before_test": getattr(bdt_data, "ibat_before_test", None),
+        "starting_ibattery_ampere": getattr(bdt_data, "starting_ibattery_ampere", None),
+        "after_reconnect_voltage": getattr(bdt_data, "after_reconnect_voltage", None),
+        "after_reconnect_ampere": getattr(bdt_data, "after_reconnect_ampere", None),
+        "discharge_readings": getattr(bdt_data, "discharge_readings", []),
+        "string_discharge_readings": getattr(bdt_data, "string_discharge_readings", []),
+    }
+    if verdict is not None:
+        payload["overall_verdict"] = verdict
+    return payload
+
+
+def _build_rule_results(validation_result) -> list[dict]:
+    rules = list(getattr(validation_result, "rules", []) or [])
+    seen_rule_ids: set[str] = set()
+    output = []
+    for rule in rules:
+        rule_id = str(getattr(rule, "rule_id", "") or "")
+        if not rule_id or rule_id in seen_rule_ids:
+            continue
+        seen_rule_ids.add(rule_id)
+        output.append({
+            "rule_code": rule_id,
+            "verdict": str(getattr(rule, "verdict", "") or ""),
+            "detail": str(getattr(rule, "detail", "") or ""),
+        })
+    return output
+
+
+def _build_run_payload(
+    *,
+    bdt_data,
+    validation_result,
+    params: dict,
+    validator_ref: str,
+    params_sha256: str,
+    alarm_input_sha256: str,
+    idempotency_key: str,
+    run_uuid: str,
+    rule_count: int,
+) -> dict:
+    test_date = _iso_date_str(getattr(bdt_data, "test_date", ""))
+    overall_verdict = str(getattr(validation_result, "overall", "") or "")
+    return {
+        "run_id": run_uuid,
+        "idempotency_key": idempotency_key,
+        "site_code": str(getattr(bdt_data, "site_code", "") or "").strip().upper(),
+        "test_date": test_date,
+        "file_path": str(getattr(bdt_data, "file_path", "") or ""),
+        "overall_verdict": overall_verdict,
+        "validator_code_ref": validator_ref,
+        "params": params or {},
+        "params_sha256": params_sha256,
+        "alarm_input_sha256": alarm_input_sha256,
+        "rule_count": rule_count,
+        "is_complete_rule_set": rule_count == 11,
+        "created_at": datetime.now().isoformat(),
+    }
+
+
 def save_test_record(bdt, verdict: str) -> None:
     """Persist a BDT test result for future comparison.
 
@@ -185,43 +277,7 @@ def save_test_record(bdt, verdict: str) -> None:
     if not bdt.site_code or not bdt.test_date:
         return
 
-    test_date_str = (bdt.test_date.strftime("%Y-%m-%d")
-                     if isinstance(bdt.test_date, (date, datetime))
-                     else str(bdt.test_date))
-
-    test_date_obj = (bdt.test_date.date()
-                     if isinstance(bdt.test_date, datetime)
-                     else bdt.test_date if isinstance(bdt.test_date, date)
-                     else date.fromisoformat(test_date_str))
-
-    bdt_dict = {
-        "site_code": bdt.site_code,
-        "test_date": test_date_obj,
-        "file_path": str(bdt.file_path or ""),
-        "battery_brand": str(bdt.battery_brand or ""),
-        "battery_ah": bdt.battery_ah,
-        "battery_voltage": bdt.battery_voltage,
-        "num_strings": bdt.num_strings,
-        "num_batteries": getattr(bdt, "num_batteries", None),
-        "num_modules": getattr(bdt, "num_modules", None),
-        "rectifier_brand": str(getattr(bdt, "rectifier_brand", "") or ""),
-        "start_voltage": getattr(bdt, "start_voltage", None),
-        "end_voltage": getattr(bdt, "end_voltage", None),
-        "start_ampere": getattr(bdt, "start_ampere", None),
-        "end_ampere": getattr(bdt, "end_ampere", None),
-        "discharge_minutes": getattr(bdt, "discharge_minutes", None),
-        "pld_value": getattr(bdt, "pld_value", None),
-        "site_name": getattr(bdt, "site_name", ""),
-        "time_in": getattr(bdt, "time_in", ""),
-        "time_out": getattr(bdt, "time_out", ""),
-        "ibat_before_test": getattr(bdt, "ibat_before_test", None),
-        "starting_ibattery_ampere": getattr(bdt, "starting_ibattery_ampere", None),
-        "after_reconnect_voltage": getattr(bdt, "after_reconnect_voltage", None),
-        "after_reconnect_ampere": getattr(bdt, "after_reconnect_ampere", None),
-        "discharge_readings": getattr(bdt, "discharge_readings", []),
-        "string_discharge_readings": getattr(bdt, "string_discharge_readings", []),
-        "overall_verdict": verdict,
-    }
+    bdt_dict = _build_bdt_dict(bdt, verdict=verdict)
 
     from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
     session = _get_session()
@@ -361,8 +417,8 @@ def save_validation_run(
     if not test_date:
         return None
 
-    rules = list(getattr(validation_result, "rules", []) or [])
-    if not rules:
+    rule_results = _build_rule_results(validation_result)
+    if not rule_results:
         return None
 
     validator_ref = validator_code_ref or f"alarm_app.bdt_validator.validate_bdt@{APP_VERSION}"
@@ -379,56 +435,7 @@ def save_validation_run(
     run_uuid = str(uuid5(NAMESPACE_URL, idempotency_key))
 
     overall_verdict = str(getattr(validation_result, "overall", "") or "")
-
-    # Build rule_results list for pm_repo
-    seen_rule_ids: set[str] = set()
-    rule_results = []
-    for idx, rule in enumerate(rules, start=1):
-        rule_id = str(getattr(rule, "rule_id", "") or "")
-        if not rule_id or rule_id in seen_rule_ids:
-            continue
-        seen_rule_ids.add(rule_id)
-        rule_results.append({
-            "rule_code": rule_id,
-            "verdict": str(getattr(rule, "verdict", "") or ""),
-            "detail": str(getattr(rule, "detail", "") or ""),
-        })
-
-    raw_test_date = getattr(bdt_data, "test_date", None)
-    if isinstance(raw_test_date, datetime):
-        test_date_obj = raw_test_date.date()
-    elif isinstance(raw_test_date, date):
-        test_date_obj = raw_test_date
-    else:
-        test_date_obj = date.fromisoformat(test_date)
-
-    bdt_dict = {
-        "site_code": site_code,
-        "test_date": test_date_obj,
-        "file_path": str(getattr(bdt_data, "file_path", "") or ""),
-        "battery_brand": str(getattr(bdt_data, "battery_brand", "") or ""),
-        "battery_ah": getattr(bdt_data, "battery_ah", None),
-        "battery_voltage": getattr(bdt_data, "battery_voltage", None),
-        "num_strings": getattr(bdt_data, "num_strings", None),
-        "num_batteries": getattr(bdt_data, "num_batteries", None),
-        "num_modules": getattr(bdt_data, "num_modules", None),
-        "rectifier_brand": str(getattr(bdt_data, "rectifier_brand", "") or ""),
-        "start_voltage": getattr(bdt_data, "start_voltage", None),
-        "end_voltage": getattr(bdt_data, "end_voltage", None),
-        "start_ampere": getattr(bdt_data, "start_ampere", None),
-        "end_ampere": getattr(bdt_data, "end_ampere", None),
-        "discharge_minutes": getattr(bdt_data, "discharge_minutes", None),
-        "pld_value": getattr(bdt_data, "pld_value", None),
-        "site_name": getattr(bdt_data, "site_name", ""),
-        "time_in": getattr(bdt_data, "time_in", ""),
-        "time_out": getattr(bdt_data, "time_out", ""),
-        "ibat_before_test": getattr(bdt_data, "ibat_before_test", None),
-        "starting_ibattery_ampere": getattr(bdt_data, "starting_ibattery_ampere", None),
-        "after_reconnect_voltage": getattr(bdt_data, "after_reconnect_voltage", None),
-        "after_reconnect_ampere": getattr(bdt_data, "after_reconnect_ampere", None),
-        "discharge_readings": getattr(bdt_data, "discharge_readings", []),
-        "string_discharge_readings": getattr(bdt_data, "string_discharge_readings", []),
-    }
+    bdt_dict = _build_bdt_dict(bdt_data)
 
     from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
     from alarm_app.db.repos.pm_repo import save_validation_run as _save_pm_run
@@ -438,7 +445,7 @@ def save_validation_run(
         bdt_db = _save_bdt_test(session, bdt_dict)
         session.flush()
 
-        pm_run = _save_pm_run(
+        _save_pm_run(
             session,
             bdt_test_id=bdt_db.id,
             alarm_input_sha256=alarm_input_sha256,
@@ -447,24 +454,159 @@ def save_validation_run(
             rule_results=rule_results,
             params=params or {},
         )
-        # pm_run is None when identical run already exists (idempotent)
     finally:
         session.close()
 
-    run_payload = {
-        "run_id": run_uuid,
-        "idempotency_key": idempotency_key,
-        "site_code": site_code,
-        "test_date": test_date,
-        "file_path": str(getattr(bdt_data, "file_path", "") or ""),
-        "overall_verdict": overall_verdict,
-        "validator_code_ref": validator_ref,
-        "params": params or {},
-        "params_sha256": params_sha256,
-        "alarm_input_sha256": alarm_input_sha256,
-        "rule_count": len(rule_results),
-        "is_complete_rule_set": len(rule_results) == 11,
-        "created_at": datetime.now().isoformat(),
-    }
+    return _build_run_payload(
+        bdt_data=bdt_data,
+        validation_result=validation_result,
+        params=params or {},
+        validator_ref=validator_ref,
+        params_sha256=params_sha256,
+        alarm_input_sha256=alarm_input_sha256,
+        idempotency_key=idempotency_key,
+        run_uuid=run_uuid,
+        rule_count=len(rule_results),
+    )
 
-    return run_payload
+
+def save_validation_batch(
+    *,
+    items: list[dict],
+    alarm_df,
+    params: dict,
+    validator_code_ref: str | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Persist BDT tests + PM validation runs in one DB session/commit."""
+    if not items:
+        return [], []
+
+    from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
+    from alarm_app.db.repos.pm_repo import (
+        save_validation_run as _save_pm_run,
+        get_or_create_parameter_set as _get_or_create_parameter_set,
+        get_or_create_rule_catalog as _get_or_create_rule_catalog,
+    )
+
+    params = params or {}
+    validator_ref = validator_code_ref or f"alarm_app.bdt_validator.validate_bdt@{APP_VERSION}"
+    params_sha256 = _canonical_json_sha256(params)
+    run_payloads: list[dict] = []
+    photo_jobs: list[dict] = []
+
+    session = _get_session()
+    try:
+        parameter_set_id = _get_or_create_parameter_set(session, params) if params else None
+        catalog_map = _get_or_create_rule_catalog(session)
+
+        from sqlalchemy.exc import IntegrityError as _IntegrityError
+
+        for item in items:
+            bdt_data = item.get("bdt_data")
+            validation_result = item.get("validation_result")
+            if bdt_data is None or validation_result is None:
+                continue
+
+            site_code = str(getattr(bdt_data, "site_code", "") or "").strip().upper()
+            if not site_code:
+                continue
+            test_date = _iso_date_str(getattr(bdt_data, "test_date", ""))
+            if not test_date:
+                continue
+
+            # Savepoint per item — a duplicate PM run rolls back only this item,
+            # not the entire batch of 1634 files.
+            try:
+                with session.begin_nested():
+                    bdt_db = _save_bdt_test(session, _build_bdt_dict(bdt_data))
+                    photo_slots = list(getattr(bdt_data, "photo_slots", []) or [])
+                    if photo_slots:
+                        photo_jobs.append({
+                            "bdt_test_id": int(bdt_db.id),
+                            "photo_slots": photo_slots,
+                        })
+
+                    rule_results = _build_rule_results(validation_result)
+                    if not rule_results:
+                        continue
+
+                    alarm_input_sha256 = compute_alarm_input_sha256(alarm_df, site_code, test_date)
+                    idempotency_material = {
+                        "site_code": site_code,
+                        "test_date": test_date,
+                        "params_sha256": params_sha256,
+                        "alarm_input_sha256": alarm_input_sha256,
+                        "validator_code_ref": validator_ref,
+                    }
+                    idempotency_key = _canonical_json_sha256(idempotency_material)
+                    run_uuid = str(uuid5(NAMESPACE_URL, idempotency_key))
+                    overall_verdict = str(getattr(validation_result, "overall", "") or "")
+
+                    pm_run = _save_pm_run(
+                        session,
+                        bdt_test_id=bdt_db.id,
+                        alarm_input_sha256=alarm_input_sha256,
+                        validator_code_ref=validator_ref,
+                        overall_verdict=overall_verdict,
+                        rule_results=rule_results,
+                        params=params,
+                        autocommit=False,
+                        catalog_map=catalog_map,
+                        parameter_set_id=parameter_set_id,
+                    )
+
+                if pm_run is not None:
+                    run_payloads.append(_build_run_payload(
+                        bdt_data=bdt_data,
+                        validation_result=validation_result,
+                        params=params,
+                        validator_ref=validator_ref,
+                        params_sha256=params_sha256,
+                        alarm_input_sha256=alarm_input_sha256,
+                        idempotency_key=idempotency_key,
+                        run_uuid=run_uuid,
+                        rule_count=len(rule_results),
+                    ))
+            except _IntegrityError:
+                _log.debug("Duplicate BDT/PM run skipped for site=%s date=%s", site_code, test_date)
+            except Exception:
+                _log.warning("Failed to persist item site=%s date=%s", site_code, test_date, exc_info=True)
+
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    return run_payloads, photo_jobs
+
+
+def persist_photo_jobs(photo_jobs: list[dict]) -> int:
+    """Persist queued BDT photo jobs with a single transaction."""
+    if not photo_jobs:
+        return 0
+
+    from alarm_app.db.repos.photo_service import persist_bdt_photos
+
+    session = _get_session()
+    total = 0
+    try:
+        for job in photo_jobs:
+            bdt_test_id = int(job.get("bdt_test_id") or 0)
+            photo_slots = list(job.get("photo_slots") or [])
+            if not bdt_test_id or not photo_slots:
+                continue
+            total += persist_bdt_photos(
+                session,
+                bdt_test_id,
+                photo_slots,
+                autocommit=False,
+            )
+        session.commit()
+    except Exception:
+        session.rollback()
+        _log.warning("Deferred BDT photo persistence failed", exc_info=True)
+    finally:
+        session.close()
+    return total
