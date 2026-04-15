@@ -34,11 +34,6 @@ jobs:
         run: chmod +x scripts/build_macos.sh scripts/build_macos_installer.sh
 
       - name: Build app bundle and DMG
-        env:
-          APPLE_DEVELOPER_ID_APPLICATION: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: ./scripts/build_macos_installer.sh
 
       - name: Upload macOS app artifact
