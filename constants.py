@@ -3,7 +3,7 @@ Constants — schema maps, display columns, app metadata.
 """
 
 APP_NAME    = "Alarm Viewer"
-APP_VERSION = "0.1.6"
+APP_VERSION = "0.1.7"
 
 # ── Huawei schema ────────────────────────────────────────────────
 SCHEMA_1_MAP = {

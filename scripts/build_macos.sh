@@ -48,7 +48,7 @@ pyinstaller \
   --hidden-import xlrd \
   --hidden-import pyarrow \
   --hidden-import python_calamine \
-  main.py
+  scripts/pyinstaller_entry.py
 
 echo
 echo "[4/5] Cleaning up build artifacts..."
