@@ -5,16 +5,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "main.py"
-      - "viewer.py"
-      - "parsers.py"
-      - "models.py"
-      - "backup_time.py"
-      - "bdt_parser.py"
-      - "bdt_validator.py"
-      - "constants.py"
-      - "styles.py"
-      - "state.py"
+      - "**/*.py"
       - "requirements.txt"
       - "scripts/pyinstaller_entry.py"
       - "assets/app_icon.ico"

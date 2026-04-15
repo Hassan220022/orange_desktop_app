@@ -22,9 +22,15 @@ try:
     from .ui.viewer import AlarmViewer
     from .logging_config import setup_logging
 except ImportError:
-    from alarm_app.constants import APP_NAME, APP_VERSION
-    from alarm_app.ui.viewer import AlarmViewer
-    from alarm_app.logging_config import setup_logging
+    try:
+        from alarm_app.constants import APP_NAME, APP_VERSION
+        from alarm_app.ui.viewer import AlarmViewer
+        from alarm_app.logging_config import setup_logging
+    except ImportError:
+        # PyInstaller flat-bundle: package root is on sys.path directly
+        from constants import APP_NAME, APP_VERSION  # type: ignore[no-redef]
+        from ui.viewer import AlarmViewer  # type: ignore[no-redef]
+        from logging_config import setup_logging  # type: ignore[no-redef]
 
 _log = logging.getLogger(__name__)
 
@@ -36,7 +42,10 @@ BACKEND_PORT = int(os.environ.get("ALARM_BACKEND_PORT", "8787"))
 def _run_backend():
     """Target for the backend child process."""
     # Child processes don't inherit logging config — set it up here too
-    from alarm_app.logging_config import setup_logging
+    try:
+        from alarm_app.logging_config import setup_logging
+    except ImportError:
+        from logging_config import setup_logging  # type: ignore[no-redef]
     setup_logging()
 
     import logging
@@ -44,7 +53,10 @@ def _run_backend():
     log.info("Backend process starting: host=%s port=%s", BACKEND_HOST, BACKEND_PORT)
 
     import uvicorn
-    from alarm_app.web.app import create_app
+    try:
+        from alarm_app.web.app import create_app
+    except ImportError:
+        from web.app import create_app  # type: ignore[no-redef]
 
     app = create_app()
     log.info("Backend FastAPI app created, starting uvicorn")
