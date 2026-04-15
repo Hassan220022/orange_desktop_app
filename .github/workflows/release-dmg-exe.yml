@@ -154,20 +154,6 @@ jobs:
           } > RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 
-      - name: Create tag if it does not exist
-        env:
-          TAG_NAME: ${{ needs.read-version.outputs.tag }}
-        run: |
-          if git rev-parse "${TAG_NAME}" >/dev/null 2>&1; then
-            echo "Tag ${TAG_NAME} already exists — skipping tag creation"
-          else
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag "${TAG_NAME}" "${{ github.sha }}"
-            git push origin "${TAG_NAME}"
-            echo "Created and pushed tag ${TAG_NAME}"
-          fi
-
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
