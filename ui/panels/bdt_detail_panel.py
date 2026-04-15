@@ -2,6 +2,7 @@
 BdtDetailPanel — BDT detail/photo gallery panel extracted from AlarmViewer.
 """
 
+import os
 import re
 from datetime import datetime
 
@@ -17,22 +18,35 @@ from PyQt5.QtGui import QColor, QPixmap, QDesktopServices
 try:
     from ...bdt.parser import BDTData, load_bdt_photos
     from ...bdt.validator import ValidationResult
+    from ...data import state
 except ImportError:
     from alarm_app.bdt.parser import BDTData, load_bdt_photos
     from alarm_app.bdt.validator import ValidationResult
+    from alarm_app.data import state
 
 
 class BdtDetailPanel(QWidget):
     """BDT detail panel: info+discharge (left) | rules (center) | photos (right)."""
 
-    # Band layout: name, start slot index, number of columns in this band
-    _PHOTO_BANDS = [
-        ("Rectifier",               0,  3),
-        ("Batteries",               4,  3),
-        ("CBs / Rack / LVD",        8,  3),
-        ("Current / Load / PLVD",  12,  3),
-        ("Charging / Disconnect",  16,  4),
+    # Adaptive section order for structural parser categories.
+    _PHOTO_CATEGORY_ORDER = [
+        "rectifier",
+        "batteries",
+        "modules",
+        "load",
+        "charging",
+        "alarms",
+        "other",
     ]
+    _PHOTO_CATEGORY_TITLE = {
+        "rectifier": "Rectifier",
+        "batteries": "Batteries",
+        "modules": "Modules / Settings",
+        "load": "Load / Measurements",
+        "charging": "Charging",
+        "alarms": "Alarms",
+        "other": "Other",
+    }
 
     # Responsive thumbnail sizing bounds.
     _PHOTO_THUMB_MIN = 140
@@ -587,7 +601,34 @@ class BdtDetailPanel(QWidget):
         """Open the currently selected BDT file with the OS default application."""
         if not self._current_bdt or not self._current_bdt.file_path:
             return
-        url = QUrl.fromLocalFile(self._current_bdt.file_path)
+        file_path = self._current_bdt.file_path
+        if not os.path.isfile(file_path):
+            file_name = os.path.basename(file_path)
+            fallback_dirs: list[str] = []
+            viewer_dir = getattr(self._viewer, "_uploaded_folder_path", "") or ""
+            if viewer_dir:
+                fallback_dirs.append(viewer_dir)
+            edit_dir = getattr(getattr(self._viewer, "_edit_dir", None), "text", lambda: "")().strip()
+            if edit_dir:
+                fallback_dirs.append(edit_dir)
+            site_path = getattr(self._viewer, "_uploaded_site_path", "") or ""
+            if site_path:
+                fallback_dirs.append(os.path.dirname(site_path))
+            try:
+                saved = state.load_state() or {}
+                saved_dir = str(saved.get("uploaded_folder_path") or saved.get("directory") or "").strip()
+                if saved_dir:
+                    fallback_dirs.append(saved_dir)
+            except Exception:
+                pass
+
+            for base in fallback_dirs:
+                candidate = os.path.join(base, file_name)
+                if os.path.isfile(candidate):
+                    file_path = candidate
+                    break
+
+        url = QUrl.fromLocalFile(file_path)
         QDesktopServices.openUrl(url)
 
     # ------------------------------------------------------------------
@@ -743,7 +784,7 @@ class BdtDetailPanel(QWidget):
         if bdt is not None:
             self._populate_bdt_photos(bdt)
 
-    def _compute_photo_thumb_width(self) -> int:
+    def _compute_photo_thumb_width(self, cols: int) -> int:
         """Return the thumbnail width that fits the widest band in the
         current photo scroll viewport (safely clamped)."""
         try:
@@ -753,39 +794,59 @@ class BdtDetailPanel(QWidget):
         if viewport <= 0:
             viewport = max(560, self._bdt_photo_scroll.width()
                            if hasattr(self, "_bdt_photo_scroll") else 560)
-        # Widest band has max 4 columns, so photos must fit 4 × thumb + gaps.
-        # But rectifier/batteries use 3 — we optimize for the typical case.
-        typical_cols = 3
-        # Grid spacing (8) × (typical_cols - 1) + container padding (8) +
-        # card padding (8) × typical_cols.
-        chrome = 8 * (typical_cols - 1) + 8 + 8 * typical_cols
+        cols = max(1, min(4, int(cols)))
+        # Grid spacing (8) × (cols - 1) + container padding (8) +
+        # card padding (8) × cols.
+        chrome = 8 * (cols - 1) + 8 + 8 * cols
         available = viewport - chrome
-        width = available // typical_cols
+        width = available // cols
         return max(self._PHOTO_THUMB_MIN,
                    min(self._PHOTO_THUMB_MAX, int(width)))
 
+    def _group_photo_slots(self, bdt: BDTData | None) -> list[tuple[str, list]]:
+        if not bdt or not bdt.photo_slots:
+            return []
+        grouped: dict[str, list] = {}
+        for slot in bdt.photo_slots:
+            # Skip empty placeholders so the gallery has no blank gaps.
+            if not getattr(slot, "image_data", None):
+                continue
+            category = self._slot_category(slot)
+            grouped.setdefault(category, []).append(slot)
+
+        bands: list[tuple[str, list]] = []
+        for category in self._PHOTO_CATEGORY_ORDER:
+            slots = grouped.pop(category, [])
+            if slots:
+                bands.append((self._PHOTO_CATEGORY_TITLE.get(category, category.title()), slots))
+        for category in sorted(grouped.keys()):
+            slots = grouped[category]
+            if slots:
+                bands.append((self._PHOTO_CATEGORY_TITLE.get(category, category.title()), slots))
+        return bands
+
     def _render_bdt_photo_bands(
         self,
-        bdt: BDTData,
+        bands: list[tuple[str, list]],
         thumb_w: int,
         start_row: int,
-        max_cols: int = 4,
+        max_cols: int,
     ) -> int:
         """Render one BDT's photo bands into _bdt_photo_grid starting at
         start_row. Returns the next free grid_row after rendering."""
         grid_row = start_row
-        for band_name, start_idx, band_cols in self._PHOTO_BANDS:
+        for band_name, slots in bands:
+            if not slots:
+                continue
             heading = QLabel(band_name.upper())
             heading.setObjectName("bdt_section_title")
             heading.setAlignment(Qt.AlignLeft)
             self._bdt_photo_grid.addWidget(heading, grid_row, 0, 1, max_cols)
             grid_row += 1
 
-            for ci in range(band_cols):
-                slot_idx = start_idx + ci
-                if slot_idx >= len(bdt.photo_slots):
-                    continue
-                slot = bdt.photo_slots[slot_idx]
+            for idx, slot in enumerate(slots):
+                row_offset = idx // max_cols
+                col = idx % max_cols
 
                 card = QFrame()
                 card_lay = QVBoxLayout(card)
@@ -820,9 +881,9 @@ class BdtDetailPanel(QWidget):
                 name_lbl.setWordWrap(True)
                 card_lay.addWidget(name_lbl)
 
-                self._bdt_photo_grid.addWidget(card, grid_row, ci)
+                self._bdt_photo_grid.addWidget(card, grid_row + row_offset, col)
 
-            grid_row += 1
+            grid_row += (len(slots) - 1) // max_cols + 1
 
         return grid_row
 
@@ -854,12 +915,20 @@ class BdtDetailPanel(QWidget):
             self._bdt_photo_grid.addWidget(lbl, 0, 0)
             return
 
-        thumb_w = self._compute_photo_thumb_width()
-        max_cols = 4  # widest band has 4 columns
+        bands = self._group_photo_slots(bdt)
+        if not bands:
+            lbl = QLabel("No photo data")
+            lbl.setObjectName("bdt_photo_label")
+            lbl.setAlignment(Qt.AlignCenter)
+            self._bdt_photo_grid.addWidget(lbl, 0, 0)
+            return
+        max_slots_in_band = max((len(slots) for _, slots in bands), default=1)
+        max_cols = max(1, min(4, max_slots_in_band))
+        thumb_w = self._compute_photo_thumb_width(max_cols)
 
         # ── Current test ──────────────────────────────────────
         grid_row = self._render_bdt_photo_bands(
-            bdt, thumb_w, start_row=0, max_cols=max_cols)
+            bands, thumb_w, start_row=0, max_cols=max_cols)
 
         # ── Older sibling tests for the same site, newest-first ─
         # _comparison_candidates_for_site already sorts desc by test_date
@@ -893,8 +962,11 @@ class BdtDetailPanel(QWidget):
             self._bdt_photo_grid.addWidget(sep, grid_row, 0, 1, max_cols)
             grid_row += 1
 
+            sibling_bands = self._group_photo_slots(sibling)
+            sibling_cols = max(1, min(4, max((len(slots) for _, slots in sibling_bands), default=1)))
+            sibling_thumb = self._compute_photo_thumb_width(sibling_cols)
             grid_row = self._render_bdt_photo_bands(
-                sibling, thumb_w, start_row=grid_row, max_cols=max_cols)
+                sibling_bands, sibling_thumb, start_row=grid_row, max_cols=sibling_cols)
 
     # ------------------------------------------------------------------
     # Photo comparison utilities
@@ -923,19 +995,37 @@ class BdtDetailPanel(QWidget):
             f"Modules {summary.get('modules', 0)}"
         )
 
-    def _comparison_slot_indices(self, bdt: BDTData, other: BDTData,
-                                 all_slots: bool) -> list[int]:
-        if all_slots:
-            return list(range(min(len(bdt.photo_slots), len(other.photo_slots))))
-        indices: list[int] = []
-        limit = min(len(bdt.photo_slots), len(other.photo_slots))
-        for idx in range(limit):
-            cur_cat = self._slot_category(bdt.photo_slots[idx])
-            oth_cat = self._slot_category(other.photo_slots[idx])
-            if (cur_cat in self._COMPARE_KEY_CATEGORIES
-                    or oth_cat in self._COMPARE_KEY_CATEGORIES):
-                indices.append(idx)
-        return indices
+    @staticmethod
+    def _slot_match_key(slot) -> str:
+        label = re.sub(r"\s+", " ", str(getattr(slot, "label", "")).strip().lower())
+        category = str(getattr(slot, "category", "")).strip().lower() or "other"
+        return f"{category}|{label}"
+
+    def _comparison_slot_pairs(self, bdt: BDTData, other: BDTData,
+                               all_slots: bool) -> list[tuple]:
+        cur_map = {self._slot_match_key(slot): slot for slot in bdt.photo_slots}
+        oth_map = {self._slot_match_key(slot): slot for slot in other.photo_slots}
+
+        keys = sorted(set(cur_map.keys()) | set(oth_map.keys()))
+        pairs: list[tuple] = []
+        for key in keys:
+            cur_slot = cur_map.get(key)
+            oth_slot = oth_map.get(key)
+            # Skip empty placeholders in comparison view (both sides must
+            # have real images to avoid N/A gaps).
+            if not (cur_slot and getattr(cur_slot, "image_data", None)):
+                continue
+            if not (oth_slot and getattr(oth_slot, "image_data", None)):
+                continue
+            if not all_slots:
+                cur_cat = self._slot_category(cur_slot) if cur_slot else "other"
+                oth_cat = self._slot_category(oth_slot) if oth_slot else "other"
+                if (cur_cat not in self._COMPARE_KEY_CATEGORIES
+                        and oth_cat not in self._COMPARE_KEY_CATEGORIES):
+                    continue
+            display = (getattr(cur_slot, "label", "") or getattr(oth_slot, "label", "") or key)
+            pairs.append((display, cur_slot, oth_slot))
+        return pairs
 
     @staticmethod
     def _normalize_site_token(text: str) -> str:
@@ -1060,7 +1150,7 @@ class BdtDetailPanel(QWidget):
         other_year = (other.test_date.strftime("%Y")
                       if other.test_date else "Other")
 
-        slot_indices = self._comparison_slot_indices(bdt, other, all_slots)
+        slot_pairs = self._comparison_slot_pairs(bdt, other, all_slots)
 
         # Header row
         hdr_slot = QLabel("Slot")
@@ -1079,9 +1169,9 @@ class BdtDetailPanel(QWidget):
         grid_row = 1
         if not all_slots:
             cur_summary = self._build_compare_category_summary(
-                [bdt.photo_slots[idx] for idx in slot_indices])
+                [cur for _, cur, _ in slot_pairs if cur is not None])
             oth_summary = self._build_compare_category_summary(
-                [other.photo_slots[idx] for idx in slot_indices])
+                [oth for _, _, oth in slot_pairs if oth is not None])
             summary_slot = QLabel("Category photos")
             summary_slot.setObjectName("bdt_info_key")
             summary_slot.setAlignment(Qt.AlignCenter)
@@ -1096,22 +1186,16 @@ class BdtDetailPanel(QWidget):
             self._bdt_compare_grid.addWidget(summary_oth, grid_row, 2)
             grid_row += 1
 
-        if not slot_indices:
+        if not slot_pairs:
             lbl = QLabel("No matching slots for this comparison mode")
             lbl.setObjectName("bdt_photo_label")
             lbl.setAlignment(Qt.AlignCenter)
             self._bdt_compare_grid.addWidget(lbl, grid_row, 0, 1, 3)
             return
 
-        for idx in slot_indices:
-            if idx >= len(bdt.photo_slots) or idx >= len(other.photo_slots):
-                continue
-
-            cur_slot = bdt.photo_slots[idx]
-            oth_slot = other.photo_slots[idx]
-
+        for display, cur_slot, oth_slot in slot_pairs:
             # Slot label
-            name_lbl = QLabel(cur_slot.label)
+            name_lbl = QLabel(display)
             name_lbl.setObjectName("bdt_photo_label")
             name_lbl.setAlignment(Qt.AlignCenter)
             name_lbl.setWordWrap(True)
@@ -1136,7 +1220,7 @@ class BdtDetailPanel(QWidget):
         card_lay.setContentsMargins(2, 2, 2, 2)
         card_lay.setSpacing(1)
 
-        if slot.image_data:
+        if slot and slot.image_data:
             card.setObjectName("bdt_photo_card")
             pix = QPixmap()
             pix.loadFromData(slot.image_data)

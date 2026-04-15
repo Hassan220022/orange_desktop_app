@@ -87,8 +87,10 @@ class BDTData:
     # Photo category mapping metadata (FR-003, FR-004)
     photo_categories_found: list[str] = field(default_factory=list)
     photo_mapping_confidence: str = ""  # "high", "medium", "low"
-    photo_detection_mode: str = ""  # "normal", "fallback"
+    photo_detection_mode: str = ""  # "structural", "deferred"
     required_photo_categories: list[str] = field(default_factory=list)
+    parser_mode: str = ""  # "fast_family" or "structural"
+    structural_signature: str = ""
 
     # Parse errors
     errors: list[str] = field(default_factory=list)
@@ -773,6 +775,7 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
     data.core_layout_family = family
     data.detection_confidence = confidence
     data.detection_reasons = reasons
+    data.parser_mode = "fast_family"
     
     # Skip parsing for summary-only workbooks (FR-001)
     if family == "SUMMARY_EXCLUDED":
@@ -1090,7 +1093,14 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
             data.photo_mapping_confidence,
             data.photo_detection_mode,
             data.photo_categories_found,
-        ) = _extract_photo_slots(file_path)
+        ) = _extract_photo_slots(
+            file_path,
+            family_guess=family,
+            family_confidence=confidence,
+            bdt_sheet_name=bdt_sheet_name,
+        )
+        if data.photo_detection_mode == "structural":
+            data.parser_mode = "structural"
         data.photos_deferred = False
         # Set required photo categories from constants (FR-003)
         from alarm_app.constants import BDT_REQUIRED_PHOTO_CATEGORIES
@@ -1115,7 +1125,13 @@ def load_bdt_photos(bdt: BDTData) -> None:
         bdt.photo_mapping_confidence,
         bdt.photo_detection_mode,
         bdt.photo_categories_found,
-    ) = _extract_photo_slots(bdt.file_path)
+    ) = _extract_photo_slots(
+        bdt.file_path,
+        family_guess=bdt.core_layout_family,
+        family_confidence=bdt.detection_confidence,
+    )
+    if bdt.photo_detection_mode == "structural":
+        bdt.parser_mode = "structural"
     bdt.photos_deferred = False
     # Set required photo categories from constants (FR-003)
     from alarm_app.constants import BDT_REQUIRED_PHOTO_CATEGORIES
@@ -1232,7 +1248,147 @@ def _select_photo_layout(anchor_count: int, max_anchor_col: int) -> tuple[str, i
     return layout_id, required
 
 
-def _extract_photo_slots(file_path: str) -> tuple[list[PhotoSlot], int, str, int, str, str, list[str]]:
+def _extract_photo_slots_structural(
+    file_path: str,
+    *,
+    family_guess: str,
+    family_confidence: str,
+    bdt_sheet_name: str | None,
+) -> tuple[list[PhotoSlot], int, str, int, str, str, list[str]]:
+    """Section-first photo extraction from OOXML primitives.
+
+    This path is used for unknown/low-confidence files and Layout C where
+    fixed slot geometry can drift.
+    """
+    from alarm_app.bdt.image_assigner import assign_manifest_images
+    from alarm_app.bdt.ooxml_reader import OOXMLPackage
+    from alarm_app.bdt.section_parser import build_workbook_manifest
+
+    with OOXMLPackage(file_path) as pkg:
+        workbook = pkg.read_workbook_xml()
+        sheet_names = [s.attrib.get("name", "") for s in workbook.findall(".//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}sheet")]
+        target_sheet = bdt_sheet_name or _resolve_bdt_sheet_name(sheet_names)
+        if not target_sheet:
+            return [], len(pkg.list_media_files()), "LAYOUT_PHOTO_6", 6, "low", "structural", []
+
+        ws_path = pkg.resolve_worksheet_xml_path(target_sheet)
+        if not ws_path:
+            return [], len(pkg.list_media_files()), "LAYOUT_PHOTO_6", 6, "low", "structural", []
+
+        shared_strings = pkg.parse_shared_strings()
+        cell_map, merged_ranges, style_ids = pkg.parse_worksheet_cells(ws_path, shared_strings=shared_strings)
+        manifest = build_workbook_manifest(
+            sheet_name=target_sheet,
+            cell_map=cell_map,
+            merged_ranges=merged_ranges,
+            style_ids=style_ids,
+            family_guess=family_guess,
+            family_confidence=family_confidence,
+            parser_mode="structural",
+        )
+
+        anchor_dicts: list[dict] = []
+        drawing_paths = pkg.get_worksheet_drawing_paths(ws_path)
+        for drawing_path in drawing_paths:
+            for anchor in pkg.extract_two_cell_anchors(drawing_path):
+                # Skip banner/logo anchors left of photo region.
+                if anchor.from_col < 11:
+                    continue
+                anchor_dicts.append(
+                    {
+                        "sheet_name": target_sheet,
+                        "from_row": anchor.from_row,
+                        "from_col": anchor.from_col,
+                        "to_row": anchor.to_row,
+                        "to_col": anchor.to_col,
+                        "r_id": anchor.r_id,
+                        "media_path": anchor.media_path,
+                        "drawing_path": drawing_path,
+                    }
+                )
+
+        assign_manifest_images(manifest, anchor_dicts)
+
+        max_anchor_col = max((a["from_col"] for a in anchor_dicts), default=-1)
+        photo_layout_id, required_photo_count = _select_photo_layout(len(anchor_dicts), max_anchor_col)
+
+        slots: list[PhotoSlot] = []
+        categories_found: list[str] = []
+        for section in manifest.sections:
+            if not section.images:
+                slots.append(
+                    PhotoSlot(
+                        label=section.header_text or section.section_id,
+                        image_data=None,
+                        image_ext="",
+                        category=section.category,
+                    )
+                )
+                continue
+
+            for image in section.images:
+                image_data = None
+                image_ext = ""
+                if image.media_path:
+                    try:
+                        image_data = pkg.read_media(image.media_path)
+                        image_ext = image.media_path.rsplit(".", 1)[-1].lower()
+                    except Exception:
+                        image_data = None
+                        image_ext = ""
+
+                label = section.header_text or section.section_id
+                slots.append(
+                    PhotoSlot(
+                        label=label,
+                        image_data=image_data,
+                        image_ext=image_ext,
+                        category=section.category,
+                    )
+                )
+                if image_data and section.category and section.category not in categories_found:
+                    categories_found.append(section.category)
+
+        filled_slots = sum(1 for s in slots if s.image_data)
+        if filled_slots == 0:
+            mapping_confidence = "low"
+        elif manifest.orphan_images:
+            mapping_confidence = "medium"
+        else:
+            mapping_confidence = "high"
+
+        return (
+            slots,
+            len(pkg.list_media_files()),
+            photo_layout_id,
+            required_photo_count,
+            mapping_confidence,
+            "structural",
+            categories_found,
+        )
+
+
+def _extract_photo_slots(
+    file_path: str,
+    *,
+    family_guess: str = "",
+    family_confidence: str = "",
+    bdt_sheet_name: str | None = None,
+) -> tuple[list[PhotoSlot], int, str, int, str, str, list[str]]:
+    """Extract labelled photo slots using structural parsing only."""
+    try:
+        return _extract_photo_slots_structural(
+            file_path,
+            family_guess=family_guess,
+            family_confidence=family_confidence,
+            bdt_sheet_name=bdt_sheet_name,
+        )
+    except Exception:
+        logger.warning("Structural photo extraction failed", exc_info=True)
+        return [], 0, "LAYOUT_PHOTO_6", 6, "low", "structural", []
+
+
+def _extract_photo_slots_layout(file_path: str) -> tuple[list[PhotoSlot], int, str, int, str, str, list[str]]:
     """Extract labelled photo slots from a BDT xlsx file.
 
     Returns (list_of_PhotoSlot, total_media_count, photo_layout_id, required_count,

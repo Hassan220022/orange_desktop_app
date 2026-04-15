@@ -195,6 +195,13 @@ class BdtValidationPanel(QWidget):
                 "Set a directory in the sidebar first.")
             return
 
+        try:
+            saved = state.load_state() or {}
+            saved["uploaded_folder_path"] = directory
+            state.save_state(saved)
+        except Exception:
+            pass
+
         bdt_files = []
         for root, _dirs, files in os.walk(directory):
             for f in files:

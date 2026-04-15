@@ -111,7 +111,7 @@ class LoaderThread(QThread):
                         if df is not None and not df.empty:
                             dfs.append(df)
                     except Exception:
-                        pass  # individual file failures silently skipped
+                        _log.warning("File parse failed: %s", info.get("filename", "unknown"), exc_info=True)
 
             if not dfs:
                 if db_session:

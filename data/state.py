@@ -160,6 +160,9 @@ def clear_cache():
         try:
             session.query(UIState).delete()
             session.commit()
+        except Exception:
+            session.rollback()
+            raise
         finally:
             session.close()
     except Exception:
@@ -207,6 +210,9 @@ def append_review_event(
             reviewed_at=parsed_reviewed_at,
         ))
         session.commit()
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 

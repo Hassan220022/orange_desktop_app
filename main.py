@@ -36,7 +36,10 @@ _log = logging.getLogger(__name__)
 
 _backend_process: multiprocessing.Process | None = None
 BACKEND_HOST = os.environ.get("ALARM_BACKEND_HOST", "127.0.0.1")
-BACKEND_PORT = int(os.environ.get("ALARM_BACKEND_PORT", "8787"))
+try:
+    BACKEND_PORT = int(os.environ.get("ALARM_BACKEND_PORT", "8787"))
+except (ValueError, TypeError):
+    BACKEND_PORT = 8787
 
 
 def _run_backend():

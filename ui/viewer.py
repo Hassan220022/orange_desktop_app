@@ -97,6 +97,7 @@ class AlarmViewer(QMainWindow):
         self._uploaded_site_id_column = ""
         self._uploaded_site_keys: set[str] = set()
         self._uploaded_site_path = ""
+        self._uploaded_folder_path = ""
         self._bdt_results: list = []
         self._bdt_by_site: dict = {}
         self._last_bdt_health_pct: float | None = None
@@ -418,6 +419,7 @@ class AlarmViewer(QMainWindow):
         file_paths = [info["path"] for info in self._file_infos]
         d = {
             "directory": self._edit_dir.text(),
+            "uploaded_folder_path": self._uploaded_folder_path or self._edit_dir.text(),
             "file_paths": file_paths,
             "file_hashes": state.compute_file_hashes(file_paths),
             "sync_on": self._sync_flags.get("sync_on", False),
@@ -468,6 +470,7 @@ class AlarmViewer(QMainWindow):
         # Directory & site filter
         if s.get("directory"):
             self._edit_dir.setText(s["directory"])
+        self._uploaded_folder_path = str(s.get("uploaded_folder_path") or s.get("directory") or "")
         if s.get("site_filter"):
             self._edit_site.setText(s["site_filter"])
 
@@ -1262,6 +1265,7 @@ class AlarmViewer(QMainWindow):
             self._edit_dir.text() or str(Path.home()))
         if d:
             self._edit_dir.setText(d)
+            self._uploaded_folder_path = d
             self._scan()
 
     def _scan(self):
@@ -1276,6 +1280,8 @@ class AlarmViewer(QMainWindow):
                 self, "Invalid Path",
                 f"Not a valid directory:\n{directory}")
             return
+
+        self._uploaded_folder_path = directory
 
         self._file_infos = discover_alarm_files(directory)
         self._file_list.clear()
@@ -1592,6 +1598,13 @@ class AlarmViewer(QMainWindow):
         self._uploaded_site_id_column = site_col
         self._uploaded_site_keys = site_keys
         self._uploaded_site_path = in_path
+        self._uploaded_folder_path = os.path.dirname(in_path)
+        try:
+            saved = state.load_state() or {}
+            saved["uploaded_folder_path"] = self._uploaded_folder_path
+            state.save_state(saved)
+        except Exception:
+            pass
         self._search()
         QMessageBox.information(
             self,

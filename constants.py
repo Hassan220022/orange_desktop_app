@@ -15,7 +15,7 @@ SCHEMA_1_MAP = {
     "Alarm ID":               "alarm_id",
     "Alarm Name":             "alarm_name",
     "Clearance Status":       "clearance_status",
-"Network Type":           "network_type",
+    "Network Type":           "network_type",
     "Vendor":                 "vendor",
 }
 

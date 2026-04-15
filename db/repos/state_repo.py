@@ -1,20 +1,27 @@
 """UI state key-value repository — replaces state.json."""
 
 import json
+import logging
 from sqlalchemy.orm import Session
 from alarm_app.db.models import UIState
+
+_log = logging.getLogger(__name__)
 
 
 def save_state(session: Session, state_dict: dict) -> None:
     """Save all key-value pairs from state_dict into ui_state table."""
-    for key, value in state_dict.items():
-        row = session.get(UIState, key)
-        val_json = json.dumps(value, default=str)
-        if row:
-            row.value_json = val_json
-        else:
-            session.add(UIState(key=key, value_json=val_json))
-    session.commit()
+    try:
+        for key, value in state_dict.items():
+            row = session.get(UIState, key)
+            val_json = json.dumps(value, default=str)
+            if row:
+                row.value_json = val_json
+            else:
+                session.add(UIState(key=key, value_json=val_json))
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
 
 
 def load_state(session: Session) -> dict | None:
@@ -35,10 +42,14 @@ def get_value(session: Session, key: str, default=None):
 
 def set_value(session: Session, key: str, value) -> None:
     """Set a single key-value pair."""
-    row = session.get(UIState, key)
-    val_json = json.dumps(value, default=str)
-    if row:
-        row.value_json = val_json
-    else:
-        session.add(UIState(key=key, value_json=val_json))
-    session.commit()
+    try:
+        row = session.get(UIState, key)
+        val_json = json.dumps(value, default=str)
+        if row:
+            row.value_json = val_json
+        else:
+            session.add(UIState(key=key, value_json=val_json))
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise

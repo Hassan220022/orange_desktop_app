@@ -16,6 +16,7 @@ import pytest
 from alarm_app.bdt.parser import (
     BDTData,
     PhotoSlot,
+    _extract_photo_slots,
     _parse_battery_info,
     _parse_test_date,
     _resolve_bdt_sheet_name,
@@ -23,6 +24,16 @@ from alarm_app.bdt.parser import (
     _safe_str,
     parse_bdt_file,
 )
+
+
+def test_photo_extraction_uses_structural_only():
+    with patch("alarm_app.bdt.parser._extract_photo_slots_structural") as structural, \
+         patch("alarm_app.bdt.parser._extract_photo_slots_layout") as legacy:
+        structural.return_value = ([], 0, "LAYOUT_PHOTO_6", 6, "low", "structural", [])
+        result = _extract_photo_slots("/fake/file.xlsx", family_guess="A", family_confidence="high")
+        legacy.assert_not_called()
+        structural.assert_called_once()
+        assert result[5] == "structural"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -979,4 +990,3 @@ class TestNewBDTFields:
         assert result.num_modules is None
         assert result.num_batteries is None
         assert result.pld_value == ""
-
