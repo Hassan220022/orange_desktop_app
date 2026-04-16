@@ -20,9 +20,14 @@ try:
     from ...bdt.validator import ValidationResult
     from ...data import state
 except ImportError:
-    from alarm_app.bdt.parser import BDTData, load_bdt_photos
-    from alarm_app.bdt.validator import ValidationResult
-    from alarm_app.data import state
+    try:
+        from alarm_app.bdt.parser import BDTData, load_bdt_photos
+        from alarm_app.bdt.validator import ValidationResult
+        from alarm_app.data import state
+    except ImportError:
+        from bdt.parser import BDTData, load_bdt_photos
+        from bdt.validator import ValidationResult
+        from data import state
 
 
 class BdtDetailPanel(QWidget):
@@ -484,7 +489,10 @@ class BdtDetailPanel(QWidget):
                 try:
                     from ...bdt.validator import _find_door_alarms
                 except ImportError:
-                    from alarm_app.bdt.validator import _find_door_alarms
+                    try:
+                        from alarm_app.bdt.validator import _find_door_alarms
+                    except ImportError:
+                        from bdt.validator import _find_door_alarms
                 import pandas as pd
                 test_date_ts = pd.Timestamp(bdt.test_date).normalize()
                 doors = _find_door_alarms(self._viewer._full_df, bdt.site_code, test_date_ts)
@@ -519,10 +527,16 @@ class BdtDetailPanel(QWidget):
                         load_second_most_recent_test,
                     )
                 except ImportError:
-                    from alarm_app.bdt.history import (
-                        load_previous_test, compare_tests,
-                        load_second_most_recent_test,
-                    )
+                    try:
+                        from alarm_app.bdt.history import (
+                            load_previous_test, compare_tests,
+                            load_second_most_recent_test,
+                        )
+                    except ImportError:
+                        from bdt.history import (
+                            load_previous_test, compare_tests,
+                            load_second_most_recent_test,
+                        )
                 from datetime import date as date_type, datetime as datetime_type
 
                 test_date = None

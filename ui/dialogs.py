@@ -13,9 +13,19 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 
-from alarm_app.constants import BT_HEADERS, BT_WIDTHS
-from alarm_app.core.backup_time import fmt_td as _fmt_td
-from alarm_app.data import state
+try:
+    from ..constants import BT_HEADERS, BT_WIDTHS
+    from ..core.backup_time import fmt_td as _fmt_td
+    from ..data import state
+except ImportError:
+    try:
+        from alarm_app.constants import BT_HEADERS, BT_WIDTHS
+        from alarm_app.core.backup_time import fmt_td as _fmt_td
+        from alarm_app.data import state
+    except ImportError:
+        from constants import BT_HEADERS, BT_WIDTHS
+        from core.backup_time import fmt_td as _fmt_td
+        from data import state
 
 
 class ColumnFilterPopup(QDialog):

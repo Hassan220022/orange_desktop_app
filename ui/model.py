@@ -17,7 +17,10 @@ from PyQt5.QtGui import QColor, QBrush
 try:
     from ..constants import DISPLAY_COLUMNS
 except ImportError:
-    from alarm_app.constants import DISPLAY_COLUMNS
+    try:
+        from alarm_app.constants import DISPLAY_COLUMNS
+    except ImportError:
+        from constants import DISPLAY_COLUMNS
 
 # ── Pre-computed colour objects (created once, reused for every cell) ──
 _CLR_PWR_BG   = QBrush(QColor("#2d1a1a"))

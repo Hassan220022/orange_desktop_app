@@ -569,7 +569,10 @@ class AlarmViewer(QMainWindow):
         self._restored_file_paths = s.get("file_paths", [])
 
         # Kick off background data restore (DB preferred, Parquet fallback)
-        from alarm_app.db.engine import DB_PATH as _db_path
+        try:
+            from alarm_app.db.engine import DB_PATH as _db_path
+        except ImportError:
+            from db.engine import DB_PATH as _db_path
         if state.ALARM_DB_FILE.exists() or state.CACHE_FILE.exists() or _db_path.exists():
             self._sbar.showMessage("Restoring previous session...")
             self._restore_thread = RestoreThread()
@@ -649,8 +652,12 @@ class AlarmViewer(QMainWindow):
     def _restore_bdt_results(self):
         """Load previous BDT validation results from the DB into the UI."""
         try:
-            from alarm_app.db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
-            from alarm_app.db.repos.pm_repo import load_all_validation_results
+            try:
+                from alarm_app.db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
+                from alarm_app.db.repos.pm_repo import load_all_validation_results
+            except ImportError:
+                from db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
+                from db.repos.pm_repo import load_all_validation_results
             engine = _ce()
             _idb(engine)
             session = _gsf(engine)()
@@ -691,9 +698,12 @@ class AlarmViewer(QMainWindow):
             sender = None
             if self._sync_flags.get("sync_on", False):
                 try:
-                    from alarm_app.data.sync_client import http_send_batch
+                    try:
+                        from alarm_app.data.sync_client import http_send_batch
+                    except ImportError:
+                        from data.sync_client import http_send_batch
                     sender = http_send_batch
-                except ImportError:
+                except Exception:
                     pass
             self._sync_worker = LocalSyncWorker(send_batch=sender)
             self._sync_worker.start()
@@ -708,12 +718,20 @@ class AlarmViewer(QMainWindow):
         class _BootstrapThread(QThread):
             def run(self_thread):
                 try:
-                    from alarm_app.data.bootstrap import run_bootstrap
-                    from alarm_app.db.engine import (
-                        create_engine,
-                        init_db,
-                        get_session_factory,
-                    )
+                    try:
+                        from alarm_app.data.bootstrap import run_bootstrap
+                        from alarm_app.db.engine import (
+                            create_engine,
+                            init_db,
+                            get_session_factory,
+                        )
+                    except ImportError:
+                        from data.bootstrap import run_bootstrap
+                        from db.engine import (
+                            create_engine,
+                            init_db,
+                            get_session_factory,
+                        )
 
                     engine = create_engine()
                     init_db(engine)
