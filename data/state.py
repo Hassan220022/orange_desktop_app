@@ -18,11 +18,18 @@ _log = logging.getLogger(__name__)
 
 import pandas as pd
 
-from alarm_app.db.engine import (
-    create_engine as _create_engine,
-    init_db as _init_db,
-    get_session_factory as _get_session_factory,
-)
+try:
+    from alarm_app.db.engine import (
+        create_engine as _create_engine,
+        init_db as _init_db,
+        get_session_factory as _get_session_factory,
+    )
+except ImportError:
+    from db.engine import (
+        create_engine as _create_engine,
+        init_db as _init_db,
+        get_session_factory as _get_session_factory,
+    )
 
 STATE_DIR  = Path.home() / ".alarm_viewer"
 STATE_FILE = STATE_DIR / "state.json"
@@ -52,6 +59,30 @@ def _get_session():
     return _SessionFactory()
 
 
+def _state_repo_module():
+    try:
+        from alarm_app.db.repos import state_repo as _repo
+    except ImportError:
+        from db.repos import state_repo as _repo
+    return _repo
+
+
+def _sync_repo_module():
+    try:
+        from alarm_app.db.repos import sync_repo as _repo
+    except ImportError:
+        from db.repos import sync_repo as _repo
+    return _repo
+
+
+def _db_models_module():
+    try:
+        from alarm_app.db import models as _models
+    except ImportError:
+        from db import models as _models
+    return _models
+
+
 def _coerce_bool(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -76,7 +107,7 @@ def load_feature_flags(source: dict | None = None) -> dict[str, bool]:
 
 
 def save_state(state_dict: dict):
-    from alarm_app.db.repos.state_repo import save_state as _save
+    _save = _state_repo_module().save_state
     state_dict["saved_at"] = datetime.now().isoformat()
     session = _get_session()
     try:
@@ -87,7 +118,7 @@ def save_state(state_dict: dict):
 
 
 def load_state() -> dict | None:
-    from alarm_app.db.repos.state_repo import load_state as _load
+    _load = _state_repo_module().load_state
     session = _get_session()
     try:
         result = _load(session)
@@ -121,7 +152,10 @@ def load_dataframe() -> pd.DataFrame | None:
     import duckdb
     flags = load_feature_flags()
     if flags.get("cloud_read_on"):
-        from alarm_app.data.cloud_reader import fetch_alarms_from_api
+        try:
+            from alarm_app.data.cloud_reader import fetch_alarms_from_api
+        except ImportError:
+            from data.cloud_reader import fetch_alarms_from_api
         cloud_df = fetch_alarms_from_api()
         if cloud_df is not None and not cloud_df.empty:
             _log.info("DataFrame loaded from cloud: row_count=%d", len(cloud_df))
@@ -155,7 +189,7 @@ def clear_cache():
             pass
     # Also clear UI state in DB
     try:
-        from alarm_app.db.models import UIState
+        UIState = _db_models_module().UIState
         session = _get_session()
         try:
             session.query(UIState).delete()
@@ -179,7 +213,7 @@ def append_review_event(
     verdict: str,
     reviewed_at: str | None = None,
 ) -> None:
-    from alarm_app.db.models import ReviewEvent
+    ReviewEvent = _db_models_module().ReviewEvent
     from datetime import date as _date
 
     # Convert string date to Python date object for SQLite Date column
@@ -218,7 +252,7 @@ def append_review_event(
 
 
 def load_review_events() -> list[dict]:
-    from alarm_app.db.models import ReviewEvent
+    ReviewEvent = _db_models_module().ReviewEvent
     session = _get_session()
     try:
         rows = session.query(ReviewEvent).order_by(ReviewEvent.id).all()
@@ -275,7 +309,7 @@ def summarize_review_events_by_day(events: list[dict] | None = None) -> list[dic
 # ── Alarm ID configuration ────────────────────────────────
 def load_alarm_ids() -> dict:
     """Return {"power": [...], "down": [...], "door": [...]} from config."""
-    from alarm_app.db.repos.state_repo import get_value
+    get_value = _state_repo_module().get_value
     session = _get_session()
     try:
         data = get_value(session, "alarm_ids")
@@ -296,7 +330,7 @@ def load_alarm_ids() -> dict:
 
 
 def save_alarm_ids(ids: dict):
-    from alarm_app.db.repos.state_repo import set_value
+    set_value = _state_repo_module().set_value
     session = _get_session()
     try:
         set_value(session, "alarm_ids", ids)
@@ -365,7 +399,7 @@ def append_outbox_event(
     created_at: str | None = None,
 ) -> dict:
     """Append one sync event to durable local outbox journal."""
-    from alarm_app.db.repos.sync_repo import append_outbox_event as _append
+    _append = _sync_repo_module().append_outbox_event
     resolved_event_id = event_id or str(uuid4())
     resolved_device_id = origin_device_id or get_or_create_device_id()
     session = _get_session()
@@ -396,7 +430,7 @@ def append_outbox_event(
 
 def append_outbox_events(events: list[dict]) -> int:
     """Append multiple sync events to durable local outbox journal."""
-    from alarm_app.db.repos.sync_repo import append_outbox_events as _append_many
+    _append_many = _sync_repo_module().append_outbox_events
     if not events:
         return 0
     session = _get_session()
@@ -419,7 +453,7 @@ def append_outbox_events(events: list[dict]) -> int:
 
 def load_pending_outbox(limit: int | None = None) -> list[dict]:
     """Return pending outbox events that are not yet marked synced."""
-    from alarm_app.db.repos.sync_repo import load_pending_outbox as _load
+    _load = _sync_repo_module().load_pending_outbox
     session = _get_session()
     try:
         return _load(session, limit=limit)
@@ -429,7 +463,7 @@ def load_pending_outbox(limit: int | None = None) -> list[dict]:
 
 def save_sync_checkpoint(cursor: str, last_ack_at: str | None = None) -> None:
     """Persist durable sync checkpoint cursor."""
-    from alarm_app.db.repos.sync_repo import save_sync_checkpoint as _save
+    _save = _sync_repo_module().save_sync_checkpoint
     session = _get_session()
     try:
         _save(session, cursor=str(cursor or ""))
@@ -439,7 +473,7 @@ def save_sync_checkpoint(cursor: str, last_ack_at: str | None = None) -> None:
 
 def load_sync_checkpoint() -> dict | None:
     """Load durable sync checkpoint cursor metadata."""
-    from alarm_app.db.repos.sync_repo import load_sync_checkpoint as _load
+    _load = _sync_repo_module().load_sync_checkpoint
     session = _get_session()
     try:
         return _load(session)
@@ -449,7 +483,7 @@ def load_sync_checkpoint() -> dict | None:
 
 def mark_outbox_synced(event_ids: list[str], checkpoint_cursor: str | None = None) -> int:
     """Mark matching outbox events as synced and optionally advance checkpoint."""
-    from alarm_app.db.repos.sync_repo import mark_outbox_synced as _mark
+    _mark = _sync_repo_module().mark_outbox_synced
     if not event_ids:
         return 0
     session = _get_session()
