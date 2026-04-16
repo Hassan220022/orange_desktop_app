@@ -23,6 +23,7 @@ try:
     from ...bdt.export import build_bdt_export_sheets
     from ..dialogs import DailyReviewReportDialog
     from ...data import state
+    from ...data.site_report import read_pm_accept_sheet, build_pm_accept_report
 except ImportError:
     from alarm_app.constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS
     from alarm_app.ui.threads import ExportThread, BDTValidationThread
@@ -31,6 +32,7 @@ except ImportError:
     from alarm_app.bdt.export import build_bdt_export_sheets
     from alarm_app.ui.dialogs import DailyReviewReportDialog
     from alarm_app.data import state
+    from alarm_app.data.site_report import read_pm_accept_sheet, build_pm_accept_report
 
 
 class BdtValidationPanel(QWidget):
@@ -80,6 +82,16 @@ class BdtValidationPanel(QWidget):
         btn_validate.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         btn_validate.clicked.connect(self._run_validation)
         action_row.addWidget(btn_validate)
+
+        btn_pm_accept = QPushButton("Accepted PM Report")
+        btn_pm_accept.setObjectName("btn_export")
+        btn_pm_accept.setCursor(Qt.PointingHandCursor)
+        btn_pm_accept.setMinimumWidth(0)
+        btn_pm_accept.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        btn_pm_accept.clicked.connect(self._generate_pm_accept_report)
+        action_row.addWidget(btn_pm_accept)
+        self.btn_pm_accept_report = btn_pm_accept
+
         header_row.addWidget(action_group)
 
         # PARAMETERS group
@@ -254,6 +266,85 @@ class BdtValidationPanel(QWidget):
         self._viewer._prog.setVisible(False)
         QMessageBox.critical(self, "Validation Error", msg)
         self._viewer._sbar.showMessage("Validation failed")
+
+    def _generate_pm_accept_report(self):
+        viewer = self._viewer
+        if not viewer._bdt_results:
+            QMessageBox.information(self, "No BDT Results", "Run validation first.")
+            return
+        if viewer._full_df is None or viewer._full_df.empty:
+            QMessageBox.information(self, "No Alarm Data", "Load alarm data first.")
+            return
+
+        start_dir = (
+            getattr(viewer, "_uploaded_folder_path", "")
+            or viewer._edit_dir.text().strip()
+            or str(os.path.expanduser("~"))
+        )
+        in_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Accepted PM List",
+            start_dir,
+            "Spreadsheet Files (*.xlsx *.xls *.csv)",
+        )
+        if not in_path:
+            return
+
+        try:
+            viewer._sbar.showMessage("Reading Accepted PM list …")
+            pm_df, sheet_name, site_col, date_col, status_col = read_pm_accept_sheet(
+                in_path, viewer._full_df
+            )
+            health_pct = (
+                viewer._last_bdt_health_pct
+                if viewer._last_bdt_health_pct is not None
+                else self.spn_health.value() / 100.0
+            )
+            report_df = build_pm_accept_report(
+                pm_df=pm_df,
+                site_id_column=site_col,
+                date_column=date_col,
+                bdt_results=viewer._bdt_results,
+                alarm_df=viewer._full_df,
+                health_pct=health_pct,
+                status_column=status_col,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Accepted PM Report Error", str(exc))
+            viewer._sbar.showMessage("Accepted PM report failed")
+            return
+
+        default_name = f"accepted_pm_backup_report_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        out_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Accepted PM Backup Report",
+            os.path.join(os.path.dirname(in_path), default_name),
+            "Excel Files (*.xlsx)",
+        )
+        if not out_path:
+            viewer._sbar.showMessage("Accepted PM report export cancelled")
+            return
+
+        export_sheet_name = (sheet_name or "Accepted PM Report")[:31]
+        self.btn_pm_accept_report.setEnabled(False)
+        viewer._sbar.showMessage("Exporting Accepted PM backup report …")
+        self._pm_accept_export_thread = ExportThread({export_sheet_name: report_df}, out_path)
+        self._pm_accept_export_thread.progress.connect(
+            lambda _v, m: viewer._sbar.showMessage(m)
+        )
+        self._pm_accept_export_thread.finished.connect(self._on_pm_accept_export_done)
+        self._pm_accept_export_thread.error.connect(self._on_pm_accept_export_error)
+        self._pm_accept_export_thread.start()
+
+    def _on_pm_accept_export_done(self, fp: str):
+        self.btn_pm_accept_report.setEnabled(True)
+        QMessageBox.information(self, "Export OK", f"Saved to:\n{fp}")
+        self._viewer._sbar.showMessage(f"Accepted PM backup report → {fp}")
+
+    def _on_pm_accept_export_error(self, msg: str):
+        self.btn_pm_accept_report.setEnabled(True)
+        QMessageBox.critical(self, "Export Failed", msg)
+        self._viewer._sbar.showMessage("Accepted PM report export failed")
 
     def set_results(self, results: list):
         """Load validation results (e.g. restored from DB) and populate the table."""

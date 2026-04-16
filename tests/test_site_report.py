@@ -1,11 +1,15 @@
 import pandas as pd
 import pytest
+from types import SimpleNamespace
 
 from alarm_app.data.site_report import (
+    build_pm_accept_report,
     build_site_alarm_report,
     filter_site_sheet_to_matching_sites,
+    infer_date_column,
     infer_site_id_column,
     normalize_site_key,
+    read_pm_accept_sheet,
     read_site_sheet,
 )
 
@@ -196,3 +200,99 @@ def test_read_site_sheet_requires_all_down_sheet(tmp_path):
 
     with pytest.raises(ValueError, match="All down"):
         read_site_sheet(str(path))
+
+
+def test_infer_date_column_detects_actual_done_date():
+    df = pd.DataFrame(
+        {
+            "Site Code": ["A001", "B002"],
+            "Actual Done Date": ["01-Jan-25", "02-Jan-25"],
+            "PM Status": ["Accepted", "Accepted"],
+        }
+    )
+    assert infer_date_column(df) == "Actual Done Date"
+
+
+def test_read_pm_accept_sheet_finds_site_and_date_columns(tmp_path):
+    path = tmp_path / "accepted_pm.xlsx"
+    df = pd.DataFrame(
+        {
+            "Virtual Code": ["0117CA45658"],
+            "Site Code": ["0117CA"],
+            "Actual Done Date": ["01-Jan-25"],
+            "PM Status": ["Accepted"],
+        }
+    )
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Accepted PM List", index=False)
+
+    out_df, sheet_name, site_col, date_col, status_col = read_pm_accept_sheet(str(path))
+    assert sheet_name == "Accepted PM List"
+    assert site_col == "Site Code"
+    assert date_col == "Actual Done Date"
+    assert status_col == "PM Status"
+    assert len(out_df) == 1
+
+
+def test_build_pm_accept_report_maps_bdt_and_alarm_fields():
+    pm_df = pd.DataFrame(
+        {
+            "Site Code": ["0117CA"],
+            "Actual Done Date": ["2025-01-01"],
+            "PM Status": ["Accepted"],
+        }
+    )
+    bdt_data = SimpleNamespace(
+        battery_ah=100.0,
+        battery_voltage=48.0,
+        num_strings=1,
+        start_voltage=48.0,
+        start_ampere=40.0,
+        battery_brand="Lithium",
+        discharge_minutes=130.0,
+        test_date=pd.Timestamp("2025-01-01"),
+    )
+    bdt_results = [
+        SimpleNamespace(
+            filename="BDT_0117CA.xlsx",
+            site_code="0117CA",
+            test_date="2025-01-01",
+            overall="Accepted",
+            bdt_data=bdt_data,
+        )
+    ]
+    alarm_df = pd.DataFrame(
+        [
+            {
+                "site_id": "0117CA",
+                "alarm_category": "Power",
+                "occurred_on": "2025-01-01 10:00:00",
+                "cleared_on": "2025-01-01 14:00:00",
+            },
+            {
+                "site_id": "0117CA",
+                "alarm_category": "Down",
+                "occurred_on": "2025-01-01 11:30:00",
+                "cleared_on": "2025-01-01 12:30:00",
+            },
+        ]
+    )
+
+    report = build_pm_accept_report(
+        pm_df=pm_df,
+        site_id_column="Site Code",
+        date_column="Actual Done Date",
+        bdt_results=bdt_results,
+        alarm_df=alarm_df,
+        health_pct=0.8,
+        status_column="PM Status",
+    )
+
+    assert len(report) == 1
+    row = report.iloc[0]
+    assert row["Matched BDT File Name"] == "BDT_0117CA.xlsx"
+    assert row["Matched BDT Validation Verdict"] == "Accepted"
+    assert row["Measured Backup Time From BDT Test Duration (mins)"] == "130.0"
+    assert row["Power Alarm Start Time"] == "2025-01-01 10:00:00"
+    assert row["Down Alarm Start Time"] == "2025-01-01 11:30:00"
+    assert row["Backup Time Calculated From Alarm Pair (HH:MM:SS)"] == "01:30:00"
