@@ -41,7 +41,6 @@ pyinstaller ^
     --icon alarm_app\assets\app_icon.ico ^
     --add-data "alarm_app\assets\app_icon.png;assets" ^
     --paths . ^
-    --collect-submodules alarm_app ^
     --distpath alarm_app\dist ^
     --workpath alarm_app\build ^
     --specpath alarm_app ^

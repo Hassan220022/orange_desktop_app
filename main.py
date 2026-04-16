@@ -11,11 +11,25 @@ import multiprocessing
 import os
 import signal
 import sys
+import types
 from pathlib import Path
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QApplication
+
+
+def _ensure_alarm_app_alias() -> None:
+    """Provide an 'alarm_app' package alias for frozen/flat module layouts."""
+    if "alarm_app" in sys.modules:
+        return
+    package_root = Path(__file__).resolve().parent
+    pkg = types.ModuleType("alarm_app")
+    pkg.__path__ = [str(package_root)]  # type: ignore[attr-defined]
+    sys.modules["alarm_app"] = pkg
+
+
+_ensure_alarm_app_alias()
 
 try:
     from .constants import APP_NAME, APP_VERSION
