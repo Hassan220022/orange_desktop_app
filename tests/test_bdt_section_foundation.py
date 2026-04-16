@@ -71,6 +71,8 @@ def test_assigner_assigns_and_groups_images():
     anchors = [
         {"from_row": 5, "from_col": 3, "to_row": 8, "to_col": 6, "r_id": "rId1"},
         {"from_row": 9, "from_col": 3, "to_row": 12, "to_col": 6, "r_id": "rId2"},
+        # duplicate of first anchor should be ignored
+        {"from_row": 5, "from_col": 3, "to_row": 8, "to_col": 6, "r_id": "rId1"},
         {"from_row": 30, "from_col": 20, "to_row": 31, "to_col": 21, "r_id": "rId3"},
     ]
 

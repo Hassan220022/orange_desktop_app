@@ -729,6 +729,16 @@ class TestR7InverseRelationship:
         assert r.verdict == "Rejected"
         assert "unexpected direct trend" in r.detail
 
+    def test_constant_series_returns_na_without_corrcoef_warning(self):
+        bdt = _make_bdt(discharge_readings=[
+            ("30 min", 48.0, 10.0),
+            ("60 min", 48.0, 12.0),
+            ("90 min", 48.0, 14.0),
+        ])
+        r = _rule_7_inverse_relationship(bdt)
+        assert r.verdict == "N/A"
+        assert "Cannot compute correlation" in r.detail
+
 
 # ── R8 Sizing vs Actual ─────────────────────────────────────────────────
 

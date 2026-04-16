@@ -17,6 +17,7 @@ from alarm_app.bdt.parser import (
     BDTData,
     PhotoSlot,
     _extract_photo_slots,
+    _extract_photo_slots_structural,
     _parse_battery_info,
     _parse_test_date,
     _resolve_bdt_sheet_name,
@@ -24,6 +25,7 @@ from alarm_app.bdt.parser import (
     _safe_str,
     parse_bdt_file,
 )
+from alarm_app.bdt.models import Section, SectionImage, WorkbookParseManifest
 
 
 def test_photo_extraction_uses_structural_only():
@@ -34,6 +36,155 @@ def test_photo_extraction_uses_structural_only():
         legacy.assert_not_called()
         structural.assert_called_once()
         assert result[5] == "structural"
+
+
+class _FakeAnchor:
+    def __init__(self, from_row: int, from_col: int, to_row: int, to_col: int, r_id: str, media_path: str):
+        self.from_row = from_row
+        self.from_col = from_col
+        self.to_row = to_row
+        self.to_col = to_col
+        self.r_id = r_id
+        self.media_path = media_path
+
+
+class _FakeOOXMLPackage:
+    def __init__(self, _file_path: str):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read_workbook_xml(self):
+        import xml.etree.ElementTree as ET
+        return ET.fromstring(
+            """<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+                 <sheets><sheet name="BDT sheet"/></sheets>
+               </workbook>"""
+        )
+
+    def resolve_worksheet_xml_path(self, _sheet_name: str):
+        return "xl/worksheets/sheet1.xml"
+
+    def parse_shared_strings(self):
+        return []
+
+    def parse_worksheet_cells(self, _worksheet_xml_path: str, shared_strings=None):
+        return {}, [], {}
+
+    def get_worksheet_drawing_paths(self, _worksheet_xml_path: str):
+        return ["xl/drawings/drawing1.xml"]
+
+    def extract_two_cell_anchors(self, _drawing_path: str):
+        return [_FakeAnchor(10, 12, 20, 16, "rId1", "xl/media/image1.jpeg")]
+
+    def read_media(self, _media_path: str):
+        return b"img-bytes"
+
+    def list_media_files(self):
+        return ["xl/media/image1.jpeg"]
+
+
+class _FakeOOXMLPackageVariableBytes(_FakeOOXMLPackage):
+    def __init__(self, _file_path: str):
+        super().__init__(_file_path)
+        self._read_count = 0
+
+    def read_media(self, _media_path: str):
+        self._read_count += 1
+        return f"img-bytes-{self._read_count}".encode("utf-8")
+
+
+def test_structural_dedupe_keeps_same_media_across_different_sections():
+    manifest = WorkbookParseManifest(
+        sheet_name="BDT sheet",
+        sections=[
+            Section(
+                section_id="sec_1",
+                sheet_name="BDT sheet",
+                header_text="Rectifier",
+                category="rectifier",
+                images=[SectionImage(media_path="xl/media/image1.jpeg")],
+            ),
+            Section(
+                section_id="sec_2",
+                sheet_name="BDT sheet",
+                header_text="Batteries",
+                category="batteries",
+                images=[SectionImage(media_path="xl/media/image1.jpeg")],
+            ),
+        ],
+    )
+    with patch("alarm_app.bdt.ooxml_reader.OOXMLPackage", _FakeOOXMLPackage), \
+         patch("alarm_app.bdt.section_parser.build_workbook_manifest", return_value=manifest):
+        slots, *_ = _extract_photo_slots_structural(
+            "/fake/file.xlsx",
+            family_guess="A",
+            family_confidence="high",
+            bdt_sheet_name="BDT sheet",
+        )
+    filled = [s for s in slots if s.image_data]
+    assert len(filled) == 2
+    assert {s.category for s in filled} == {"rectifier", "batteries"}
+
+
+def test_structural_dedupe_removes_same_media_within_same_section():
+    manifest = WorkbookParseManifest(
+        sheet_name="BDT sheet",
+        sections=[
+            Section(
+                section_id="sec_1",
+                sheet_name="BDT sheet",
+                header_text="Rectifier",
+                category="rectifier",
+                images=[
+                    SectionImage(media_path="xl/media/image1.jpeg"),
+                    SectionImage(media_path="xl/media/image1.jpeg"),
+                ],
+            ),
+        ],
+    )
+    with patch("alarm_app.bdt.ooxml_reader.OOXMLPackage", _FakeOOXMLPackage), \
+         patch("alarm_app.bdt.section_parser.build_workbook_manifest", return_value=manifest):
+        slots, *_ = _extract_photo_slots_structural(
+            "/fake/file.xlsx",
+            family_guess="A",
+            family_confidence="high",
+            bdt_sheet_name="BDT sheet",
+        )
+    filled = [s for s in slots if s.image_data]
+    assert len(filled) == 1
+
+
+def test_structural_dedupe_keeps_same_path_when_bytes_differ():
+    manifest = WorkbookParseManifest(
+        sheet_name="BDT sheet",
+        sections=[
+            Section(
+                section_id="sec_1",
+                sheet_name="BDT sheet",
+                header_text="Rectifier",
+                category="rectifier",
+                images=[
+                    SectionImage(media_path="xl/media/image1.jpeg"),
+                    SectionImage(media_path="xl/media/image1.jpeg"),
+                ],
+            ),
+        ],
+    )
+    with patch("alarm_app.bdt.ooxml_reader.OOXMLPackage", _FakeOOXMLPackageVariableBytes), \
+         patch("alarm_app.bdt.section_parser.build_workbook_manifest", return_value=manifest):
+        slots, *_ = _extract_photo_slots_structural(
+            "/fake/file.xlsx",
+            family_guess="A",
+            family_confidence="high",
+            bdt_sheet_name="BDT sheet",
+        )
+    filled = [s for s in slots if s.image_data]
+    assert len(filled) == 2
 
 
 # ═══════════════════════════════════════════════════════════════════════

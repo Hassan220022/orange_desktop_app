@@ -718,6 +718,14 @@ def _rule_7_inverse_relationship(bdt: BDTData) -> RuleResult:
     v_arr = np.array([v for v, _ in pairs])
     a_arr = np.array([a for _, a in pairs])
 
+    # Avoid NumPy runtime warnings from corrcoef when one series is constant.
+    if np.std(v_arr) == 0 or np.std(a_arr) == 0:
+        return RuleResult(
+            rule_id="R7", rule_name="V/A Inverse",
+            passed=None, verdict="N/A",
+            detail="Cannot compute correlation (constant values?)",
+        )
+
     # Check correlation — should be negative (inverse)
     corr = np.corrcoef(v_arr, a_arr)[0, 1]
 

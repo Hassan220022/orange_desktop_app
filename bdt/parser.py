@@ -7,6 +7,7 @@ BDT template.
 """
 
 import logging
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -1314,6 +1315,7 @@ def _extract_photo_slots_structural(
 
         slots: list[PhotoSlot] = []
         categories_found: list[str] = []
+        seen_image_keys: set[str] = set()
         for section in manifest.sections:
             if not section.images:
                 slots.append(
@@ -1336,6 +1338,20 @@ def _extract_photo_slots_structural(
                     except Exception:
                         image_data = None
                         image_ext = ""
+
+                # Deduplicate repeated embedded media that may be anchored
+                # multiple times across overlapping/variant sections.
+                image_key = ""
+                if image.media_path:
+                    image_key = f"{section.section_id}|path:{image.media_path}"
+                    if image_data:
+                        image_key = f"{image_key}|bytes:{hashlib.sha256(image_data).hexdigest()}"
+                elif image_data:
+                    image_key = f"{section.section_id}|bytes:{hashlib.sha256(image_data).hexdigest()}"
+                if image_key and image_key in seen_image_keys:
+                    continue
+                if image_key:
+                    seen_image_keys.add(image_key)
 
                 label = section.header_text or section.section_id
                 slots.append(

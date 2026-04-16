@@ -30,6 +30,18 @@ def _anchor_rect(anchor: dict) -> tuple[int, int, int, int]:
     )
 
 
+def _anchor_signature(anchor: dict) -> tuple[int, int, int, int, str, str]:
+    box = _anchor_rect(anchor)
+    return (
+        box[0],
+        box[1],
+        box[2],
+        box[3],
+        str(anchor.get("r_id", "")),
+        str(anchor.get("media_path", "")),
+    )
+
+
 def assign_anchors_to_sections(
     sections: list[Section],
     anchors: list[dict],
@@ -39,8 +51,14 @@ def assign_anchors_to_sections(
 
     assigned: list[SectionImage] = []
     orphans: list[SectionImage] = []
+    seen_signatures: set[tuple[int, int, int, int, str, str]] = set()
 
     for anchor in anchors:
+        sig = _anchor_signature(anchor)
+        if sig in seen_signatures:
+            continue
+        seen_signatures.add(sig)
+
         anchor_box = _anchor_rect(anchor)
         best_idx = -1
         best_area = 0
