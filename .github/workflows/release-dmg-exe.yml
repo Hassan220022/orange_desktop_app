@@ -1,4 +1,4 @@
-name: Release DMG + EXE
+name: Release macOS App + Windows EXE
 
 permissions:
   contents: write
@@ -6,13 +6,6 @@ permissions:
 on:
   push:
     branches: [main]
-    paths:
-      - "constants.py"
-      - "**/*.py"
-      - "requirements.txt"
-      - "assets/app_icon.ico"
-      - "assets/app_icon.icns"
-      - "assets/app_icon.png"
   workflow_dispatch:
 
 concurrency:
@@ -24,7 +17,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.value }}
-      tag: ${{ steps.ver.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -41,7 +33,6 @@ jobs:
           sys.exit(1)
           ")
           echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=v${VERSION}"  >> "$GITHUB_OUTPUT"
           echo "Building release for version ${VERSION}"
 
   build-windows-exe:
@@ -88,7 +79,7 @@ jobs:
           path: dist/AlarmViewer.exe
           if-no-files-found: error
 
-  build-macos-dmg:
+  build-macos-app:
     runs-on: macos-14
     needs: read-version
     steps:
@@ -99,24 +90,41 @@ jobs:
           python-version: "3.11"
 
       - name: Make scripts executable
-        run: chmod +x scripts/build_macos.sh scripts/build_macos_installer.sh
+        run: chmod +x scripts/build_macos.sh
 
-      - name: Build app bundle and DMG
-        run: ./scripts/build_macos_installer.sh
+      - name: Build app bundle
+        run: ./scripts/build_macos.sh
+
+      - name: Zip macOS app bundle
+        run: ditto -c -k --sequesterRsrc --keepParent dist/AlarmViewer.app dist/AlarmViewer-macOS-app.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: release-macos-dmg
-          path: dist/AlarmViewer-macOS.dmg
+          name: release-macos-app
+          path: dist/AlarmViewer-macOS-app.zip
           if-no-files-found: error
 
   publish-release:
     runs-on: ubuntu-latest
-    needs: [read-version, build-windows-exe, build-macos-dmg]
+    needs: [read-version, build-windows-exe, build-macos-app]
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Compute release metadata
+        id: meta
+        env:
+          VERSION: ${{ needs.read-version.outputs.version }}
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          SHORT_SHA="${SHA:0:7}"
+          TAG_NAME="build-${RUN_ID}"
+          RELEASE_NAME="Alarm Viewer v${VERSION} (${SHORT_SHA})"
+          echo "tag=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Download EXE artifact
         uses: actions/download-artifact@v4
@@ -124,45 +132,41 @@ jobs:
           name: release-windows-exe
           path: release-assets
 
-      - name: Download DMG artifact
+      - name: Download macOS app artifact
         uses: actions/download-artifact@v4
         with:
-          name: release-macos-dmg
+          name: release-macos-app
           path: release-assets
 
       - name: Build release notes
         env:
-          TAG_NAME: ${{ needs.read-version.outputs.tag }}
+          TAG_NAME: ${{ steps.meta.outputs.tag }}
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
         run: |
           set -euo pipefail
-          PREV_TAG="$(git tag --sort=-creatordate | head -n 1 || true)"
           {
             echo "## Alarm Viewer ${TAG_NAME}"
             echo
+            echo "Commit: \`${SHORT_SHA}\`"
+            echo
             echo "### Release assets"
             echo "- AlarmViewer.exe (Windows)"
-            echo "- AlarmViewer-macOS.dmg (macOS)"
+            echo "- AlarmViewer-macOS-app.zip (macOS app bundle)"
             echo
-            if [ -n "${PREV_TAG}" ]; then
-              echo "### Changes since ${PREV_TAG}"
-              echo
-              git log --no-merges --pretty='- %s' "${PREV_TAG}..HEAD"
-            else
-              echo "### Included commits"
-              echo
-              git log --no-merges --pretty='- %s'
-            fi
+            echo "### Included commits"
+            echo
+            git log --no-merges --pretty='- %s' -n 30
           } > RELEASE_NOTES.md
           cat RELEASE_NOTES.md
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.read-version.outputs.tag }}
-          name: Alarm Viewer ${{ needs.read-version.outputs.tag }}
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.name }}
           body_path: RELEASE_NOTES.md
           files: |
             release-assets/AlarmViewer.exe
-            release-assets/AlarmViewer-macOS.dmg
+            release-assets/AlarmViewer-macOS-app.zip
           fail_on_unmatched_files: true
           make_latest: true
