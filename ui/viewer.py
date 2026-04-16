@@ -54,33 +54,62 @@ try:
     from ..bdt.validator import validate_bdt, ValidationResult
     from ..bdt.export import build_bdt_export_sheets
 except ImportError:
-    from alarm_app.constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
-                                     COL_WIDTHS, DISPLAY_COLUMNS,
-                                     BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
-    from alarm_app.styles import STYLE, STYLE_DARK, STYLE_LIGHT
-    from alarm_app.ui.model import AlarmTableModel
-    from alarm_app.ui.threads import (RestoreThread, LoaderThread, ExportThread,
-                                      BDTValidationThread, BackupTimeThread)
-    from alarm_app.ui.dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
-                                      AlarmIdConfigDialog, BackupTimeDialog,
-                                      FeatureFlagDialog)
-    from alarm_app.ui.panels.search_panel import SearchPanel
-    from alarm_app.ui.panels.left_panel import LeftPanel
-    from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
-    from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
-    from alarm_app.core.filters import compute_date_mask, parse_manual_days
-    from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
-    from alarm_app.data.loaders import discover_alarm_files
-    from alarm_app.data import state
-    from alarm_app.data.sync import LocalSyncWorker
-    from alarm_app.data.site_report import (
-        read_site_sheet,
-        build_site_alarm_report,
-        collect_site_sheet_keys,
-    )
-    from alarm_app.bdt.parser import parse_bdt_file, BDTData, load_bdt_photos
-    from alarm_app.bdt.validator import validate_bdt, ValidationResult
-    from alarm_app.bdt.export import build_bdt_export_sheets
+    try:
+        from alarm_app.constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
+                                         COL_WIDTHS, DISPLAY_COLUMNS,
+                                         BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
+        from alarm_app.styles import STYLE, STYLE_DARK, STYLE_LIGHT
+        from alarm_app.ui.model import AlarmTableModel
+        from alarm_app.ui.threads import (RestoreThread, LoaderThread, ExportThread,
+                                          BDTValidationThread, BackupTimeThread)
+        from alarm_app.ui.dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
+                                          AlarmIdConfigDialog, BackupTimeDialog,
+                                          FeatureFlagDialog)
+        from alarm_app.ui.panels.search_panel import SearchPanel
+        from alarm_app.ui.panels.left_panel import LeftPanel
+        from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
+        from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
+        from alarm_app.core.filters import compute_date_mask, parse_manual_days
+        from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
+        from alarm_app.data.loaders import discover_alarm_files
+        from alarm_app.data import state
+        from alarm_app.data.sync import LocalSyncWorker
+        from alarm_app.data.site_report import (
+            read_site_sheet,
+            build_site_alarm_report,
+            collect_site_sheet_keys,
+        )
+        from alarm_app.bdt.parser import parse_bdt_file, BDTData, load_bdt_photos
+        from alarm_app.bdt.validator import validate_bdt, ValidationResult
+        from alarm_app.bdt.export import build_bdt_export_sheets
+    except ImportError:
+        from constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
+                               COL_WIDTHS, DISPLAY_COLUMNS,
+                               BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
+        from styles import STYLE, STYLE_DARK, STYLE_LIGHT
+        from ui.model import AlarmTableModel
+        from ui.threads import (RestoreThread, LoaderThread, ExportThread,
+                                BDTValidationThread, BackupTimeThread)
+        from ui.dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
+                                AlarmIdConfigDialog, BackupTimeDialog,
+                                FeatureFlagDialog)
+        from ui.panels.search_panel import SearchPanel
+        from ui.panels.left_panel import LeftPanel
+        from ui.panels.bdt_validation_panel import BdtValidationPanel
+        from ui.panels.bdt_detail_panel import BdtDetailPanel
+        from core.filters import compute_date_mask, parse_manual_days
+        from core.classify import classify_by_alarm_id, compute_site_down_flag
+        from data.loaders import discover_alarm_files
+        from data import state
+        from data.sync import LocalSyncWorker
+        from data.site_report import (
+            read_site_sheet,
+            build_site_alarm_report,
+            collect_site_sheet_keys,
+        )
+        from bdt.parser import parse_bdt_file, BDTData, load_bdt_photos
+        from bdt.validator import validate_bdt, ValidationResult
+        from bdt.export import build_bdt_export_sheets
 
 
 class AlarmViewer(QMainWindow):
