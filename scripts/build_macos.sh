@@ -39,7 +39,8 @@ pyinstaller \
   --name "AlarmViewer" \
   --icon "assets/app_icon.icns" \
   --add-data "assets/app_icon.png:assets" \
-  --paths "." \
+  --paths ".." \
+  --collect-submodules alarm_app \
   --distpath "dist" \
   --workpath "build" \
   --specpath "." \

@@ -40,7 +40,8 @@ pyinstaller ^
     --name "AlarmViewer" ^
     --icon alarm_app\assets\app_icon.ico ^
     --add-data "alarm_app\assets\app_icon.png;assets" ^
-    --paths alarm_app ^
+    --paths . ^
+    --collect-submodules alarm_app ^
     --distpath alarm_app\dist ^
     --workpath alarm_app\build ^
     --specpath alarm_app ^
@@ -49,7 +50,7 @@ pyinstaller ^
     --hidden-import xlrd ^
     --hidden-import pyarrow ^
     --hidden-import python_calamine ^
-    alarm_app\main.py
+    alarm_app\scripts\pyinstaller_entry.py
 
 echo.
 echo [4/5] Cleaning up build artefacts...

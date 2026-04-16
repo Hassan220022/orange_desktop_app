@@ -41,7 +41,8 @@ jobs:
             --name AlarmViewer `
             --icon assets/app_icon.ico `
             --add-data "assets/app_icon.png;assets" `
-            --paths . `
+            --paths .. `
+            --collect-submodules alarm_app `
             --distpath dist `
             --workpath build `
             --specpath . `
@@ -50,7 +51,7 @@ jobs:
             --hidden-import xlrd `
             --hidden-import pyarrow `
             --hidden-import python_calamine `
-            main.py
+            scripts/pyinstaller_entry.py
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
