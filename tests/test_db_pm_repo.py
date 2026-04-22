@@ -104,3 +104,5 @@ class TestPMRepo:
         assert results[0].filename == "original_test_bdt.xlsx"
         assert results[0].bdt_data is not None
         assert results[0].bdt_data.file_path == "/tmp/original_test_bdt.xlsx"
+        assert results[0].rules[0].rule_id == "R1"
+        assert results[0].rules[0].rule_name == "Photos"

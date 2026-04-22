@@ -187,7 +187,7 @@ class AlarmViewer(QMainWindow):
 
         self._workspace_defs = (
             {"label": "Alarms", "nav": "Alarms"},
-            {"label": "Test Validation", "nav": "BDT"},
+            {"label": "Battery Discharge Tests", "nav": "BDT"},
         )
 
         self._activity_bar = self._make_activity_bar()
@@ -342,23 +342,15 @@ class AlarmViewer(QMainWindow):
             "color:#89b4fa; font-size:14px; background:transparent;")
         l.addWidget(dot)
 
-        name = QLabel(APP_NAME)
-        name.setObjectName("lbl_app_name")
-        l.addWidget(name)
-
-        ver = QLabel(f"v{APP_VERSION}")
-        ver.setObjectName("lbl_app_ver")
-        l.addWidget(ver)
-
         self._lbl_workspace = QLabel(self._workspace_defs[0]["label"])
-        self._lbl_workspace.setObjectName("lbl_workspace_tag")
+        self._lbl_workspace.setObjectName("lbl_app_name")
         l.addWidget(self._lbl_workspace)
 
-        btn_review = QPushButton("Daily Report")
-        btn_review.setObjectName("btn_dir")
-        btn_review.clicked.connect(
+        self._btn_daily_report = QPushButton("Daily Report")
+        self._btn_daily_report.setObjectName("btn_dir")
+        self._btn_daily_report.clicked.connect(
             lambda: DailyReviewReportDialog(self).exec_())
-        l.addWidget(btn_review)
+        l.addWidget(self._btn_daily_report)
 
         l.addStretch()
 
@@ -429,12 +421,22 @@ class AlarmViewer(QMainWindow):
             self._save_ui_state()
 
     def _apply_workspace_state(self, index: int):
+        is_bdt = index == 1
         if hasattr(self, "_sidebar_stack"):
             self._sidebar_stack.setCurrentIndex(index)
         if hasattr(self, "_lbl_workspace"):
             self._lbl_workspace.setText(self._workspace_defs[index]["label"])
+            self._lbl_workspace.setVisible(True)
+        if hasattr(self, "_btn_daily_report"):
+            self._btn_daily_report.setVisible(not is_bdt)
+        if hasattr(self, "_chk_skip_photos"):
+            self._chk_skip_photos.setVisible(not is_bdt)
+        if hasattr(self, "_lbl_count"):
+            self._lbl_count.setVisible(not is_bdt)
         for btn_index, btn in enumerate(getattr(self, "_workspace_buttons", [])):
             btn.setChecked(btn_index == index)
+        if is_bdt and hasattr(self, "_bdt_sidebar"):
+            self._bdt_sidebar._sync_skip_photos_from_viewer()
 
     def _on_workspace_changed(self, index: int):
         if 0 <= index < len(self._workspace_defs):

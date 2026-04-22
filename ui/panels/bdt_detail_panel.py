@@ -22,17 +22,20 @@ try:
     from ...bdt.validator import ValidationResult
     from ...data.alarm_store import load_alarm_slice_for_bdt
     from ...data import state
+    from ...constants import format_bdt_rule_label
 except ImportError:
     try:
         from alarm_app.bdt.parser import BDTData, load_bdt_photos
         from alarm_app.bdt.validator import ValidationResult
         from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
         from alarm_app.data import state
+        from alarm_app.constants import format_bdt_rule_label
     except ImportError:
         from bdt.parser import BDTData, load_bdt_photos
         from bdt.validator import ValidationResult
         from data.alarm_store import load_alarm_slice_for_bdt
         from data import state
+        from constants import format_bdt_rule_label
 
 
 class BdtDetailPanel(QWidget):
@@ -228,6 +231,7 @@ class BdtDetailPanel(QWidget):
         # the vertical real estate.
         self._bdt_door_section_label = QLabel("DOOR ALARM HISTORY")
         self._bdt_door_section_label.setObjectName("bdt_section_title")
+        self._bdt_door_section_label.setVisible(False)
         center_lay.addWidget(self._bdt_door_section_label)
 
         self._bdt_door_table = QTableWidget(0, 4)
@@ -248,11 +252,13 @@ class BdtDetailPanel(QWidget):
 
         self._bdt_door_empty = QLabel("—  no door alarms for this test date")
         self._bdt_door_empty.setObjectName("bdt_empty_hint")
+        self._bdt_door_empty.setVisible(False)
         center_lay.addWidget(self._bdt_door_empty)
 
         # ── Test History Comparison ────────────────────────────────
         self._bdt_hist_section_label = QLabel("TEST HISTORY COMPARISON")
         self._bdt_hist_section_label.setObjectName("bdt_section_title")
+        self._bdt_hist_section_label.setVisible(False)
         center_lay.addWidget(self._bdt_hist_section_label)
 
         self._bdt_history_table = QTableWidget(0, 3)
@@ -274,6 +280,7 @@ class BdtDetailPanel(QWidget):
             "—  no previous test history found")
         self._bdt_history_label.setObjectName("bdt_empty_hint")
         self._bdt_history_label.setWordWrap(True)
+        self._bdt_history_label.setVisible(False)
         center_lay.addWidget(self._bdt_history_label)
 
         self._bdt_detail_splitter.addWidget(center)
@@ -467,7 +474,7 @@ class BdtDetailPanel(QWidget):
         for r, rule in enumerate(res.rules):
             items = [
                 QTableWidgetItem(rule.rule_id),
-                QTableWidgetItem(rule.rule_name),
+                QTableWidgetItem(format_bdt_rule_label(rule.rule_id, rule.rule_name)),
                 QTableWidgetItem(rule.verdict),
                 QTableWidgetItem(rule.detail),
             ]
@@ -515,11 +522,8 @@ class BdtDetailPanel(QWidget):
             except Exception:
                 pass  # Graceful fallback if alarm data unavailable
 
-        # Collapse the door section to its empty-hint when there's no data,
-        # so Validation Rules above doesn't get squished by an empty table.
         has_doors = self._bdt_door_table.rowCount() > 0
-        self._bdt_door_table.setVisible(has_doors)
-        self._bdt_door_empty.setVisible(not has_doors)
+        self._sync_optional_sections(has_doors=has_doors, has_history=False)
 
         # ── Populate test history comparison ──────────────────
         self._bdt_history_table.setRowCount(0)
@@ -598,10 +602,8 @@ class BdtDetailPanel(QWidget):
                 logging.getLogger(__name__).warning(
                     "History comparison failed for site %s", bdt.site_code, exc_info=True)
 
-        # Collapse the history section to its empty-hint when there's no
-        # previous record — keeps the Validation Rules table tall.
         has_history = self._bdt_history_table.rowCount() > 0
-        self._bdt_history_table.setVisible(has_history)
+        self._sync_optional_sections(has_doors=has_doors, has_history=has_history)
 
         # ── Photos (lazy-load if skipped during batch validation) ──
         if bdt:
@@ -611,6 +613,14 @@ class BdtDetailPanel(QWidget):
         # ── Photo comparison setup ──
         self._current_bdt = bdt
         self._setup_photo_comparison(bdt)
+
+    def _sync_optional_sections(self, *, has_doors: bool, has_history: bool):
+        self._bdt_door_section_label.setVisible(has_doors)
+        self._bdt_door_table.setVisible(has_doors)
+        self._bdt_door_empty.setVisible(False)
+        self._bdt_hist_section_label.setVisible(has_history)
+        self._bdt_history_table.setVisible(has_history)
+        self._bdt_history_label.setVisible(has_history)
 
     @staticmethod
     def _load_door_alarm_subset(site_code: str, test_date: pd.Timestamp) -> pd.DataFrame:

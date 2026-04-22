@@ -7,7 +7,7 @@ import pandas as pd
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QPushButton, QLineEdit, QCheckBox, QScrollArea, QWidget,
-    QTableWidget, QTableWidgetItem,
+    QTableWidget, QTableWidgetItem, QSpinBox,
     QFileDialog, QMessageBox, QAbstractItemView, QHeaderView,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -334,12 +334,34 @@ class AlarmIdConfigDialog(QDialog):
 class FeatureFlagDialog(QDialog):
     """Toggle feature flags: sync_on, cloud_read_on, bootstrap_on."""
 
+    _STYLE = """
+    QCheckBox {
+        color:#cdd6f4;
+        font-size:13px;
+        spacing:8px;
+        background:transparent;
+        padding:4px 0;
+    }
+    QCheckBox::indicator {
+        width:16px;
+        height:16px;
+        border-radius:4px;
+        border:1px solid #3a3a52;
+        background:#13131f;
+    }
+    QCheckBox::indicator:checked {
+        background:#1a2744;
+        border-color:#89b4fa;
+    }
+    """
+
     def __init__(self, flags: dict, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Feature Flags")
         self.setFixedWidth(300)
         if parent:
             self.setStyleSheet(parent.styleSheet())
+        self.setStyleSheet(self.styleSheet() + self._STYLE)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
@@ -352,6 +374,7 @@ class FeatureFlagDialog(QDialog):
             ("bootstrap_on", "Bootstrap backfill"),
         ]:
             cb = QCheckBox(label)
+            cb.setObjectName("feature_flag_toggle")
             cb.setChecked(bool(flags.get(key, False)))
             self._checks[key] = cb
             layout.addWidget(cb)
@@ -369,6 +392,96 @@ class FeatureFlagDialog(QDialog):
 
     def get_flags(self) -> dict:
         return {k: cb.isChecked() for k, cb in self._checks.items()}
+
+
+class BdtParametersDialog(QDialog):
+    """Edit BDT validation parameters with inline explanations."""
+
+    def __init__(self, *, tolerance_pct: int, health_pct: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("BDT Validation Parameters")
+        self.setMinimumWidth(520)
+        if parent:
+            self.setStyleSheet(parent.styleSheet())
+        self._build(tolerance_pct, health_pct)
+
+    def _build(self, tolerance_pct: int, health_pct: int):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(12)
+
+        intro = QLabel(
+            "These parameters affect how BDT files are validated against the discharge table "
+            "and theoretical battery sizing calculations."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#6c7086; font-size:12px; background:transparent;")
+        lay.addWidget(intro)
+
+        tol_card = QFrame()
+        tol_card.setObjectName("workspace_card")
+        tol_lay = QVBoxLayout(tol_card)
+        tol_lay.setContentsMargins(12, 12, 12, 12)
+        tol_lay.setSpacing(8)
+        tol_title = QLabel("Tolerance")
+        tol_title.setObjectName("workspace_card_title")
+        tol_lay.addWidget(tol_title)
+        self._spn_tolerance = QSpinBox()
+        self._spn_tolerance.setRange(10, 20)
+        self._spn_tolerance.setValue(int(tolerance_pct))
+        self._spn_tolerance.setSuffix(" %")
+        self._spn_tolerance.setObjectName("filter_spin")
+        tol_lay.addWidget(self._spn_tolerance)
+        tol_help = QLabel(
+            "Allowed variance between the discharge duration written in the BDT sheet and the "
+            "duration reconstructed from the discharge table. This is used by Rule R4. "
+            "Example: 15% means the sheet can differ from the table by up to 15% before the "
+            "result is marked for revision."
+        )
+        tol_help.setWordWrap(True)
+        tol_help.setStyleSheet("color:#6c7086; font-size:11px; background:transparent;")
+        tol_lay.addWidget(tol_help)
+        lay.addWidget(tol_card)
+
+        health_card = QFrame()
+        health_card.setObjectName("workspace_card")
+        health_lay = QVBoxLayout(health_card)
+        health_lay.setContentsMargins(12, 12, 12, 12)
+        health_lay.setSpacing(8)
+        health_title = QLabel("Health")
+        health_title.setObjectName("workspace_card_title")
+        health_lay.addWidget(health_title)
+        self._spn_health = QSpinBox()
+        self._spn_health.setRange(50, 100)
+        self._spn_health.setValue(int(health_pct))
+        self._spn_health.setSuffix(" %")
+        self._spn_health.setObjectName("filter_spin")
+        health_lay.addWidget(self._spn_health)
+        health_help = QLabel(
+            "Assumed usable battery efficiency for lead-acid sizing checks. This is used when "
+            "estimating theoretical backup time for Rule R8. Example: 80% means the app treats "
+            "the battery as delivering 80% of nominal capacity. Lithium batteries are handled "
+            "differently and do not use the same reduction."
+        )
+        health_help.setWordWrap(True)
+        health_help.setStyleSheet("color:#6c7086; font-size:11px; background:transparent;")
+        health_lay.addWidget(health_help)
+        lay.addWidget(health_card)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setObjectName("btn_clear")
+        btn_cancel.clicked.connect(self.reject)
+        btn_save = QPushButton("Save")
+        btn_save.setObjectName("btn_search")
+        btn_save.clicked.connect(self.accept)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_save)
+        lay.addLayout(btn_row)
+
+    def get_values(self) -> tuple[int, int]:
+        return self._spn_tolerance.value(), self._spn_health.value()
 
 
 class BackupTimeDialog(QDialog):

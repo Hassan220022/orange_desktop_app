@@ -4,6 +4,7 @@ BdtWorkspacePanel — VS Code-style sidebar for the test validation workspace.
 
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -148,6 +149,23 @@ class BdtWorkspacePanel(QWidget):
 
         lay.addWidget(actions_card)
 
+        options_card = QFrame()
+        options_card.setObjectName("workspace_card")
+        options_lay = QVBoxLayout(options_card)
+        options_lay.setContentsMargins(12, 12, 12, 12)
+        options_lay.setSpacing(8)
+
+        options_title = QLabel("Options")
+        options_title.setObjectName("workspace_card_title")
+        options_lay.addWidget(options_title)
+
+        self.chk_skip_photos = QCheckBox("Skip Photos")
+        self.chk_skip_photos.setChecked(self._viewer._skip_photos)
+        self.chk_skip_photos.toggled.connect(self._sync_skip_photos_to_viewer)
+        options_lay.addWidget(self.chk_skip_photos)
+
+        lay.addWidget(options_card)
+
         status_card = QFrame()
         status_card.setObjectName("workspace_card")
         status_lay = QVBoxLayout(status_card)
@@ -172,6 +190,7 @@ class BdtWorkspacePanel(QWidget):
             self._sync_from_main_panel
         )
         self._sync_from_main_panel()
+        self._sync_skip_photos_from_viewer()
 
     def _sync_to_main_panel(self, index: int):
         main_combo = self._viewer._bdt_validation_panel.cmb_bdt_source
@@ -183,3 +202,16 @@ class BdtWorkspacePanel(QWidget):
         index = main_combo.currentIndex()
         if self.cmb_bdt_source.currentIndex() != index:
             self.cmb_bdt_source.setCurrentIndex(index)
+
+    def _sync_skip_photos_to_viewer(self, checked: bool):
+        viewer_chk = getattr(self._viewer, "_chk_skip_photos", None)
+        if viewer_chk is not None and viewer_chk.isChecked() != checked:
+            viewer_chk.setChecked(checked)
+        else:
+            self._viewer._toggle_skip_photos(checked)
+
+    def _sync_skip_photos_from_viewer(self):
+        checked = bool(getattr(self._viewer, "_skip_photos", False))
+        self.chk_skip_photos.blockSignals(True)
+        self.chk_skip_photos.setChecked(checked)
+        self.chk_skip_photos.blockSignals(False)

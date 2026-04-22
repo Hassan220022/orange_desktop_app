@@ -10,28 +10,18 @@ from alarm_app.db.models import (
     PMValidationRun, PMRuleResult, PMRuleCatalog, PMParameterSet,
 )
 from alarm_app.db.hashing import compute_canonical_json_sha256
+from alarm_app.constants import BDT_RULE_NAME_BY_CODE
 
 
 def get_or_create_rule_catalog(session: Session) -> dict[str, int]:
     """Ensure R1-R11 exist in pm_rule_catalog. Return {rule_code: id} map."""
-    rules = {
-        "R1": "Photo completeness",
-        "R2": "Power alarm match and duration",
-        "R3": "String vs bus bar ampere",
-        "R4": "Discharge table consistency",
-        "R5": "Starting ampere",
-        "R6": "End voltage range",
-        "R7": "Voltage/ampere inverse relationship",
-        "R8": "Backup time vs sizing",
-        "R9": "Discharge current tolerance",
-        "R10": "Door alarm match",
-        "R11": "Summary checklist",
-    }
     result = {}
     seeded = 0
-    for code, name in rules.items():
+    for code, name in BDT_RULE_NAME_BY_CODE.items():
         existing = session.query(PMRuleCatalog).filter_by(rule_code=code).first()
         if existing:
+            if existing.name != name:
+                existing.name = name
             result[code] = existing.id
         else:
             r = PMRuleCatalog(rule_code=code, name=name)
@@ -168,7 +158,7 @@ def load_all_validation_results(session: Session) -> list:
 
     # Build rule_id -> rule_code map
     catalog_rows = session.query(PMRuleCatalog).all()
-    id_to_code = {r.id: r.rule_code for r in catalog_rows}
+    id_to_catalog = {r.id: (r.rule_code, r.name) for r in catalog_rows}
 
     runs = (
         session.query(PMValidationRun)
@@ -260,7 +250,7 @@ def load_all_validation_results(session: Session) -> list:
         # Reconstruct rule results
         rule_results = []
         for rr in sorted(run.rule_results, key=lambda r: r.rule_id):
-            code = id_to_code.get(rr.rule_id, f"R{rr.rule_id}")
+            code, catalog_name = id_to_catalog.get(rr.rule_id, (f"R{rr.rule_id}", ""))
             detail = ""
             if rr.evidence_json:
                 try:
@@ -269,7 +259,7 @@ def load_all_validation_results(session: Session) -> list:
                     detail = rr.evidence_json
             rule_results.append(RuleResult(
                 rule_id=code,
-                rule_name=code,
+                rule_name=catalog_name or BDT_RULE_NAME_BY_CODE.get(code, code),
                 passed=rr.verdict == "Accepted" if rr.verdict else None,
                 verdict=rr.verdict or "N/A",
                 detail=str(detail),

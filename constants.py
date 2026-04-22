@@ -114,6 +114,15 @@ BDT_RULES = [
     ("R10", "Door Alarm Condition"),
     ("R11", "Summary Checklist"),
 ]
+BDT_RULE_NAME_BY_CODE = dict(BDT_RULES)
+
+
+def format_bdt_rule_label(rule_code: str, rule_name: str | None = None) -> str:
+    code = str(rule_code or "").strip()
+    if not code:
+        return str(rule_name or "").strip()
+    name = str(rule_name or BDT_RULE_NAME_BY_CODE.get(code, "")).strip()
+    return f"{code} - {name}" if name else code
 
 BDT_RESULT_HEADERS = [
     "File", "Site Code", "Test Date", "Verdict",

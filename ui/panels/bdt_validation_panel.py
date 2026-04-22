@@ -12,39 +12,39 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel,
     QFrame, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QSizePolicy, QMessageBox,
-    QFileDialog, QComboBox,
+    QFileDialog, QComboBox, QApplication, QDialog,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QSignalBlocker
 from PyQt5.QtGui import QColor
 
 try:
-    from ...constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS
+    from ...constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS, format_bdt_rule_label
     from ..threads import ExportThread, BDTValidationThread
     from ...bdt.parser import BDTData
     from ...bdt.validator import ValidationResult
     from ...bdt.export import build_bdt_export_sheets
-    from ..dialogs import ColumnFilterPopup, DailyReviewReportDialog
+    from ..dialogs import BdtParametersDialog, ColumnFilterPopup, DailyReviewReportDialog
     from ...data import state
     from ...data.alarm_store import AlarmQuery, distinct_values, query_alarms
     from ...data.site_report import read_pm_accept_sheet, build_pm_accept_report
 except ImportError:
     try:
-        from alarm_app.constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS
+        from alarm_app.constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS, format_bdt_rule_label
         from alarm_app.ui.threads import ExportThread, BDTValidationThread
         from alarm_app.bdt.parser import BDTData
         from alarm_app.bdt.validator import ValidationResult
         from alarm_app.bdt.export import build_bdt_export_sheets
-        from alarm_app.ui.dialogs import ColumnFilterPopup, DailyReviewReportDialog
+        from alarm_app.ui.dialogs import BdtParametersDialog, ColumnFilterPopup, DailyReviewReportDialog
         from alarm_app.data import state
         from alarm_app.data.alarm_store import AlarmQuery, distinct_values, query_alarms
         from alarm_app.data.site_report import read_pm_accept_sheet, build_pm_accept_report
     except ImportError:
-        from constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS
+        from constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS, format_bdt_rule_label
         from ui.threads import ExportThread, BDTValidationThread
         from bdt.parser import BDTData
         from bdt.validator import ValidationResult
         from bdt.export import build_bdt_export_sheets
-        from ui.dialogs import ColumnFilterPopup, DailyReviewReportDialog
+        from ui.dialogs import BdtParametersDialog, ColumnFilterPopup, DailyReviewReportDialog
         from data import state
         from data.alarm_store import AlarmQuery, distinct_values, query_alarms
         from data.site_report import read_pm_accept_sheet, build_pm_accept_report
@@ -59,6 +59,9 @@ class BdtValidationPanel(QWidget):
         super().__init__(parent)
         self._viewer = viewer
         self._bdt_col_filters: dict[str, set[str] | None] = {}
+        self._bdt_page_size = 500
+        self._bdt_page_offset = 0
+        self._bdt_filtered_results: list = []
         self._build(viewer)
 
     # ------------------------------------------------------------------
@@ -89,55 +92,42 @@ class BdtValidationPanel(QWidget):
         header_row = QHBoxLayout()
         header_row.setSpacing(10)
 
-        # ACTION group
-        action_group, action_row = _make_group("ACTION")
-        btn_validate = QPushButton("Validate")
-        btn_validate.setObjectName("btn_search")
-        btn_validate.setCursor(Qt.PointingHandCursor)
-        btn_validate.setMinimumWidth(0)
-        btn_validate.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        btn_validate.clicked.connect(self._run_validation)
-        action_row.addWidget(btn_validate)
-
-        btn_pm_accept = QPushButton("Accepted PM Report")
-        btn_pm_accept.setObjectName("btn_export")
-        btn_pm_accept.setCursor(Qt.PointingHandCursor)
-        btn_pm_accept.setMinimumWidth(0)
-        btn_pm_accept.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        btn_pm_accept.clicked.connect(self._generate_pm_accept_report)
-        action_row.addWidget(btn_pm_accept)
-        self.btn_pm_accept_report = btn_pm_accept
-
-        header_row.addWidget(action_group)
-
         # PARAMETERS group
         params_group, params_row = _make_group("PARAMETERS")
 
-        params_row.addWidget(_inline_label("Tolerance"))
         self.spn_tolerance = QSpinBox()
         self.spn_tolerance.setObjectName("filter_spin")
         self.spn_tolerance.setRange(10, 20)
         self.spn_tolerance.setValue(15)
         self.spn_tolerance.setSuffix(" %")
         self.spn_tolerance.setFixedWidth(82)
-        params_row.addWidget(self.spn_tolerance)
+        self.spn_tolerance.setVisible(False)
 
-        params_row.addWidget(_inline_label("Health"))
         self.spn_health = QSpinBox()
         self.spn_health.setObjectName("filter_spin")
         self.spn_health.setRange(50, 100)
         self.spn_health.setValue(80)
         self.spn_health.setSuffix(" %")
         self.spn_health.setFixedWidth(82)
-        params_row.addWidget(self.spn_health)
+        self.spn_health.setVisible(False)
 
-        params_row.addWidget(_inline_label("Source"))
         self.cmb_bdt_source = QComboBox()
         self.cmb_bdt_source.setObjectName("filter_combo")
         self.cmb_bdt_source.addItem("Directory", "directory")
         self.cmb_bdt_source.addItem("DB", "db")
         self.cmb_bdt_source.addItem("Both (Verify)", "both")
-        params_row.addWidget(self.cmb_bdt_source)
+        self.cmb_bdt_source.setVisible(False)
+        self.btn_parameters = QPushButton("Open Parameters")
+        self.btn_parameters.setObjectName("btn_dir")
+        self.btn_parameters.clicked.connect(self._show_parameters_dialog)
+        params_row.addWidget(self.btn_parameters)
+
+        self._lbl_param_summary = QLabel("")
+        self._lbl_param_summary.setWordWrap(True)
+        self._lbl_param_summary.setObjectName("lbl_dim")
+        self._lbl_param_summary.setStyleSheet("color:#6c7086; font-size:11px; background:transparent;")
+        params_group.layout().addWidget(self._lbl_param_summary)
+        self._refresh_parameter_summary()
 
         header_row.addWidget(params_group)
 
@@ -164,7 +154,7 @@ class BdtValidationPanel(QWidget):
         # Results table
         cols = BDT_RESULT_HEADERS
         self.bdt_table = QTableWidget(0, len(cols))
-        self.bdt_table.setHorizontalHeaderLabels(cols)
+        self.bdt_table.setHorizontalHeaderLabels([self._display_header_name(col) for col in cols])
         self.bdt_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.bdt_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.bdt_table.setAlternatingRowColors(True)
@@ -180,6 +170,7 @@ class BdtValidationPanel(QWidget):
         hdr.setStretchLastSection(True)
         hdr.sectionClicked.connect(self._on_bdt_header_clicked)
         self.bdt_table.clicked.connect(self._on_bdt_row_clicked)
+        self.bdt_table.doubleClicked.connect(self._copy_bdt_cell)
         self.bdt_splitter.addWidget(self.bdt_table)
 
         # Detail panel slot (will be filled by viewer via set_detail_panel)
@@ -189,27 +180,35 @@ class BdtValidationPanel(QWidget):
 
         # Bottom bar
         bot = QHBoxLayout()
+        self._btn_bdt_prev_page = QPushButton("Prev")
+        self._btn_bdt_prev_page.clicked.connect(self._load_previous_bdt_page)
+        bot.addWidget(self._btn_bdt_prev_page)
+
+        self._btn_bdt_next_page = QPushButton("Next")
+        self._btn_bdt_next_page.clicked.connect(self._load_next_bdt_page)
+        bot.addWidget(self._btn_bdt_next_page)
+
+        self._lbl_bdt_page = QLabel("Page 0/0")
+        self._lbl_bdt_page.setObjectName("lbl_dim")
+        bot.addWidget(self._lbl_bdt_page)
+
+        self._lbl_bdt_page_range = QLabel("Rows 0-0 of 0")
+        self._lbl_bdt_page_range.setObjectName("lbl_dim")
+        bot.addWidget(self._lbl_bdt_page_range)
+
         self.bdt_summary = QLabel("")
         self.bdt_summary.setStyleSheet(
             "color:#6c7086; font-size:12px; background:transparent;")
         bot.addWidget(self.bdt_summary)
         bot.addStretch()
-
-        self.btn_bdt_export = QPushButton("Export Results XLSX")
-        self.btn_bdt_export.setObjectName("btn_export")
-        self.btn_bdt_export.setMinimumWidth(0)
-        self.btn_bdt_export.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        self.btn_bdt_export.clicked.connect(self._export_bdt_results)
-        bot.addWidget(self.btn_bdt_export)
-
-        self.btn_bdt_report = QPushButton("Daily Report")
-        self.btn_bdt_report.setObjectName("btn_dir")
-        self.btn_bdt_report.setMinimumWidth(0)
-        self.btn_bdt_report.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        self.btn_bdt_report.clicked.connect(self._show_daily_review_report)
-        bot.addWidget(self.btn_bdt_report)
-
         lay.addLayout(bot)
+
+        self.btn_pm_accept_report = QPushButton("Accepted PM Report")
+        self.btn_pm_accept_report.setVisible(False)
+        self.btn_bdt_export = QPushButton("Export Results XLSX")
+        self.btn_bdt_export.setVisible(False)
+        self.btn_bdt_report = QPushButton("Daily Report")
+        self.btn_bdt_report.setVisible(False)
 
     @staticmethod
     def _reference_alarm_sites_df() -> pd.DataFrame:
@@ -445,11 +444,26 @@ class BdtValidationPanel(QWidget):
     def set_results(self, results: list):
         """Load validation results (e.g. restored from DB) and populate the table."""
         self._viewer._bdt_results = results
+        self._bdt_page_offset = 0
         self._populate_bdt_table()
 
     def _populate_bdt_table(self):
         results = self._viewer._bdt_results
-        self.bdt_table.setRowCount(len(results))
+        filtered_results = self._filtered_bdt_results_for_text(self.bdt_search.text())
+        self._bdt_filtered_results = filtered_results
+        total = len(filtered_results)
+        page_size = max(int(self._bdt_page_size), 1)
+        max_offset = ((total - 1) // page_size) * page_size if total > 0 else 0
+        self._bdt_page_offset = min(max(int(self._bdt_page_offset), 0), max_offset)
+        page_results = filtered_results[self._bdt_page_offset:self._bdt_page_offset + page_size]
+        blocker = QSignalBlocker(self.bdt_table) if hasattr(self.bdt_table, "blockSignals") else None
+        if hasattr(self.bdt_table, "setUpdatesEnabled"):
+            self.bdt_table.setUpdatesEnabled(False)
+        if hasattr(self.bdt_table, "clearSelection"):
+            self.bdt_table.clearSelection()
+        if hasattr(self.bdt_table, "clearContents"):
+            self.bdt_table.clearContents()
+        self.bdt_table.setRowCount(len(page_results))
 
         colors = {
             "Accepted":      QColor("#a6e3a1"),
@@ -459,7 +473,7 @@ class BdtValidationPanel(QWidget):
             "No alarm data": QColor("#45475a"),
         }
 
-        for r, res in enumerate(results):
+        for r, res in enumerate(page_results):
             row_map = self._row_map_for_result(res)
 
             for c, col_name in enumerate(BDT_RESULT_HEADERS):
@@ -469,6 +483,10 @@ class BdtValidationPanel(QWidget):
                 if col_name == "Verdict" or col_name.startswith("R"):
                     item.setForeground(colors.get(val, QColor("#cdd6f4")))
                 self.bdt_table.setItem(r, c, item)
+        if blocker is not None:
+            del blocker
+        if hasattr(self.bdt_table, "setUpdatesEnabled"):
+            self.bdt_table.setUpdatesEnabled(True)
 
         all_rules = [rule for r in results for rule in r.rules]
         n_acc = sum(1 for r in all_rules if r.verdict == "Accepted")
@@ -480,8 +498,7 @@ class BdtValidationPanel(QWidget):
             f" &middot; <span style='color:#fab387;'>{n_rev} Revise</span>"
             f" &middot; <span style='color:#6c7086;'>"
             f"{len(results)} files</span>")
-
-        self._filter_bdt_table(self.bdt_search.text())
+        self._update_bdt_pagination_controls()
 
     def _row_map_for_result(self, res) -> dict[str, str]:
         row_map = {
@@ -498,6 +515,12 @@ class BdtValidationPanel(QWidget):
         return row_map
 
     @staticmethod
+    def _display_header_name(col_name: str) -> str:
+        if col_name.startswith("R") and col_name[1:].isdigit():
+            return format_bdt_rule_label(col_name)
+        return col_name
+
+    @staticmethod
     def _rule_cell_text(rule) -> str:
         if (rule.verdict == "N/A"
                 and "no alarm data" in str(rule.detail).lower()):
@@ -506,6 +529,24 @@ class BdtValidationPanel(QWidget):
 
     def _current_source_mode(self) -> str:
         return str(self.cmb_bdt_source.currentData() or "directory")
+
+    def _refresh_parameter_summary(self):
+        self._lbl_param_summary.setText(
+            f"Tolerance {self.spn_tolerance.value()}% for Rule R4 discharge-table matching. "
+            f"Health {self.spn_health.value()}% for Rule R8 battery sizing."
+        )
+
+    def _show_parameters_dialog(self):
+        dlg = BdtParametersDialog(
+            tolerance_pct=self.spn_tolerance.value(),
+            health_pct=self.spn_health.value(),
+            parent=self,
+        )
+        if dlg.exec_() == QDialog.Accepted:
+            tolerance_pct, health_pct = dlg.get_values()
+            self.spn_tolerance.setValue(tolerance_pct)
+            self.spn_health.setValue(health_pct)
+            self._refresh_parameter_summary()
 
     @staticmethod
     def _result_identity(res) -> tuple[str, str, str]:
@@ -562,17 +603,15 @@ class BdtValidationPanel(QWidget):
             return "--"
         return f"{soh:.0f}"
 
-    def _filter_bdt_table(self, text: str):
+    def _filtered_bdt_results_for_text(self, text: str) -> list:
         text = text.strip()
 
         text_lower = text.lower()
         is_year = re.fullmatch(r"\d{4}", text)
         is_date = re.fullmatch(r"\d{4}-\d{2}-\d{2}", text)
+        filtered: list = []
 
-        for r in range(self.bdt_table.rowCount()):
-            if r >= len(self._viewer._bdt_results):
-                break
-            res = self._viewer._bdt_results[r]
+        for res in self._viewer._bdt_results:
             row_map = self._row_map_for_result(res)
             show = True
 
@@ -594,8 +633,13 @@ class BdtValidationPanel(QWidget):
                     if str(row_map.get(col_name, "--")) not in allowed:
                         show = False
                         break
+            if show:
+                filtered.append(res)
+        return filtered
 
-            self.bdt_table.setRowHidden(r, not show)
+    def _filter_bdt_table(self, text: str):
+        self._bdt_page_offset = 0
+        self._populate_bdt_table()
 
     def _on_bdt_header_clicked(self, logical_index: int):
         if logical_index >= len(BDT_RESULT_HEADERS) or not self._viewer._bdt_results:
@@ -610,7 +654,7 @@ class BdtValidationPanel(QWidget):
         )
         popup = ColumnFilterPopup(
             col_name,
-            col_name,
+            self._display_header_name(col_name),
             unique,
             self._bdt_col_filters.get(col_name),
             self._sort_bdt_column,
@@ -631,6 +675,7 @@ class BdtValidationPanel(QWidget):
             key=lambda res: str(self._row_map_for_result(res).get(col_name, "--")).lower(),
             reverse=reverse,
         )
+        self._bdt_page_offset = 0
         self._populate_bdt_table()
 
     def _on_bdt_col_filter_applied(self, col_name: str, selected):
@@ -638,13 +683,15 @@ class BdtValidationPanel(QWidget):
             self._bdt_col_filters.pop(col_name, None)
         else:
             self._bdt_col_filters[col_name] = {str(value) for value in selected}
+        self._bdt_page_offset = 0
         self._filter_bdt_table(self.bdt_search.text())
 
     def _on_bdt_row_clicked(self, index):
         row = index.row()
-        if row >= len(self._viewer._bdt_results):
+        absolute_row = self._bdt_page_offset + row
+        if absolute_row >= len(self._bdt_filtered_results):
             return
-        res = self._viewer._bdt_results[row]
+        res = self._bdt_filtered_results[absolute_row]
         self._record_review_event(res)
 
         if self._detail_panel_placeholder and not self._detail_panel_placeholder.isVisible():
@@ -658,6 +705,49 @@ class BdtValidationPanel(QWidget):
             self.bdt_splitter.setSizes([table_h, total - table_h])
 
         self.row_selected.emit(res)
+
+    def _update_bdt_pagination_controls(self):
+        total = len(self._bdt_filtered_results)
+        page_size = max(int(self._bdt_page_size), 1)
+        offset = max(int(self._bdt_page_offset), 0)
+        if total <= 0:
+            start = 0
+            end = 0
+            page_no = 0
+            total_pages = 0
+        else:
+            start = offset + 1
+            end = min(offset + self.bdt_table.rowCount(), total)
+            page_no = (offset // page_size) + 1
+            total_pages = ((total - 1) // page_size) + 1
+        self._lbl_bdt_page.setText(f"Page {page_no}/{total_pages}")
+        self._lbl_bdt_page_range.setText(f"Rows {start:,}-{end:,} of {total:,}")
+        self._btn_bdt_prev_page.setEnabled(offset > 0)
+        self._btn_bdt_next_page.setEnabled(total > 0 and offset + self.bdt_table.rowCount() < total)
+
+    def _load_previous_bdt_page(self):
+        self._bdt_page_offset = max(self._bdt_page_offset - self._bdt_page_size, 0)
+        self._populate_bdt_table()
+
+    def _load_next_bdt_page(self):
+        total = len(self._bdt_filtered_results)
+        if total <= 0:
+            return
+        max_offset = ((total - 1) // self._bdt_page_size) * self._bdt_page_size
+        self._bdt_page_offset = min(self._bdt_page_offset + self._bdt_page_size, max_offset)
+        self._populate_bdt_table()
+
+    def _copy_bdt_cell(self, index):
+        if not index.isValid():
+            return
+        item = self.bdt_table.item(index.row(), index.column())
+        if item is None:
+            return
+        value = (item.text() or "").strip()
+        if not value:
+            return
+        QApplication.clipboard().setText(value)
+        self._viewer._sbar.showMessage(f"Copied: {value[:80]}", 2000)
 
     # ------------------------------------------------------------------
     # Export
