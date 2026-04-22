@@ -75,6 +75,13 @@ class BdtDetailPanel(QWidget):
         self._bdt_photo_last_viewport_w = 0
         self._build()
 
+    @staticmethod
+    def _display_rule_verdict(rule) -> str:
+        verdict = str(getattr(rule, "verdict", "") or "").strip()
+        if verdict in {"Accepted", "Rejected", "Revise"}:
+            return verdict
+        return "No data"
+
     # ------------------------------------------------------------------
     def _build(self):
         """Build BDT detail panel: info+discharge (left) | rules (center) | photos (right)."""
@@ -468,14 +475,15 @@ class BdtDetailPanel(QWidget):
             "Accepted": QColor("#a6e3a1"),
             "Rejected": QColor("#f38ba8"),
             "Revise":   QColor("#fab387"),
-            "N/A":      QColor("#45475a"),
+            "No data":  QColor("#45475a"),
         }
         self._bdt_rules_table.setRowCount(len(res.rules))
         for r, rule in enumerate(res.rules):
+            visible_verdict = self._display_rule_verdict(rule)
             items = [
                 QTableWidgetItem(rule.rule_id),
                 QTableWidgetItem(format_bdt_rule_label(rule.rule_id, rule.rule_name)),
-                QTableWidgetItem(rule.verdict),
+                QTableWidgetItem(visible_verdict),
                 QTableWidgetItem(rule.detail),
             ]
             for c, item in enumerate(items):
@@ -483,7 +491,7 @@ class BdtDetailPanel(QWidget):
                     item.setTextAlignment(Qt.AlignCenter)
                 if c == 2:
                     item.setForeground(
-                        verdict_colors.get(rule.verdict, QColor("#cdd6f4")))
+                        verdict_colors.get(visible_verdict, QColor("#cdd6f4")))
                 self._bdt_rules_table.setItem(r, c, item)
 
         # ── Parse errors ──

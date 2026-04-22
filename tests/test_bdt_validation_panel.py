@@ -146,6 +146,13 @@ def test_display_header_name_expands_rule_codes():
     assert BdtValidationPanel._display_header_name("Verdict") == "Verdict"
 
 
+def test_rule_cell_text_normalizes_non_primary_verdicts_to_no_data():
+    assert BdtValidationPanel._rule_cell_text(SimpleNamespace(verdict="N/A", detail="No alarm data loaded")) == "No data"
+    assert BdtValidationPanel._rule_cell_text(SimpleNamespace(verdict="N/A", detail="Not enough readings")) == "No data"
+    assert BdtValidationPanel._rule_cell_text(SimpleNamespace(verdict="", detail="")) == "No data"
+    assert BdtValidationPanel._rule_cell_text(SimpleNamespace(verdict="Accepted", detail="ok")) == "Accepted"
+
+
 def test_copy_bdt_cell_copies_value_and_updates_status(monkeypatch):
     copied = {}
     panel = _panel_for([])

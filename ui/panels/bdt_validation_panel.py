@@ -579,8 +579,7 @@ class BdtValidationPanel(QWidget):
             "Accepted":      QColor("#a6e3a1"),
             "Rejected":      QColor("#f38ba8"),
             "Revise":        QColor("#fab387"),
-            "N/A":           QColor("#45475a"),
-            "No alarm data": QColor("#45475a"),
+            "No data":       QColor("#45475a"),
         }
 
         for r, res in enumerate(page_results):
@@ -632,10 +631,10 @@ class BdtValidationPanel(QWidget):
 
     @staticmethod
     def _rule_cell_text(rule) -> str:
-        if (rule.verdict == "N/A"
-                and "no alarm data" in str(rule.detail).lower()):
-            return "No alarm data"
-        return rule.verdict
+        verdict = str(getattr(rule, "verdict", "") or "").strip()
+        if verdict in {"Accepted", "Rejected", "Revise"}:
+            return verdict
+        return "No data"
 
     def _current_source_mode(self) -> str:
         return str(self.cmb_bdt_source.currentData() or "directory")

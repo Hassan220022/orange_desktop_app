@@ -49,3 +49,9 @@ def test_sync_optional_sections_shows_only_sections_with_content():
     assert panel._bdt_hist_section_label.visible is False
     assert panel._bdt_history_table.visible is False
     assert panel._bdt_history_label.visible is False
+
+
+def test_display_rule_verdict_normalizes_non_primary_statuses():
+    assert BdtDetailPanel._display_rule_verdict(SimpleNamespace(verdict="N/A")) == "No data"
+    assert BdtDetailPanel._display_rule_verdict(SimpleNamespace(verdict="")) == "No data"
+    assert BdtDetailPanel._display_rule_verdict(SimpleNamespace(verdict="Accepted")) == "Accepted"
