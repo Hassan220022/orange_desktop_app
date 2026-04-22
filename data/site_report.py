@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any
 
 import pandas as pd
@@ -390,6 +390,64 @@ def _to_date_obj(value: Any) -> date | None:
     return pd.Timestamp(ts).date()
 
 
+def _parse_test_time(raw_time: Any) -> time | None:
+    if raw_time is None:
+        return None
+    try:
+        if pd.isna(raw_time):
+            return None
+    except Exception:
+        pass
+    if isinstance(raw_time, datetime):
+        return raw_time.time().replace(microsecond=0)
+    if hasattr(raw_time, "hour") and hasattr(raw_time, "minute"):
+        try:
+            return raw_time.replace(microsecond=0)
+        except TypeError:
+            return datetime(
+                2000,
+                1,
+                1,
+                raw_time.hour,
+                raw_time.minute,
+                getattr(raw_time, "second", 0),
+            ).time()
+
+    text = str(raw_time).strip()
+    if not text or text.lower() == "nan":
+        return None
+    text = text.replace("\u00a0", " ").replace("\u202f", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    ampm_normalized = text.replace(".", "")
+
+    for fmt in (
+        "%H:%M:%S", "%H:%M",
+        "%I:%M:%S%p", "%I:%M:%S %p",
+        "%I:%M%p", "%I:%M %p",
+    ):
+        for candidate in (text, ampm_normalized):
+            try:
+                return datetime.strptime(candidate, fmt).time()
+            except ValueError:
+                continue
+
+    try:
+        ts = pd.to_datetime(text, errors="coerce")
+        if not pd.isna(ts):
+            return ts.to_pydatetime().time().replace(microsecond=0)
+    except Exception:
+        pass
+
+    try:
+        numeric = float(text)
+        if 0.0 <= numeric < 1.0:
+            secs = int(round(numeric * 24 * 60 * 60))
+            return (datetime(2000, 1, 1) + timedelta(seconds=secs)).time()
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
 def _theoretical_backup_minutes_like_bdt(bdt, health_pct: float) -> float | None:
     if bdt is None:
         return None
@@ -407,6 +465,37 @@ def _theoretical_backup_minutes_like_bdt(bdt, health_pct: float) -> float | None
     load_w = float(load_v) * float(load_a)
     capacity_wh = float(ah) * float(voltage) * float(strings) * float(efficiency)
     return (capacity_wh / load_w) * 60.0
+
+
+def _build_bdt_test_window(result: Any, target_date: date | None) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    bdt = getattr(result, "bdt_data", None)
+    if bdt is None:
+        return None, None
+
+    base_date = _to_date_obj(getattr(bdt, "test_date", None) or getattr(result, "test_date", None)) or target_date
+    if base_date is None:
+        return None, None
+
+    start_time = _parse_test_time(getattr(bdt, "time_in", None))
+    if start_time is None:
+        return None, None
+
+    start_ts = pd.Timestamp.combine(base_date, start_time)
+
+    end_time = _parse_test_time(getattr(bdt, "time_out", None))
+    if end_time is not None:
+        end_ts = pd.Timestamp.combine(base_date, end_time)
+        if end_ts < start_ts:
+            end_ts += pd.Timedelta(days=1)
+        return start_ts, end_ts
+
+    actual_mins = getattr(bdt, "discharge_minutes", None)
+    if actual_mins is not None:
+        try:
+            return start_ts, start_ts + pd.Timedelta(minutes=float(actual_mins))
+        except Exception:
+            return start_ts, None
+    return start_ts, None
 
 
 def _pick_site_incident_for_date(site_df: pd.DataFrame, target_date: date | None) -> dict[str, str]:
@@ -432,6 +521,24 @@ def _pick_site_incident_for_date(site_df: pd.DataFrame, target_date: date | None
     if not plus_minus_1.empty:
         return _pick_site_incident(plus_minus_1)
     return _pick_site_incident(site_df)
+
+
+def _pick_site_incident_for_window(
+    site_df: pd.DataFrame,
+    start_ts: pd.Timestamp | None,
+    end_ts: pd.Timestamp | None,
+    target_date: date | None,
+) -> dict[str, str]:
+    if site_df.empty or start_ts is None:
+        return _pick_site_incident_for_date(site_df, target_date)
+
+    window_df = site_df[site_df["occurred_on"] >= start_ts]
+    if end_ts is not None:
+        window_df = window_df[window_df["occurred_on"] <= end_ts]
+
+    if not window_df.empty:
+        return _pick_site_incident(window_df)
+    return _pick_site_incident_for_date(site_df, target_date)
 
 
 def build_site_alarm_report(site_df: pd.DataFrame, site_id_column: str, alarm_df: pd.DataFrame) -> pd.DataFrame:
@@ -597,7 +704,8 @@ def build_pm_accept_report(
 
         if not alarm_work.empty and "_site_key" in alarm_work.columns:
             site_alarms = alarm_work[alarm_work["_site_key"] == site_key]
-            incident = _pick_site_incident_for_date(site_alarms, target_date)
+            start_ts, end_ts = _build_bdt_test_window(chosen, target_date) if chosen is not None else (None, None)
+            incident = _pick_site_incident_for_window(site_alarms, start_ts, end_ts, target_date)
             out.at[idx, col_map["Power Alarm Start Time"]] = incident.get("Power Alarm At", "")
             out.at[idx, col_map["Down Alarm Start Time"]] = incident.get("Down Alarm At", "")
             out.at[idx, col_map["Backup Time Calculated From Alarm Pair (HH:MM:SS)"]] = incident.get("Backup Time", "")

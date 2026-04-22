@@ -363,6 +363,42 @@ def _parse_test_time(raw_time) -> time | None:
     return None
 
 
+def _build_test_window(bdt: BDTData) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    if bdt.test_date is None:
+        return None, None
+    try:
+        test_date = pd.Timestamp(bdt.test_date).normalize()
+    except Exception:
+        return None, None
+
+    start_time = _parse_test_time(getattr(bdt, "time_in", None))
+    if start_time is None:
+        return None, None
+
+    start_ts = test_date + pd.Timedelta(
+        hours=start_time.hour,
+        minutes=start_time.minute,
+        seconds=start_time.second,
+    )
+
+    end_time = _parse_test_time(getattr(bdt, "time_out", None))
+    if end_time is not None:
+        end_ts = test_date + pd.Timedelta(
+            hours=end_time.hour,
+            minutes=end_time.minute,
+            seconds=end_time.second,
+        )
+        if end_ts < start_ts:
+            end_ts += pd.Timedelta(days=1)
+        return start_ts, end_ts
+
+    discharge_minutes = _max_reached_discharge_minutes(bdt)
+    if discharge_minutes is not None:
+        return start_ts, start_ts + pd.Timedelta(minutes=discharge_minutes)
+
+    return start_ts, None
+
+
 def _max_reached_discharge_minutes(bdt: BDTData) -> float | None:
     """Return max discharge-minute label that has at least one real reading."""
     max_mins = 0.0
@@ -852,9 +888,15 @@ def _rule_9_discharge_current_tolerance(bdt: BDTData) -> RuleResult:
     )
 
 
-def _find_door_alarms(alarm_df: pd.DataFrame, site_code: str,
-                      test_date: pd.Timestamp) -> pd.DataFrame:
-    """Find same-site same-date alarms that indicate door condition."""
+def _find_door_alarms(
+    alarm_df: pd.DataFrame,
+    site_code: str,
+    test_date: pd.Timestamp,
+    window_start: pd.Timestamp | None = None,
+    window_end: pd.Timestamp | None = None,
+    strict_window: bool = False,
+) -> pd.DataFrame:
+    """Find same-site door alarms, preferring those inside the BDT test window."""
     required_cols = {"site_id", "occurred_on"}
     if not required_cols.issubset(alarm_df.columns):
         return alarm_df.iloc[0:0]
@@ -881,7 +923,16 @@ def _find_door_alarms(alarm_df: pd.DataFrame, site_code: str,
         source_mask = alarm_df["file_source"].astype(str).str.contains("door", case=False, na=False)
 
     door_mask = category_mask | name_mask | source_mask
-    return alarm_df[site_mask & date_mask & door_mask]
+    matches = alarm_df[site_mask & date_mask & door_mask]
+    if matches.empty or window_start is None:
+        return matches
+
+    window_matches = matches[matches["occurred_on"] >= window_start]
+    if window_end is not None:
+        window_matches = window_matches[window_matches["occurred_on"] <= window_end]
+    if not window_matches.empty:
+        return window_matches
+    return matches.iloc[0:0] if strict_window else matches
 
 
 def _rule_10_door_alarm_match(bdt: BDTData,
@@ -910,19 +961,28 @@ def _rule_10_door_alarm_match(bdt: BDTData,
             detail=f"Cannot validate door alarm condition: invalid test date {bdt.test_date!r}",
         )
 
-    doors = _find_door_alarms(alarm_df, bdt.site_code, test_date)
+    window_start, window_end = _build_test_window(bdt)
+    doors = _find_door_alarms(
+        alarm_df,
+        bdt.site_code,
+        test_date,
+        window_start,
+        window_end,
+        strict_window=window_start is not None,
+    )
     if doors.empty:
         return RuleResult(
             rule_id="R10", rule_name="Door Alarm Condition",
             passed=False, verdict="Rejected",
-            detail=(f"No Door alarm found for site {bdt.site_code} on "
-                    f"{test_date.date()}"),
+            detail=(f"No Door alarm found for site {bdt.site_code} during "
+                    f"the test window on {test_date.date()}"),
         )
 
     return RuleResult(
         rule_id="R10", rule_name="Door Alarm Condition",
         passed=True, verdict="Accepted",
-        detail=f"Door alarm found for site {bdt.site_code} on {test_date.date()} ({len(doors)} match(es))",
+        detail=(f"Door alarm found for site {bdt.site_code} on {test_date.date()} "
+                f"({len(doors)} match(es){' within test window' if window_start is not None else ''})"),
     )
 
 

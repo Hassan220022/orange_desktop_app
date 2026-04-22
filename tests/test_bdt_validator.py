@@ -6,6 +6,7 @@ import pandas as pd
 
 from alarm_app.bdt.parser import BDTData, PhotoSlot
 from alarm_app.bdt.validator import (
+    _find_door_alarms,
     _rule_1_photos,
     _rule_2_power_alarm_match,
     _rule_3_string_vs_busbar,
@@ -895,6 +896,34 @@ class TestR10DoorAlarmCondition:
         ])
         r = _rule_10_door_alarm_match(bdt, alarm_df)
         assert r.verdict == "Rejected"
+
+    def test_prefers_door_alarm_within_test_window(self):
+        bdt = _make_bdt(time_in="08:00", time_out="10:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(site_id="SITE001", occurred="2026-01-15 06:30:00"),
+            _door_alarm(site_id="SITE001", occurred="2026-01-15 09:15:00"),
+        ])
+        doors = _find_door_alarms(
+            alarm_df,
+            bdt.site_code,
+            pd.Timestamp(bdt.test_date).normalize(),
+            pd.Timestamp("2026-01-15 08:00:00"),
+            pd.Timestamp("2026-01-15 10:00:00"),
+        )
+
+        assert len(doors) == 1
+        assert doors.iloc[0]["occurred_on"] == pd.Timestamp("2026-01-15 09:15:00")
+
+    def test_door_alarm_rule_rejects_when_only_outside_window_matches(self):
+        bdt = _make_bdt(time_in="08:00", time_out="10:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(site_id="SITE001", occurred="2026-01-15 06:30:00"),
+        ])
+
+        r = _rule_10_door_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Rejected"
+        assert "test window" in r.detail
 
 
 # ── Helper behavior remains valid ───────────────────────────────────────

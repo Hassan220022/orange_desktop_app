@@ -296,3 +296,77 @@ def test_build_pm_accept_report_maps_bdt_and_alarm_fields():
     assert row["Power Alarm Start Time"] == "2025-01-01 10:00:00"
     assert row["Down Alarm Start Time"] == "2025-01-01 11:30:00"
     assert row["Backup Time Calculated From Alarm Pair (HH:MM:SS)"] == "01:30:00"
+
+
+def test_build_pm_accept_report_prefers_alarm_pair_within_bdt_time_window():
+    pm_df = pd.DataFrame(
+        {
+            "Site Code": ["0117CA"],
+            "Actual Done Date": ["2025-01-01"],
+            "PM Status": ["Accepted"],
+        }
+    )
+    bdt_data = SimpleNamespace(
+        battery_ah=100.0,
+        battery_voltage=48.0,
+        num_strings=1,
+        start_voltage=48.0,
+        start_ampere=40.0,
+        battery_brand="Lithium",
+        discharge_minutes=130.0,
+        test_date=pd.Timestamp("2025-01-01"),
+        time_in="10:00",
+        time_out="12:15",
+    )
+    bdt_results = [
+        SimpleNamespace(
+            filename="BDT_0117CA.xlsx",
+            site_code="0117CA",
+            test_date="2025-01-01",
+            overall="Accepted",
+            bdt_data=bdt_data,
+        )
+    ]
+    alarm_df = pd.DataFrame(
+        [
+            {
+                "site_id": "0117CA",
+                "alarm_category": "Power",
+                "occurred_on": "2025-01-01 08:00:00",
+                "cleared_on": "2025-01-01 09:15:00",
+            },
+            {
+                "site_id": "0117CA",
+                "alarm_category": "Down",
+                "occurred_on": "2025-01-01 08:45:00",
+                "cleared_on": "2025-01-01 09:00:00",
+            },
+            {
+                "site_id": "0117CA",
+                "alarm_category": "Power",
+                "occurred_on": "2025-01-01 10:05:00",
+                "cleared_on": "2025-01-01 12:30:00",
+            },
+            {
+                "site_id": "0117CA",
+                "alarm_category": "Down",
+                "occurred_on": "2025-01-01 11:30:00",
+                "cleared_on": "2025-01-01 12:00:00",
+            },
+        ]
+    )
+
+    report = build_pm_accept_report(
+        pm_df=pm_df,
+        site_id_column="Site Code",
+        date_column="Actual Done Date",
+        bdt_results=bdt_results,
+        alarm_df=alarm_df,
+        health_pct=0.8,
+        status_column="PM Status",
+    )
+
+    row = report.iloc[0]
+    assert row["Power Alarm Start Time"] == "2025-01-01 10:05:00"
+    assert row["Down Alarm Start Time"] == "2025-01-01 11:30:00"
+    assert row["Backup Time Calculated From Alarm Pair (HH:MM:SS)"] == "01:25:00"
