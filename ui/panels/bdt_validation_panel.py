@@ -6,6 +6,8 @@ import os
 import re
 from datetime import datetime
 
+import pandas as pd
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel,
     QFrame, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem,
@@ -21,8 +23,9 @@ try:
     from ...bdt.parser import BDTData
     from ...bdt.validator import ValidationResult
     from ...bdt.export import build_bdt_export_sheets
-    from ..dialogs import DailyReviewReportDialog
+    from ..dialogs import ColumnFilterPopup, DailyReviewReportDialog
     from ...data import state
+    from ...data.alarm_store import AlarmQuery, distinct_values, query_alarms
     from ...data.site_report import read_pm_accept_sheet, build_pm_accept_report
 except ImportError:
     try:
@@ -31,8 +34,9 @@ except ImportError:
         from alarm_app.bdt.parser import BDTData
         from alarm_app.bdt.validator import ValidationResult
         from alarm_app.bdt.export import build_bdt_export_sheets
-        from alarm_app.ui.dialogs import DailyReviewReportDialog
+        from alarm_app.ui.dialogs import ColumnFilterPopup, DailyReviewReportDialog
         from alarm_app.data import state
+        from alarm_app.data.alarm_store import AlarmQuery, distinct_values, query_alarms
         from alarm_app.data.site_report import read_pm_accept_sheet, build_pm_accept_report
     except ImportError:
         from constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS
@@ -40,8 +44,9 @@ except ImportError:
         from bdt.parser import BDTData
         from bdt.validator import ValidationResult
         from bdt.export import build_bdt_export_sheets
-        from ui.dialogs import DailyReviewReportDialog
+        from ui.dialogs import ColumnFilterPopup, DailyReviewReportDialog
         from data import state
+        from data.alarm_store import AlarmQuery, distinct_values, query_alarms
         from data.site_report import read_pm_accept_sheet, build_pm_accept_report
 
 
@@ -53,6 +58,7 @@ class BdtValidationPanel(QWidget):
     def __init__(self, viewer, parent=None):
         super().__init__(parent)
         self._viewer = viewer
+        self._bdt_col_filters: dict[str, set[str] | None] = {}
         self._build(viewer)
 
     # ------------------------------------------------------------------
@@ -172,6 +178,7 @@ class BdtValidationPanel(QWidget):
             else:
                 hdr.resizeSection(i, BDT_RESULT_WIDTHS.get(col, 80))
         hdr.setStretchLastSection(True)
+        hdr.sectionClicked.connect(self._on_bdt_header_clicked)
         self.bdt_table.clicked.connect(self._on_bdt_row_clicked)
         self.bdt_splitter.addWidget(self.bdt_table)
 
@@ -203,6 +210,43 @@ class BdtValidationPanel(QWidget):
         bot.addWidget(self.btn_bdt_report)
 
         lay.addLayout(bot)
+
+    @staticmethod
+    def _reference_alarm_sites_df() -> pd.DataFrame:
+        site_ids = [site_id for site_id in distinct_values("site_id") if str(site_id).strip()]
+        return pd.DataFrame({"site_id": site_ids})
+
+    @staticmethod
+    def _pm_accept_alarm_subset_query(
+        pm_df: pd.DataFrame,
+        site_id_column: str,
+        date_column: str,
+    ) -> AlarmQuery:
+        site_keys = [
+            str(value).strip()
+            for value in pm_df.get(site_id_column, pd.Series(dtype=object)).tolist()
+            if str(value).strip()
+        ]
+        parsed_dates = pd.to_datetime(pm_df.get(date_column, pd.Series(dtype=object)), errors="coerce", format="mixed")
+        valid_dates = [pd.Timestamp(value) for value in parsed_dates.tolist() if not pd.isna(value)]
+        date_from = (min(valid_dates) - pd.Timedelta(days=1)).to_pydatetime() if valid_dates else None
+        date_to = (max(valid_dates) + pd.Timedelta(days=1)).to_pydatetime() if valid_dates else None
+        return AlarmQuery(
+            site_scope_keys=site_keys or None,
+            date_from=date_from,
+            date_to=date_to,
+            sort_by="occurred_on",
+            sort_desc=False,
+        )
+
+    @classmethod
+    def _load_pm_accept_alarm_subset(
+        cls,
+        pm_df: pd.DataFrame,
+        site_id_column: str,
+        date_column: str,
+    ) -> pd.DataFrame:
+        return query_alarms(cls._pm_accept_alarm_subset_query(pm_df, site_id_column, date_column))
 
     def set_detail_panel(self, panel: QWidget):
         """Attach the BDT detail panel to the splitter."""
@@ -274,7 +318,6 @@ class BdtValidationPanel(QWidget):
                 "BDT filenames must contain 'BDT'.")
             return
 
-        alarm_df = viewer._full_df if not viewer._full_df.empty else None
         tolerance = self.spn_tolerance.value() / 100.0
         health_pct = self.spn_health.value() / 100.0
         self._viewer._last_bdt_health_pct = health_pct
@@ -291,7 +334,7 @@ class BdtValidationPanel(QWidget):
         self._db_seed_results = viewer._load_bdt_results_from_db() if source_mode == "both" else []
 
         self._bdt_thread = BDTValidationThread(
-            bdt_files, alarm_df, tolerance, health_pct, skip_photos=viewer._skip_photos)
+            bdt_files, None, tolerance, health_pct, skip_photos=viewer._skip_photos)
         self._bdt_thread.progress.connect(
             lambda v, m: (viewer._prog.setValue(v),
                           viewer._sbar.showMessage(m)))
@@ -322,9 +365,6 @@ class BdtValidationPanel(QWidget):
         if not viewer._bdt_results:
             QMessageBox.information(self, "No BDT Results", "Run validation first.")
             return
-        if viewer._full_df is None or viewer._full_df.empty:
-            QMessageBox.information(self, "No Alarm Data", "Load alarm data first.")
-            return
 
         start_dir = (
             getattr(viewer, "_uploaded_folder_path", "")
@@ -342,9 +382,15 @@ class BdtValidationPanel(QWidget):
 
         try:
             viewer._sbar.showMessage("Reading Accepted PM list …")
+            site_reference_df = self._reference_alarm_sites_df()
             pm_df, sheet_name, site_col, date_col, status_col = read_pm_accept_sheet(
-                in_path, viewer._full_df
+                in_path, site_reference_df
             )
+            alarm_df = self._load_pm_accept_alarm_subset(pm_df, site_col, date_col)
+            if alarm_df.empty:
+                QMessageBox.information(self, "No Alarm Data", "No matching alarm records were found in the local alarm store.")
+                viewer._sbar.showMessage("Accepted PM report has no matching alarm data")
+                return
             health_pct = (
                 viewer._last_bdt_health_pct
                 if viewer._last_bdt_health_pct is not None
@@ -355,7 +401,7 @@ class BdtValidationPanel(QWidget):
                 site_id_column=site_col,
                 date_column=date_col,
                 bdt_results=viewer._bdt_results,
-                alarm_df=viewer._full_df,
+                alarm_df=alarm_df,
                 health_pct=health_pct,
                 status_column=status_col,
             )
@@ -414,17 +460,7 @@ class BdtValidationPanel(QWidget):
         }
 
         for r, res in enumerate(results):
-            row_map = {
-                "File": res.filename,
-                "Site Code": res.site_code or "--",
-                "Test Date": res.test_date,
-                "Verdict": res.overall,
-                "End Rectifier Voltage (V)": self._format_end_rectifier_voltage(
-                    res.bdt_data),
-                "Lead-acid SOH (%)": self._format_lead_acid_soh(res.bdt_data),
-            }
-            for rule in res.rules:
-                row_map[rule.rule_id] = self._rule_cell_text(rule)
+            row_map = self._row_map_for_result(res)
 
             for c, col_name in enumerate(BDT_RESULT_HEADERS):
                 val = row_map.get(col_name, "--")
@@ -446,6 +482,20 @@ class BdtValidationPanel(QWidget):
             f"{len(results)} files</span>")
 
         self._filter_bdt_table(self.bdt_search.text())
+
+    def _row_map_for_result(self, res) -> dict[str, str]:
+        row_map = {
+            "File": getattr(res, "filename", "") or "--",
+            "Site Code": getattr(res, "site_code", "") or "--",
+            "Test Date": getattr(res, "test_date", "") or "--",
+            "Verdict": getattr(res, "overall", "") or "--",
+            "End Rectifier Voltage (V)": self._format_end_rectifier_voltage(
+                getattr(res, "bdt_data", None)),
+            "Lead-acid SOH (%)": self._format_lead_acid_soh(getattr(res, "bdt_data", None)),
+        }
+        for rule in getattr(res, "rules", []) or []:
+            row_map[getattr(rule, "rule_id", "")] = self._rule_cell_text(rule)
+        return row_map
 
     @staticmethod
     def _rule_cell_text(rule) -> str:
@@ -514,10 +564,6 @@ class BdtValidationPanel(QWidget):
 
     def _filter_bdt_table(self, text: str):
         text = text.strip()
-        if not text:
-            for r in range(self.bdt_table.rowCount()):
-                self.bdt_table.setRowHidden(r, False)
-            return
 
         text_lower = text.lower()
         is_year = re.fullmatch(r"\d{4}", text)
@@ -527,17 +573,72 @@ class BdtValidationPanel(QWidget):
             if r >= len(self._viewer._bdt_results):
                 break
             res = self._viewer._bdt_results[r]
-            show = False
+            row_map = self._row_map_for_result(res)
+            show = True
 
-            if is_year:
-                show = res.test_date.startswith(text)
-            elif is_date:
-                show = res.test_date == text
-            else:
-                show = (text_lower in (res.site_code or "").lower()
-                        or text_lower in (res.filename or "").lower())
+            if text:
+                if is_year:
+                    show = str(getattr(res, "test_date", "") or "").startswith(text)
+                elif is_date:
+                    show = str(getattr(res, "test_date", "") or "") == text
+                else:
+                    show = (
+                        text_lower in str(getattr(res, "site_code", "") or "").lower()
+                        or text_lower in str(getattr(res, "filename", "") or "").lower()
+                    )
+
+            if show and self._bdt_col_filters:
+                for col_name, allowed in self._bdt_col_filters.items():
+                    if allowed is None:
+                        continue
+                    if str(row_map.get(col_name, "--")) not in allowed:
+                        show = False
+                        break
 
             self.bdt_table.setRowHidden(r, not show)
+
+    def _on_bdt_header_clicked(self, logical_index: int):
+        if logical_index >= len(BDT_RESULT_HEADERS) or not self._viewer._bdt_results:
+            return
+        col_name = BDT_RESULT_HEADERS[logical_index]
+        unique = sorted(
+            {
+                str(self._row_map_for_result(res).get(col_name, "--"))
+                for res in self._viewer._bdt_results
+            },
+            key=lambda value: value.lower() if value else "",
+        )
+        popup = ColumnFilterPopup(
+            col_name,
+            col_name,
+            unique,
+            self._bdt_col_filters.get(col_name),
+            self._sort_bdt_column,
+            parent=self,
+        )
+        popup.applied.connect(self._on_bdt_col_filter_applied)
+        hdr = self.bdt_table.horizontalHeader()
+        x = hdr.sectionViewportPosition(logical_index)
+        header_pos = hdr.mapToGlobal(hdr.rect().bottomLeft())
+        popup.move(header_pos.x() + x, header_pos.y())
+        popup.show()
+
+    def _sort_bdt_column(self, col_name: str, order):
+        if col_name not in BDT_RESULT_HEADERS:
+            return
+        reverse = order == Qt.DescendingOrder
+        self._viewer._bdt_results.sort(
+            key=lambda res: str(self._row_map_for_result(res).get(col_name, "--")).lower(),
+            reverse=reverse,
+        )
+        self._populate_bdt_table()
+
+    def _on_bdt_col_filter_applied(self, col_name: str, selected):
+        if selected is None:
+            self._bdt_col_filters.pop(col_name, None)
+        else:
+            self._bdt_col_filters[col_name] = {str(value) for value in selected}
+        self._filter_bdt_table(self.bdt_search.text())
 
     def _on_bdt_row_clicked(self, index):
         row = index.row()

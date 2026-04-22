@@ -47,7 +47,15 @@ _ALIGN_COLS = frozenset(("occurred_on", "cleared_on", "duration", "alarm_id"))
 class AlarmTableModel(QAbstractTableModel):
     """Fast pandas-backed table model with pre-stringified display cache."""
 
-    __slots__ = ("_df", "_cols", "_cache", "_row_count", "_col_count")
+    __slots__ = (
+        "_df",
+        "_cols",
+        "_cache",
+        "_row_count",
+        "_col_count",
+        "_total_rows",
+        "_page_offset",
+    )
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -56,16 +64,26 @@ class AlarmTableModel(QAbstractTableModel):
         self._cache: list[list[str]] = []
         self._row_count = 0
         self._col_count = 0
+        self._total_rows = 0
+        self._page_offset = 0
 
     # ── data loading ─────────────────────────────────────────────
     def load(self, df: pd.DataFrame):
+        self.load_page(df, total_rows=len(df), offset=0)
+
+    def load_page(self, df: pd.DataFrame, total_rows: int, offset: int) -> None:
         self.beginResetModel()
         self._df = df.reset_index(drop=True)
         self._cols = list(df.columns)
         self._row_count = len(self._df)
         self._col_count = len(self._cols)
+        self._total_rows = max(int(total_rows), 0)
+        self._page_offset = max(int(offset), 0)
         self._rebuild_cache()
         self.endResetModel()
+
+    def clear(self) -> None:
+        self.load_page(pd.DataFrame(), total_rows=0, offset=0)
 
     def _rebuild_cache(self):
         """Convert every cell to its display string once (vectorized)."""
@@ -176,3 +194,12 @@ class AlarmTableModel(QAbstractTableModel):
     # ── public helpers ───────────────────────────────────────────
     def get_df(self):
         return self._df.copy()
+
+    def columns(self) -> list[str]:
+        return list(self._cols)
+
+    def total_rows(self) -> int:
+        return self._total_rows
+
+    def page_offset(self) -> int:
+        return self._page_offset

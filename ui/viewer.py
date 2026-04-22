@@ -7,6 +7,7 @@ import getpass
 import os
 import re
 import subprocess
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -31,7 +32,7 @@ try:
                              BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
     from ..styles import STYLE, STYLE_DARK, STYLE_LIGHT
     from .model import AlarmTableModel
-    from .threads import (RestoreThread, LoaderThread, ExportThread,
+    from .threads import (LoaderThread, ExportThread,
                           BDTValidationThread, BackupTimeThread)
     from .dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
                           AlarmIdConfigDialog, BackupTimeDialog,
@@ -44,6 +45,7 @@ try:
     from ..core.filters import compute_date_mask, parse_manual_days
     from ..core.classify import classify_by_alarm_id, compute_site_down_flag
     from ..data.loaders import discover_alarm_files
+    from ..data import alarm_store
     from ..data import state
     from ..data.sync import LocalSyncWorker
     from ..data.site_report import (
@@ -61,7 +63,7 @@ except ImportError:
                                          BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
         from alarm_app.styles import STYLE, STYLE_DARK, STYLE_LIGHT
         from alarm_app.ui.model import AlarmTableModel
-        from alarm_app.ui.threads import (RestoreThread, LoaderThread, ExportThread,
+        from alarm_app.ui.threads import (LoaderThread, ExportThread,
                                           BDTValidationThread, BackupTimeThread)
         from alarm_app.ui.dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
                                           AlarmIdConfigDialog, BackupTimeDialog,
@@ -74,6 +76,7 @@ except ImportError:
         from alarm_app.core.filters import compute_date_mask, parse_manual_days
         from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
         from alarm_app.data.loaders import discover_alarm_files
+        from alarm_app.data import alarm_store
         from alarm_app.data import state
         from alarm_app.data.sync import LocalSyncWorker
         from alarm_app.data.site_report import (
@@ -90,7 +93,7 @@ except ImportError:
                                BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
         from styles import STYLE, STYLE_DARK, STYLE_LIGHT
         from ui.model import AlarmTableModel
-        from ui.threads import (RestoreThread, LoaderThread, ExportThread,
+        from ui.threads import (LoaderThread, ExportThread,
                                 BDTValidationThread, BackupTimeThread)
         from ui.dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
                                 AlarmIdConfigDialog, BackupTimeDialog,
@@ -103,6 +106,7 @@ except ImportError:
         from core.filters import compute_date_mask, parse_manual_days
         from core.classify import classify_by_alarm_id, compute_site_down_flag
         from data.loaders import discover_alarm_files
+        from data import alarm_store
         from data import state
         from data.sync import LocalSyncWorker
         from data.site_report import (
@@ -120,6 +124,11 @@ class AlarmViewer(QMainWindow):
         super().__init__()
         self._current_user = getpass.getuser() or "desktop"
         self._full_df    = pd.DataFrame()
+        self._page_size = 500
+        self._page_offset = 0
+        self._page_total_rows = 0
+        self._alarm_table_columns: list[str] = []
+        self._alarm_query_active = False
         self._file_infos: list[dict] = []
         self._loader     = None
         self._col_filters: dict[str, set | None] = {}  # col -> selected values
@@ -435,6 +444,7 @@ class AlarmViewer(QMainWindow):
     def _make_table(self):
         w = QWidget(); vl = QVBoxLayout(w)
         vl.setContentsMargins(0, 0, 0, 0)
+        vl.setSpacing(6)
 
         self._model = AlarmTableModel()
         self._table = QTableView()
@@ -464,6 +474,26 @@ class AlarmViewer(QMainWindow):
         self._table.doubleClicked.connect(self._copy_cell)
 
         vl.addWidget(self._table)
+
+        pager = QWidget()
+        pl = QHBoxLayout(pager)
+        pl.setContentsMargins(8, 0, 8, 0)
+        pl.setSpacing(8)
+        self._btn_prev_page = QPushButton("Prev")
+        self._btn_prev_page.clicked.connect(self._load_previous_alarm_page)
+        self._btn_next_page = QPushButton("Next")
+        self._btn_next_page.clicked.connect(self._load_next_alarm_page)
+        self._lbl_page = QLabel("Page 0/0")
+        self._lbl_page.setObjectName("lbl_dim")
+        self._lbl_page_range = QLabel("Rows 0-0 of 0")
+        self._lbl_page_range.setObjectName("lbl_dim")
+        pl.addWidget(self._btn_prev_page)
+        pl.addWidget(self._btn_next_page)
+        pl.addWidget(self._lbl_page)
+        pl.addWidget(self._lbl_page_range)
+        pl.addStretch()
+        vl.addWidget(pager)
+        self._update_pagination_controls()
         return w
 
     # ── table copy support ───────────────────────────────────────
@@ -553,6 +583,8 @@ class AlarmViewer(QMainWindow):
             "col_filters": col_filters_json,
             "sort_column": sort_section if sort_section >= 0 else None,
             "sort_order": sort_order,
+            "alarm_page_offset": self._page_offset,
+            "alarm_page_size": self._page_size,
             "window_geometry": [geo.x(), geo.y(), geo.width(), geo.height()],
             "ui_zoom_pct": self._app_zoom_pct,
             "theme_mode": self._theme_mode,
@@ -665,18 +697,41 @@ class AlarmViewer(QMainWindow):
         # Stash sort info for after data loads
         self._pending_sort_col = s.get("sort_column")
         self._pending_sort_order = s.get("sort_order", 0)
+        self._page_offset = max(int(s.get("alarm_page_offset", 0) or 0), 0)
+        self._page_size = max(int(s.get("alarm_page_size", self._page_size) or self._page_size), 1)
 
         # Stash file_paths for reference
         self._restored_file_paths = s.get("file_paths", [])
 
-        # Restore only when a local DuckDB alarm cache is present.
-        if state.ALARM_DB_FILE.exists():
+        if self._has_query_backed_alarm_data():
             self._sbar.showMessage("Restoring cached alarms...")
-            self._restore_thread = RestoreThread()
-            self._restore_thread.finished.connect(self._on_cache_restored)
-            self._restore_thread.error.connect(
-                lambda msg: self._sbar.showMessage("Cached alarm restore failed"))
-            self._restore_thread.start()
+            sort_col = getattr(self, "_pending_sort_col", None)
+            if sort_col is not None and sort_col >= 0:
+                order = (
+                    Qt.AscendingOrder
+                    if getattr(self, "_pending_sort_order", 0) == 0
+                    else Qt.DescendingOrder
+                )
+                self._table.horizontalHeader().setSortIndicator(sort_col, order)
+            if self._load_alarm_page(
+                offset=self._page_offset,
+                status_message="Session restored from local alarm cache",
+            ) and self._current_alarm_total() > 0:
+                restored_paths = list(getattr(self, "_restored_file_paths", []) or [])
+                self._file_infos = [
+                    {"path": p, "filename": os.path.basename(p)}
+                    for p in restored_paths
+                ]
+                total = self._current_alarm_total()
+                self._lbl_loaded.setText(f"✓  {total:,} cached records")
+                self._lbl_loaded.setStyleSheet("color:#a6e3a1; font-size:11px;")
+            else:
+                df = self._load_alarm_dataframe_from_db()
+                if df is not None and not df.empty:
+                    self._apply_loaded_alarm_dataframe(
+                        df,
+                        f"Recovered {len(df):,} alarm records from local DB fallback",
+                    )
 
     def _on_cache_restored(self, df):
         """Called when background local-cache restore completes."""
@@ -689,11 +744,6 @@ class AlarmViewer(QMainWindow):
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors="coerce", format="mixed")
 
-        alarm_ids = state.load_alarm_ids()
-        df = classify_by_alarm_id(df, alarm_ids)
-        df = compute_site_down_flag(df)
-        self._full_df = df
-
         # Rebuild file_infos from restored paths so close-save works
         restored_paths = list(getattr(self, "_restored_file_paths", []) or [])
         self._file_infos = [
@@ -703,29 +753,26 @@ class AlarmViewer(QMainWindow):
 
         self._lbl_loaded.setText(f"✓  {len(df):,} records (restored)")
         self._lbl_loaded.setStyleSheet("color:#a6e3a1; font-size:11px;")
-
-        # Apply saved filters and populate
-        view = self._apply_filters(df)
-        self._populate(view)
-        self._refresh_stats(view)
-        self._lbl_count.setText(
-            f"Showing  {len(view):,}  of  {len(df):,} records")
+        self._reset_date_range(df)
 
         # Restore sort indicator
         sort_col = getattr(self, "_pending_sort_col", None)
         if sort_col is not None and sort_col >= 0:
             order = (Qt.AscendingOrder if getattr(self, "_pending_sort_order", 0) == 0
                      else Qt.DescendingOrder)
-            self._model.sort(sort_col, order)
             self._table.horizontalHeader().setSortIndicator(sort_col, order)
+
+        if self._has_query_backed_alarm_data():
+            self._page_offset = 0
+            self._load_alarm_page(
+                offset=0,
+                status_message=f"Session restored — {self._current_alarm_total():,} records",
+            )
 
         # Populate sidebar file list so it's not blank after restore
         directory = self._edit_dir.text().strip()
         if directory and os.path.isdir(directory):
             self._scan()
-
-        self._sbar.showMessage(
-            f"Session restored — {len(view):,} of {len(df):,} records")
 
         # Restore BDT validation results from DB
         self._restore_bdt_results()
@@ -740,7 +787,7 @@ class AlarmViewer(QMainWindow):
             self._apply_bdt_results(
                 results,
                 status_message=(
-                    f"Session restored — {len(self._full_df):,} alarms, "
+                    f"Session restored — {self._current_alarm_total():,} alarms, "
                     f"{len(results)} BDT validations"
                 ),
             )
@@ -916,15 +963,17 @@ class AlarmViewer(QMainWindow):
         sep.setStyleSheet(f"color:{c['border']};")
         lay.addWidget(sep)
 
+        total_alarm_rows = self._current_alarm_total()
+        summary = alarm_store.stats() if total_alarm_rows > 0 else {}
+
         # Message adapts to whether data is loaded
-        if not self._full_df.empty:
-            n_rec = len(self._full_df)
-            n_sites = (self._full_df["site_id"].nunique()
-                       if "site_id" in self._full_df.columns else 0)
+        if total_alarm_rows > 0:
+            n_rec = total_alarm_rows
+            n_sites = int(summary.get("sites", 0) or 0)
             n_files = len(self._file_infos)
             msg = (
                 f"<span style='color:{c['muted']};'>"
-                f"You currently have data in memory:</span><br><br>"
+                f"You currently have locally cached alarm data:</span><br><br>"
                 f"<span style='color:{c['blue']};'>{n_rec:,}</span>"
                 f"<span style='color:{c['muted']};'> records</span>"
                 f"&nbsp;&nbsp;&middot;&nbsp;&nbsp;"
@@ -1003,8 +1052,6 @@ class AlarmViewer(QMainWindow):
         # Save session state before closing
         try:
             self._save_ui_state()
-            if not self._full_df.empty:
-                state.save_dataframe(self._full_df)
         except Exception as e:
             print(f"[AlarmViewer] save error: {e}")
 
@@ -1070,8 +1117,216 @@ class AlarmViewer(QMainWindow):
             else:
                 self._table.resizeColumnToContents(i)
 
+    def _current_alarm_total(self) -> int:
+        if self._alarm_query_active:
+            return self._page_total_rows
+        if not self._full_df.empty:
+            return len(self._full_df)
+        return 0
+
+    def _has_query_backed_alarm_data(self) -> bool:
+        return state.has_alarm_cache()
+
+    def _current_alarm_columns(self) -> list[str]:
+        cols = []
+        if hasattr(self, "_model"):
+            cols = self._model.columns()
+        if cols:
+            return cols
+        if self._alarm_table_columns:
+            return list(self._alarm_table_columns)
+        return list(ALL_INTERNAL_COLS)
+
+    def _update_pagination_controls(self):
+        total = max(int(getattr(self, "_page_total_rows", 0) or 0), 0)
+        page_size = max(int(getattr(self, "_page_size", 1) or 1), 1)
+        offset = max(int(getattr(self, "_page_offset", 0) or 0), 0)
+        if total <= 0:
+            start = 0
+            end = 0
+            page_no = 0
+            total_pages = 0
+        else:
+            start = offset + 1
+            end = min(offset + self._model.rowCount(), total)
+            page_no = (offset // page_size) + 1
+            total_pages = ((total - 1) // page_size) + 1
+        self._lbl_page.setText(f"Page {page_no}/{total_pages}")
+        self._lbl_page_range.setText(f"Rows {start:,}-{end:,} of {total:,}")
+        self._btn_prev_page.setEnabled(offset > 0)
+        self._btn_next_page.setEnabled(total > 0 and offset + self._model.rowCount() < total)
+
+    def _set_combo_values(self, combo: QComboBox, values: list[str], current_text: str):
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("All")
+        seen = set()
+        for value in values:
+            text = str(value)
+            if text in seen or text == "":
+                continue
+            combo.addItem(text)
+            seen.add(text)
+        target = current_text if current_text and current_text != "All" else "All"
+        idx = combo.findText(target)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _build_alarm_query(
+        self,
+        *,
+        limit: int | None,
+        offset: int,
+        exclude_columns: set[str] | None = None,
+        ignore_sort: bool = False,
+    ) -> alarm_store.AlarmQuery:
+        exclude_columns = exclude_columns or set()
+        manual_days = None
+        if self._chk_date.isChecked() and self._chk_date_days.isChecked():
+            manual_days, invalid = parse_manual_days(self._edit_days.text())
+            if invalid:
+                self._sbar.showMessage(
+                    "Ignored invalid day value(s) in specific days filter",
+                    2500,
+                )
+
+        query = alarm_store.AlarmQuery(
+            site_text=self._edit_site.text().strip(),
+            category="All" if "alarm_category" in exclude_columns else self._cb_cat.currentText(),
+            vendor="All" if "vendor" in exclude_columns else self._cb_vnd.currentText(),
+            network_type="All" if "network_type" in exclude_columns else self._cb_net.currentText(),
+            min_duration_secs=(
+                self._spn_mindur.value() * 60 if self._chk_mindur.isChecked() else None
+            ),
+            date_from=(
+                self._d_from.date().toPyDate()
+                if self._chk_date.isChecked() and self._chk_date_range.isChecked()
+                else None
+            ),
+            date_to=(
+                self._d_to.date().toPyDate()
+                if self._chk_date.isChecked() and self._chk_date_range.isChecked()
+                else None
+            ),
+            manual_days=manual_days if self._chk_date.isChecked() and self._chk_date_days.isChecked() else None,
+            both_pd=self._both_pd_active,
+            limit=limit,
+            offset=offset,
+            site_scope_keys=self._uploaded_site_keys or None,
+            col_filters={
+                col: allowed
+                for col, allowed in self._col_filters.items()
+                if col not in exclude_columns
+            },
+        )
+
+        if not ignore_sort:
+            sort_section = self._table.horizontalHeader().sortIndicatorSection()
+            cols = self._current_alarm_columns()
+            if 0 <= sort_section < len(cols):
+                query.sort_by = cols[sort_section]
+                query.sort_desc = self._table.horizontalHeader().sortIndicatorOrder() == Qt.DescendingOrder
+        return query
+
+    def _refresh_alarm_stats(self, query: alarm_store.AlarmQuery | None = None):
+        summary = alarm_store.stats(query or self._build_alarm_query(limit=None, offset=0, ignore_sort=True))
+        self._stats["total"].setText(f"{int(summary.get('total', 0)):,}")
+        self._stats["power"].setText(f"{int(summary.get('power', 0)):,}")
+        self._stats["down"].setText(f"{int(summary.get('down', 0)):,}")
+        self._stats["door"].setText(f"{int(summary.get('door', 0)):,}")
+        self._stats["sites"].setText(f"{int(summary.get('sites', 0)):,}")
+        avg_s = float(summary.get("avg_duration_secs", 0.0) or 0.0)
+        if avg_s > 0:
+            h = int(avg_s // 3600)
+            m = int((avg_s % 3600) // 60)
+            s = int(avg_s % 60)
+            self._stats["avg_dur"].setText(f"{h:02d}:{m:02d}:{s:02d}")
+        else:
+            self._stats["avg_dur"].setText("—")
+
+    def _refresh_alarm_facets(self):
+        if not self._has_query_backed_alarm_data():
+            return
+        self._set_combo_values(
+            self._cb_cat,
+            alarm_store.distinct_values(
+                "alarm_category",
+                self._build_alarm_query(limit=None, offset=0, exclude_columns={"alarm_category"}, ignore_sort=True),
+            ),
+            self._cb_cat.currentText(),
+        )
+        self._set_combo_values(
+            self._cb_net,
+            alarm_store.distinct_values(
+                "network_type",
+                self._build_alarm_query(limit=None, offset=0, exclude_columns={"network_type"}, ignore_sort=True),
+            ),
+            self._cb_net.currentText(),
+        )
+        self._set_combo_values(
+            self._cb_vnd,
+            alarm_store.distinct_values(
+                "vendor",
+                self._build_alarm_query(limit=None, offset=0, exclude_columns={"vendor"}, ignore_sort=True),
+            ),
+            self._cb_vnd.currentText(),
+        )
+
+    def _load_alarm_page(self, *, offset: int | None = None, status_message: str | None = None) -> bool:
+        if not self._has_query_backed_alarm_data():
+            return False
+        base_query = self._build_alarm_query(limit=None, offset=0, ignore_sort=True)
+        total = alarm_store.count_alarms(base_query)
+        page_size = max(int(self._page_size), 1)
+        if total <= 0:
+            self._alarm_query_active = True
+            self._page_total_rows = 0
+            self._page_offset = 0
+            self._model.clear()
+            self._alarm_table_columns = []
+            self._lbl_count.setText("Showing  0  of  0 records")
+            self._refresh_alarm_stats(base_query)
+            self._refresh_alarm_facets()
+            self._update_pagination_controls()
+            if status_message:
+                self._sbar.showMessage(status_message)
+            return True
+
+        max_offset = ((total - 1) // page_size) * page_size
+        page_offset = min(max(int(offset if offset is not None else self._page_offset), 0), max_offset)
+        page_query = replace(base_query, limit=page_size, offset=page_offset)
+        page_df = alarm_store.query_alarms(page_query)
+        ordered = [c for c in ALL_INTERNAL_COLS if c in page_df.columns]
+        visible_df = page_df[ordered] if ordered else page_df
+        self._model.load_page(visible_df, total_rows=total, offset=page_offset)
+        self._alarm_query_active = True
+        self._alarm_table_columns = list(visible_df.columns)
+        self._page_total_rows = total
+        self._page_offset = page_offset
+        self._apply_col_widths(list(visible_df.columns))
+        self._refresh_alarm_stats(base_query)
+        self._refresh_alarm_facets()
+        start = page_offset + 1
+        end = min(page_offset + len(page_df), total)
+        self._lbl_count.setText(f"Showing  {start:,}-{end:,}  of  {total:,} records")
+        self._update_pagination_controls()
+        if status_message:
+            self._sbar.showMessage(status_message)
+        return True
+
+    def _load_previous_alarm_page(self):
+        if self._page_total_rows <= 0:
+            return
+        self._load_alarm_page(offset=max(self._page_offset - self._page_size, 0))
+
+    def _load_next_alarm_page(self):
+        if self._page_total_rows <= 0:
+            return
+        self._load_alarm_page(offset=self._page_offset + self._page_size)
+
     def _populate(self, df: pd.DataFrame):
         ordered = [c for c in ALL_INTERNAL_COLS if c in df.columns]
+        self._alarm_query_active = False
         self._model.load(df[ordered])
         self._apply_col_widths(ordered)
 
@@ -1120,16 +1375,41 @@ class AlarmViewer(QMainWindow):
 
     def _reclassify_alarms(self):
         """Re-classify all loaded alarms using current alarm ID config."""
-        if self._full_df.empty:
+        if not self._has_query_backed_alarm_data():
+            if self._full_df.empty:
+                return
+            alarm_ids = state.load_alarm_ids()
+            self._full_df = classify_by_alarm_id(self._full_df, alarm_ids)
+            self._full_df = compute_site_down_flag(self._full_df)
+            try:
+                state.save_dataframe(self._full_df)
+            except Exception:
+                pass
+            view = self._apply_filters(self._full_df)
+            self._populate(view)
+            self._refresh_stats(view)
+            self._lbl_count.setText(
+                f"Showing  {len(view):,}  of  {len(self._full_df):,} records"
+            )
+            self._sbar.showMessage("Alarms re-classified by alarm ID config")
+            return
+
+        df = alarm_store.load_all_alarms()
+        if df.empty:
+            QMessageBox.information(self, "No Data", "Load alarm data first.")
             return
         alarm_ids = state.load_alarm_ids()
-        self._full_df = classify_by_alarm_id(self._full_df, alarm_ids)
-        self._full_df = compute_site_down_flag(self._full_df)
-        view = self._apply_filters(self._full_df)
-        self._populate(view)
-        self._refresh_stats(view)
-        self._lbl_count.setText(
-            f"Showing  {len(view):,}  of  {len(self._full_df):,} records")
+        df = classify_by_alarm_id(df, alarm_ids)
+        df = compute_site_down_flag(df)
+        try:
+            alarm_store.replace_alarm_table(df)
+        except Exception:
+            pass
+        self._full_df = pd.DataFrame()
+        self._load_alarm_page(
+            offset=self._page_offset,
+            status_message="Alarms re-classified by alarm ID config",
+        )
         self._sbar.showMessage("Alarms re-classified by alarm ID config")
 
     def _reset_date_range(self, df: pd.DataFrame):
@@ -1147,6 +1427,18 @@ class AlarmViewer(QMainWindow):
                 self._d_day.setMaximumDate(qmx)
                 self._d_to.setDate(qmx)
                 self._d_day.setDate(qmx)
+
+    def _reset_date_range_from_store(self):
+        mn, mx = alarm_store.occurred_on_bounds()
+        if mn is None or mx is None:
+            return
+        self._reset_date_range(
+            pd.DataFrame({"occurred_on": pd.to_datetime([mn, mx], errors="coerce", format="mixed")})
+        )
+
+    def _reference_alarm_sites_df(self) -> pd.DataFrame:
+        site_ids = [value for value in alarm_store.distinct_values("site_id") if str(value).strip()]
+        return pd.DataFrame({"site_id": site_ids})
 
     def _toggle_date_filter(self, enabled: bool):
         self._chk_date_range.setEnabled(enabled)
@@ -1190,8 +1482,11 @@ class AlarmViewer(QMainWindow):
         if not self._chk_date_range.isChecked():
             self._chk_date_range.setChecked(True)
         today = QDate.currentDate()
-        if days < 0 and not self._full_df.empty:
-            self._reset_date_range(self._full_df)
+        if days < 0:
+            if self._has_query_backed_alarm_data():
+                self._reset_date_range_from_store()
+            elif not self._full_df.empty:
+                self._reset_date_range(self._full_df)
         elif days == 0:
             self._d_from.setDate(today)
             self._d_to.setDate(today)
@@ -1553,27 +1848,23 @@ class AlarmViewer(QMainWindow):
     def _load(self):
         self._pending_alarm_load_mode = self._get_alarm_load_mode()
         if self._pending_alarm_load_mode == "db":
+            self._page_offset = 0
+            if self._load_alarm_page(
+                offset=0,
+                status_message="Loaded cached alarm results from local store",
+            ) and self._current_alarm_total() > 0:
+                total = self._current_alarm_total()
+                self._lbl_loaded.setText(f"✓  {total:,} cached records")
+                self._lbl_loaded.setStyleSheet("color:#a6e3a1; font-size:11px;")
+                return
+
             df = self._load_alarm_dataframe_from_db()
             if df is not None and not df.empty:
                 self._apply_loaded_alarm_dataframe(
                     df,
-                    f"Loaded {len(df):,} alarm records from local cache",
+                    f"Recovered {len(df):,} alarm records from local DB fallback",
                 )
                 return
-
-            # Recovery path: if current session already has alarms in memory,
-            # refresh local cache and continue without blocking the user.
-            if not self._full_df.empty:
-                try:
-                    backend = state.save_dataframe(self._full_df)
-                    self._apply_loaded_alarm_dataframe(
-                        self._full_df.copy(),
-                        f"Recovered {len(self._full_df):,} alarm records from memory "
-                        f"and refreshed local {backend} cache",
-                    )
-                    return
-                except Exception:
-                    pass
 
             has_selected_files = any(
                 self._file_list.item(i).isSelected()
@@ -1674,23 +1965,28 @@ class AlarmViewer(QMainWindow):
         alarm_ids = state.load_alarm_ids()
         df = classify_by_alarm_id(df, alarm_ids)
         df = compute_site_down_flag(df)
-        self._full_df = df
         self._btn_load.setEnabled(True)
         self._prog.setVisible(False)
         self._sbar.showMessage(msg)
         self._lbl_loaded.setText(
-            f"✓  {len(df):,} records in memory")
+            f"✓  {len(df):,} records cached locally")
         self._lbl_loaded.setStyleSheet(
             "color:#a6e3a1; font-size:11px;")
-        self._refresh_stats(df)
         self._reset_date_range(df)
+        self._page_offset = 0
+        self._full_df = pd.DataFrame()
+        if self._has_query_backed_alarm_data():
+            if self._load_alarm_page(offset=0, status_message=msg) and self._current_alarm_total() > 0:
+                return
 
-        view = self._apply_filters(df)
+        self._full_df = df.sort_index().reset_index(drop=True)
+        view = self._apply_filters(self._full_df)
         self._populate(view)
         self._refresh_stats(view)
-        n = len(view)
         self._lbl_count.setText(
-            f"Showing  {n:,}  of  {len(df):,} records")
+            f"Showing  {len(view):,}  of  {len(self._full_df):,} records"
+        )
+        self._sbar.showMessage(f"{msg}; displaying in-memory results")
 
     def _load_bdt_results_from_db(self) -> list:
         try:
@@ -1799,8 +2095,8 @@ class AlarmViewer(QMainWindow):
         # Check against _full_df so other filters don't hide categories
         if (self._both_pd_active
                 and "site_id" in df.columns
-                and "alarm_category" in self._full_df.columns):
-            full = self._full_df
+                and "alarm_category" in df.columns):
+            full = df
             cats_per_site = full.groupby("site_id")["alarm_category"].apply(set)
             both_sites = cats_per_site[
                 cats_per_site.apply(
@@ -1811,6 +2107,24 @@ class AlarmViewer(QMainWindow):
         return df
 
     def _search(self):
+        if self._has_query_backed_alarm_data():
+            self._page_offset = 0
+            if self._load_alarm_page(offset=0):
+                raw = self._edit_site.text().strip()
+                total = self._current_alarm_total()
+                if raw:
+                    summary = alarm_store.stats(
+                        self._build_alarm_query(limit=None, offset=0, ignore_sort=True)
+                    )
+                    u = int(summary.get("sites", 0))
+                    self._sbar.showMessage(
+                        f"Found {total:,} alarm{'s' if total != 1 else ''} "
+                        f"for '{raw}'  —  {u} unique site(s)"
+                    )
+                else:
+                    self._sbar.showMessage(f"Filtered: {total:,} records")
+                return
+
         if self._full_df.empty:
             QMessageBox.information(
                 self, "No Data",
@@ -1837,7 +2151,7 @@ class AlarmViewer(QMainWindow):
 
     def _activate_both_pd(self):
         """Turn on the Both P+D filter and re-search."""
-        if self._full_df.empty:
+        if not self._has_query_backed_alarm_data() and self._full_df.empty:
             QMessageBox.information(
                 self, "No Data", "Load alarm data first.")
             return
@@ -1864,6 +2178,11 @@ class AlarmViewer(QMainWindow):
         # Reset sort indicator
         hdr = self._table.horizontalHeader()
         hdr.setSortIndicator(-1, Qt.AscendingOrder)
+        self._page_offset = 0
+        if self._has_query_backed_alarm_data():
+            self._reset_date_range_from_store()
+            self._load_alarm_page(offset=0, status_message="Filters cleared")
+            return
         if not self._full_df.empty:
             self._reset_date_range(self._full_df)
             # Restore original load order
@@ -1879,6 +2198,23 @@ class AlarmViewer(QMainWindow):
         self._sbar.showMessage("Filters cleared")
 
     def _show_backup_times(self):
+        if self._has_query_backed_alarm_data():
+            query = self._build_alarm_query(limit=None, offset=0, ignore_sort=True)
+            if alarm_store.count_alarms(query) == 0:
+                QMessageBox.information(
+                    self, "No Data",
+                    "No records match the current filters.")
+                return
+            self._btn_backup.setEnabled(False)
+            self._sbar.showMessage("Computing backup times …")
+            self._bt_thread = BackupTimeThread(alarm_query=query)
+            self._bt_thread.progress.connect(
+                lambda v, m: self._sbar.showMessage(m))
+            self._bt_thread.finished.connect(self._on_bt_done)
+            self._bt_thread.error.connect(self._on_bt_error)
+            self._bt_thread.start()
+            return
+
         if self._full_df.empty:
             QMessageBox.information(
                 self, "No Data", "Load alarm data first.")
@@ -1915,7 +2251,7 @@ class AlarmViewer(QMainWindow):
         self._sbar.showMessage("Backup time computation failed")
 
     def _upload_site_sheet(self):
-        if self._full_df.empty:
+        if not self._has_query_backed_alarm_data() and self._full_df.empty:
             QMessageBox.information(
                 self, "No Data", "Load alarm data first.")
             return
@@ -1932,7 +2268,8 @@ class AlarmViewer(QMainWindow):
         try:
             self._btn_site_sheet.setEnabled(False)
             self._sbar.showMessage("Reading site sheet …")
-            site_df, sheet_name, site_col = read_site_sheet(in_path, self._full_df)
+            alarm_df = self._reference_alarm_sites_df() if self._has_query_backed_alarm_data() else self._full_df
+            site_df, sheet_name, site_col = read_site_sheet(in_path, alarm_df)
             site_keys = collect_site_sheet_keys(site_df, site_col)
             if not site_keys:
                 raise ValueError("The uploaded site sheet does not contain any usable site IDs.")
@@ -1970,7 +2307,7 @@ class AlarmViewer(QMainWindow):
             f"Loaded site sheet scope: {len(site_keys):,} site IDs from {os.path.basename(in_path)}")
 
     def _export_site_sheet_report(self):
-        if self._full_df.empty:
+        if not self._has_query_backed_alarm_data() and self._full_df.empty:
             QMessageBox.information(
                 self, "No Data", "Load alarm data first.")
             return
@@ -1979,7 +2316,12 @@ class AlarmViewer(QMainWindow):
                 self, "No Site Sheet", "Upload a site sheet first.")
             return
 
-        filtered_alarms = self._apply_filters(self._full_df)
+        if self._has_query_backed_alarm_data():
+            filtered_alarms = alarm_store.query_alarms(
+                self._build_alarm_query(limit=None, offset=0, ignore_sort=True)
+            )
+        else:
+            filtered_alarms = self._apply_filters(self._full_df)
 
         try:
             report_df = build_site_alarm_report(
@@ -2041,7 +2383,14 @@ class AlarmViewer(QMainWindow):
         self._sbar.showMessage("Site sheet export failed")
 
     def _export(self):
-        if self._model.rowCount() == 0:
+        if self._has_query_backed_alarm_data():
+            export_df = alarm_store.query_alarms(
+                self._build_alarm_query(limit=None, offset=0)
+            )
+        else:
+            export_df = self._model.get_df()
+
+        if export_df.empty:
             QMessageBox.information(
                 self, "Nothing to Export",
                 "Apply a search first or load data.")
@@ -2054,7 +2403,8 @@ class AlarmViewer(QMainWindow):
             return
         self._btn_export.setEnabled(False)
         self._sbar.showMessage("Exporting …")
-        self._export_thread = ExportThread(self._model.get_df(), fp)
+        self._pending_export_row_count = len(export_df)
+        self._export_thread = ExportThread(export_df, fp)
         self._export_thread.progress.connect(
             lambda v, m: self._sbar.showMessage(m))
         self._export_thread.finished.connect(self._on_export_done)
@@ -2063,9 +2413,10 @@ class AlarmViewer(QMainWindow):
 
     def _on_export_done(self, fp: str):
         self._btn_export.setEnabled(True)
+        row_count = int(getattr(self, "_pending_export_row_count", self._model.rowCount()) or 0)
         QMessageBox.information(
             self, "Export OK",
-            f"Exported {self._model.rowCount():,} records to:\n{fp}")
+            f"Exported {row_count:,} records to:\n{fp}")
         self._sbar.showMessage(f"Exported → {fp}")
 
     def _on_export_error(self, msg: str):
@@ -2076,9 +2427,9 @@ class AlarmViewer(QMainWindow):
     # ── Column filter popup slots ─────────────────────────────────
     def _on_header_clicked(self, logical_index: int):
         """Open the column filter popup under the clicked header section."""
-        if self._full_df.empty:
+        if self._full_df.empty and not self._has_query_backed_alarm_data():
             return
-        cols = [c for c in ALL_INTERNAL_COLS if c in self._full_df.columns]
+        cols = self._current_alarm_columns()
         if logical_index >= len(cols):
             return
 
@@ -2088,10 +2439,19 @@ class AlarmViewer(QMainWindow):
             col_name, col_name.replace("_", " ").title())
 
         # Gather unique display values from the *full* data
-        unique = sorted(
-            self._full_df[col_name].fillna("").astype(str).unique(),
-            key=lambda x: x.lower() if x else "",
-        )
+        if self._has_query_backed_alarm_data():
+            facet_query = self._build_alarm_query(
+                limit=None,
+                offset=0,
+                exclude_columns={col_name},
+                ignore_sort=True,
+            )
+            unique = alarm_store.distinct_values(col_name, facet_query)
+        else:
+            unique = sorted(
+                self._full_df[col_name].fillna("").astype(str).unique(),
+                key=lambda x: x.lower() if x else "",
+            )
 
         # Current selection for this column (None = all selected)
         selected = self._col_filters.get(col_name)
@@ -2111,12 +2471,16 @@ class AlarmViewer(QMainWindow):
 
     def _sort_column(self, col_name: str, order):
         """Sort the table by the given column (called from popup)."""
-        cols = [c for c in ALL_INTERNAL_COLS if c in self._full_df.columns]
+        cols = self._current_alarm_columns()
         if col_name not in cols:
             return
         col_index = cols.index(col_name)
-        self._model.sort(col_index, order)
         self._table.horizontalHeader().setSortIndicator(col_index, order)
+        if self._has_query_backed_alarm_data():
+            self._page_offset = 0
+            self._load_alarm_page(offset=0)
+            return
+        self._model.sort(col_index, order)
 
     def _on_col_filter_applied(self, col_name: str, selected):
         """Store the column filter and re-apply all filters."""

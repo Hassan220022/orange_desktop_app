@@ -33,8 +33,6 @@ except ImportError:
 
 STATE_DIR  = Path.home() / ".alarm_viewer"
 STATE_FILE = STATE_DIR / "state.json"
-CACHE_FILE = STATE_DIR / "data_cache.parquet"
-CACHE_PICKLE_FILE = STATE_DIR / "data_cache.pkl"
 REVIEW_LOG_FILE = STATE_DIR / "review_log.jsonl"
 OUTBOX_FILE = STATE_DIR / "sync_outbox.jsonl"
 SYNC_CHECKPOINT_FILE = STATE_DIR / "sync_checkpoint.json"
@@ -74,6 +72,14 @@ def _sync_repo_module():
     except ImportError:
         from db.repos import sync_repo as _repo
     return _repo
+
+
+def _alarm_store_module():
+    try:
+        from alarm_app.data import alarm_store as _store
+    except ImportError:
+        from data import alarm_store as _store
+    return _store
 
 
 def _db_models_module():
@@ -164,57 +170,68 @@ def load_state() -> dict | None:
 
 
 ALARM_DB_FILE = STATE_DIR / "alarms.duckdb"
+ALARM_DB_FALLBACK_FILE = STATE_DIR / "alarms.local.duckdb"
 
 
-def _coerce_dataframe_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a parquet-safe copy by normalizing object columns to strings."""
-    out = df.copy()
-    for col in out.columns:
-        if pd.api.types.is_object_dtype(out[col]):
-            out[col] = out[col].where(out[col].notna(), "")
-            out[col] = out[col].astype(str)
-    return out
+def _alarm_db_candidates() -> list[Path]:
+    existing: list[Path] = []
+    for path in (ALARM_DB_FILE, ALARM_DB_FALLBACK_FILE):
+        if path.exists():
+            existing.append(path)
+    existing.sort(
+        key=lambda path: (path.stat().st_mtime, 1 if path == ALARM_DB_FILE else 0),
+        reverse=True,
+    )
+    return existing
 
+
+def _set_alarm_store_path(path: Path) -> None:
+    store = _alarm_store_module()
+    if hasattr(store, "set_alarm_db_file"):
+        store.set_alarm_db_file(path)
+
+
+def has_alarm_cache() -> bool:
+    candidates = _alarm_db_candidates()
+    if candidates:
+        _set_alarm_store_path(candidates[0])
+        return True
+    _set_alarm_store_path(ALARM_DB_FILE)
+    return False
 
 def save_dataframe(df: pd.DataFrame) -> str:
     """Persist alarm DataFrame for fast restore.
 
-    Primary backend is DuckDB. If DuckDB is unavailable or write fails,
-    fall back to parquet, then pickle as a last-resort local cache.
-    Returns the backend used: "duckdb", "parquet", or "pickle".
+    Primary and only backend is DuckDB.
+    Returns the backend used: "duckdb".
     """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        import duckdb
-
-        con = duckdb.connect(str(ALARM_DB_FILE))
+    last_error: Exception | None = None
+    for path in (ALARM_DB_FILE, ALARM_DB_FALLBACK_FILE):
         try:
-            con.execute("DROP TABLE IF EXISTS alarm_records")
-            con.execute("CREATE TABLE alarm_records AS SELECT * FROM df")
-            _log.info("DataFrame saved to DuckDB: row_count=%d", len(df))
+            _set_alarm_store_path(path)
+            _alarm_store_module().replace_alarm_table(df)
+            if path == ALARM_DB_FILE:
+                try:
+                    ALARM_DB_FALLBACK_FILE.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            _log.info("DataFrame saved to DuckDB: row_count=%d path=%s", len(df), path)
             return "duckdb"
-        finally:
-            con.close()
-    except Exception:
-        _log.warning("DuckDB save failed; falling back to parquet cache", exc_info=True)
-        parquet_df = _coerce_dataframe_for_parquet(df)
-        try:
-            parquet_df.to_parquet(CACHE_FILE, index=False)
-            _log.info("DataFrame saved to parquet cache: row_count=%d", len(parquet_df))
-            return "parquet"
-        except Exception:
-            _log.warning("Parquet save failed; falling back to pickle cache", exc_info=True)
-            parquet_df.to_pickle(CACHE_PICKLE_FILE)
-            _log.info("DataFrame saved to pickle cache: row_count=%d", len(parquet_df))
-            return "pickle"
+        except Exception as exc:
+            last_error = exc
+            _log.warning("DuckDB save failed at %s (%s)", path, exc)
+    if last_error is not None:
+        raise last_error
+    return "duckdb"
 
 
 def load_dataframe() -> pd.DataFrame | None:
-    """Load alarm DataFrame from DuckDB/parquet/pickle (or cloud API if enabled)."""
+    """Load alarm DataFrame from DuckDB (or cloud API if enabled)."""
     try:
         flags = load_feature_flags()
     except Exception:
-        _log.warning("Feature flags unavailable; using local cache only", exc_info=True)
+        _log.warning("Feature flags unavailable; using local DuckDB only", exc_info=True)
         flags = dict(DEFAULT_FEATURE_FLAGS)
     if flags.get("cloud_read_on"):
         try:
@@ -227,49 +244,26 @@ def load_dataframe() -> pd.DataFrame | None:
             return cloud_df
         _log.warning("Cloud read failed or empty, falling back to local DuckDB")
 
-    if ALARM_DB_FILE.exists():
-        try:
-            import duckdb
-
-            con = duckdb.connect(str(ALARM_DB_FILE), read_only=True)
+    candidates = _alarm_db_candidates()
+    if candidates:
+        for path in candidates:
             try:
-                df = con.execute("SELECT * FROM alarm_records").fetchdf()
-            finally:
-                con.close()
-            if not df.empty:
-                _log.info("DataFrame loaded from DuckDB: row_count=%d", len(df))
-                return df
-            _log.info("DuckDB alarm cache table is empty")
-        except Exception:
-            _log.warning("DuckDB alarm cache read failed; trying parquet cache", exc_info=True)
+                _set_alarm_store_path(path)
+                df = _alarm_store_module().load_all_alarms()
+                if not df.empty:
+                    _log.info("DataFrame loaded from DuckDB: row_count=%d path=%s", len(df), path)
+                    return df
+                _log.info("DuckDB alarm cache table is empty at %s", path)
+            except Exception:
+                _log.warning("DuckDB alarm cache read failed at %s", path, exc_info=True)
     else:
         _log.info("No DuckDB alarm cache found")
-
-    if CACHE_FILE.exists():
-        try:
-            df = pd.read_parquet(CACHE_FILE)
-            if not df.empty:
-                _log.info("DataFrame loaded from parquet cache: row_count=%d", len(df))
-                return df
-            _log.info("Parquet alarm cache is empty")
-        except Exception:
-            _log.warning("Parquet alarm cache read failed", exc_info=True)
-
-    if CACHE_PICKLE_FILE.exists():
-        try:
-            df = pd.read_pickle(CACHE_PICKLE_FILE)
-            if not df.empty:
-                _log.info("DataFrame loaded from pickle cache: row_count=%d", len(df))
-                return df
-            _log.info("Pickle alarm cache is empty")
-        except Exception:
-            _log.warning("Pickle alarm cache read failed", exc_info=True)
 
     sqlite_df = _load_alarm_dataframe_from_sqlite()
     if sqlite_df is not None and not sqlite_df.empty:
         try:
             backend = save_dataframe(sqlite_df)
-            _log.info("Rehydrated local cache from SQLite fallback using %s backend", backend)
+            _log.info("Rehydrated local DuckDB cache from SQLite fallback using %s backend", backend)
         except Exception:
             _log.warning("Failed to rehydrate local cache after SQLite fallback", exc_info=True)
         return sqlite_df
@@ -279,7 +273,7 @@ def load_dataframe() -> pd.DataFrame | None:
 
 def clear_cache():
     """Remove cached data files and clear DB UI state."""
-    for f in (STATE_FILE, CACHE_FILE, CACHE_PICKLE_FILE, ALARM_DB_FILE):
+    for f in (STATE_FILE, ALARM_DB_FILE, ALARM_DB_FALLBACK_FILE):
         try:
             f.unlink(missing_ok=True)
         except Exception:

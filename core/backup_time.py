@@ -2,6 +2,14 @@
 
 import pandas as pd
 
+try:
+    from ..data.alarm_store import AlarmQuery, query_alarms
+except ImportError:
+    try:
+        from alarm_app.data.alarm_store import AlarmQuery, query_alarms
+    except ImportError:
+        from data.alarm_store import AlarmQuery, query_alarms
+
 
 def compute_backup_times(df: pd.DataFrame):
     """
@@ -76,6 +84,13 @@ def compute_backup_times(df: pd.DataFrame):
                         "down_time", "backup_time"]
            if c in merged.columns]
     return merged[out], ""
+
+
+def compute_backup_times_for_query(alarm_query: AlarmQuery | None = None):
+    """Load a targeted alarm subset from DuckDB, then run backup analysis."""
+    query = alarm_query or AlarmQuery()
+    df = query_alarms(query)
+    return compute_backup_times(df)
 
 
 def fmt_td(td):

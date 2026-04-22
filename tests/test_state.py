@@ -2,12 +2,12 @@
 
 import json
 import os
-import sys
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+import alarm_app.data.alarm_store as alarm_store
 import alarm_app.data.state as state_mod
 
 
@@ -17,14 +17,13 @@ def _isolate_state_dir(tmp_path, monkeypatch):
     # Existing file path patches
     monkeypatch.setattr(state_mod, "STATE_DIR", tmp_path)
     monkeypatch.setattr(state_mod, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(state_mod, "CACHE_FILE", tmp_path / "data_cache.parquet")
-    monkeypatch.setattr(state_mod, "CACHE_PICKLE_FILE", tmp_path / "data_cache.pkl")
     monkeypatch.setattr(state_mod, "ALARM_IDS_FILE", tmp_path / "alarm_ids.json")
     monkeypatch.setattr(state_mod, "REVIEW_LOG_FILE", tmp_path / "review_log.jsonl")
     monkeypatch.setattr(state_mod, "OUTBOX_FILE", tmp_path / "sync_outbox.jsonl")
     monkeypatch.setattr(state_mod, "SYNC_CHECKPOINT_FILE", tmp_path / "sync_checkpoint.json")
     monkeypatch.setattr(state_mod, "DEVICE_ID_FILE", tmp_path / "device_id.txt")
     monkeypatch.setattr(state_mod, "ALARM_DB_FILE", tmp_path / "alarms.duckdb")
+    monkeypatch.setattr(state_mod, "ALARM_DB_FALLBACK_FILE", tmp_path / "alarms.local.duckdb")
 
     # DB engine patches — force each test to use a fresh temp database
     monkeypatch.setattr("alarm_app.db.engine.STATE_DIR", tmp_path)
@@ -92,57 +91,10 @@ class TestDataFramePersistence:
         assert loaded is not None
         assert loaded["site_id"].tolist() == ["A001"]
 
-    def test_falls_back_to_parquet_when_duckdb_unavailable(self, monkeypatch):
-        class _BrokenDuckDB:
-            def connect(self, *_args, **_kwargs):
-                raise RuntimeError("duckdb unavailable")
-
-        monkeypatch.setitem(sys.modules, "duckdb", _BrokenDuckDB())
-
-        df = pd.DataFrame({
-            "site_id": ["A001"],
-            "occurred_on": pd.to_datetime(["2025-01-01"]),
-            "duration": ["01:00:00"],
-        })
-        backend = state_mod.save_dataframe(df)
-        loaded = state_mod.load_dataframe()
-
-        assert backend == "parquet"
-        assert loaded is not None
-        assert loaded["site_id"].tolist() == ["A001"]
-
-    def test_falls_back_to_pickle_when_duckdb_and_parquet_unavailable(self, monkeypatch):
-        class _BrokenDuckDB:
-            def connect(self, *_args, **_kwargs):
-                raise RuntimeError("duckdb unavailable")
-
-        monkeypatch.setitem(sys.modules, "duckdb", _BrokenDuckDB())
-
-        original_to_parquet = pd.DataFrame.to_parquet
-
-        def _broken_to_parquet(self, *args, **kwargs):
-            raise RuntimeError("parquet unavailable")
-
-        monkeypatch.setattr(pd.DataFrame, "to_parquet", _broken_to_parquet)
-        try:
-            df = pd.DataFrame({
-                "site_id": ["A001"],
-                "occurred_on": pd.to_datetime(["2025-01-01"]),
-                "duration": ["01:00:00"],
-            })
-            backend = state_mod.save_dataframe(df)
-        finally:
-            monkeypatch.setattr(pd.DataFrame, "to_parquet", original_to_parquet)
-
-        loaded = state_mod.load_dataframe()
-        assert backend == "pickle"
-        assert loaded is not None
-        assert loaded["site_id"].tolist() == ["A001"]
-
     def test_load_dataframe_falls_back_to_sqlite_alarm_records(self, monkeypatch):
-        # Ensure local cache files do not exist so fallback path is exercised.
+        # Ensure local DuckDB cache does not exist so SQLite fallback path is exercised.
         state_mod.ALARM_DB_FILE.unlink(missing_ok=True)
-        state_mod.CACHE_FILE.unlink(missing_ok=True)
+        state_mod.ALARM_DB_FALLBACK_FILE.unlink(missing_ok=True)
 
         fallback_df = pd.DataFrame({
             "site_id": ["A001"],
@@ -164,6 +116,36 @@ class TestDataFramePersistence:
         assert loaded is not None
         assert loaded["site_id"].tolist() == ["A001"]
         assert rehydrated["called"] is True
+
+    def test_save_dataframe_falls_back_to_secondary_duckdb_when_primary_is_locked(self, monkeypatch, caplog):
+        df = pd.DataFrame({
+            "site_id": ["A001"],
+            "occurred_on": pd.to_datetime(["2025-01-01"]),
+            "duration": ["01:00:00"],
+        })
+        original_connect = alarm_store._connect
+        primary_path = state_mod.ALARM_DB_FILE
+        fallback_path = state_mod.ALARM_DB_FALLBACK_FILE
+
+        def _connect(*, read_only=False):
+            if alarm_store.ALARM_DB_FILE == primary_path:
+                raise RuntimeError("primary locked")
+            return original_connect(read_only=read_only)
+
+        monkeypatch.setattr(alarm_store, "_connect", _connect)
+
+        with caplog.at_level("WARNING"):
+            backend = state_mod.save_dataframe(df)
+        loaded = state_mod.load_dataframe()
+
+        assert backend == "duckdb"
+        assert fallback_path.exists()
+        assert loaded is not None
+        assert loaded["site_id"].tolist() == ["A001"]
+        warnings = [rec for rec in caplog.records if "DuckDB save failed at" in rec.getMessage()]
+        assert len(warnings) == 1
+        assert "primary locked" in warnings[0].getMessage()
+        assert warnings[0].exc_info is None
 
 
 # ── clear_cache ────────────────────────────────────────────────

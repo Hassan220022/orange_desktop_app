@@ -15,11 +15,12 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 try:
     from ..constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
-    from ..core.backup_time import compute_backup_times
+    from ..core.backup_time import compute_backup_times, compute_backup_times_for_query
     from ..core.duration import duration_to_secs as _duration_to_secs
     from ..core.duration import secs_to_hhmmss as _secs_to_hhmmss
     from ..core.classify import classify_by_alarm_id, compute_site_down_flag
     from ..data import loaders as _loaders
+    from ..data.alarm_store import load_alarm_slice_for_bdt
     from ..data.loaders import (
         parse_alarm_file,
         deduplicate_alarm_rows,
@@ -31,11 +32,12 @@ try:
 except ImportError:
     try:
         from alarm_app.constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
-        from alarm_app.core.backup_time import compute_backup_times
+        from alarm_app.core.backup_time import compute_backup_times, compute_backup_times_for_query
         from alarm_app.core.duration import duration_to_secs as _duration_to_secs
         from alarm_app.core.duration import secs_to_hhmmss as _secs_to_hhmmss
         from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
         from alarm_app.data import loaders as _loaders
+        from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
         from alarm_app.data.loaders import (
             parse_alarm_file,
             deduplicate_alarm_rows,
@@ -46,11 +48,12 @@ except ImportError:
         from alarm_app.db.repos.file_repo import file_exists as _file_exists, register_file as _register_file
     except ImportError:
         from constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
-        from core.backup_time import compute_backup_times
+        from core.backup_time import compute_backup_times, compute_backup_times_for_query
         from core.duration import duration_to_secs as _duration_to_secs
         from core.duration import secs_to_hhmmss as _secs_to_hhmmss
         from core.classify import classify_by_alarm_id, compute_site_down_flag
         from data import loaders as _loaders
+        from data.alarm_store import load_alarm_slice_for_bdt
         from data.loaders import (
             parse_alarm_file,
             deduplicate_alarm_rows,
@@ -77,12 +80,10 @@ def _persist_alarm_cache_and_file_index(
 
     try:
         backend = state.save_dataframe(combined)
-        if backend == "parquet":
-            messages.append(f"cached {len(combined):,} alarm row(s) in local parquet cache")
-        elif backend == "pickle":
-            messages.append(f"cached {len(combined):,} alarm row(s) in local pickle cache")
-        else:
+        if backend in (None, "", "duckdb"):
             messages.append(f"cached {len(combined):,} alarm row(s) in DuckDB")
+        else:
+            messages.append("warning: unexpected alarm cache backend")
     except Exception:
         _log.warning("DuckDB alarm cache save failed", exc_info=True)
         messages.append("warning: local alarm cache save failed")
@@ -383,6 +384,7 @@ class BDTValidationThread(QThread):
         self._tolerance = tolerance
         self._health_pct = health_pct
         self._skip_photos = skip_photos
+        self._alarm_slice_cache: dict[tuple[str, str], pd.DataFrame] = {}
 
     @staticmethod
     def _is_invalid_bdt_payload(bdt_data) -> bool:
@@ -413,6 +415,31 @@ class BDTValidationThread(QThread):
             _log.info("Deferred BDT photo jobs completed: photos=%d", stored)
         except Exception:
             _log.warning("Deferred BDT photo jobs failed", exc_info=True)
+
+    def _load_alarm_df_for_bdt(self, bdt_data) -> pd.DataFrame | None:
+        if self._alarm_df is not None:
+            return self._alarm_df
+
+        site_code = str(getattr(bdt_data, "site_code", "") or "").strip()
+        if not site_code:
+            return None
+
+        test_date = pd.to_datetime(getattr(bdt_data, "test_date", None), errors="coerce")
+        if pd.isna(test_date):
+            return None
+
+        cache_key = (site_code.upper(), str(test_date.normalize().date()))
+        cached = self._alarm_slice_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Give validation a narrow window that still covers midnight-crossing
+        # power/down incidents and same-date door checks.
+        date_from = (test_date - pd.Timedelta(days=1)).to_pydatetime()
+        date_to = (test_date + pd.Timedelta(days=1)).to_pydatetime()
+        subset = load_alarm_slice_for_bdt([site_code], date_from, date_to)
+        self._alarm_slice_cache[cache_key] = subset
+        return subset
 
     def run(self):
         try:
@@ -445,8 +472,9 @@ class BDTValidationThread(QThread):
                     if matched_summary:
                         bdt_data.summary_data = matched_summary
 
+                alarm_df = self._load_alarm_df_for_bdt(bdt_data)
                 result = validate_bdt(
-                    bdt_data, self._alarm_df,
+                    bdt_data, alarm_df,
                     self._tolerance, self._health_pct)
                 return result, bdt_data
 
@@ -587,31 +615,19 @@ class BackupTimeThread(QThread):
     finished = pyqtSignal(object, str)
     error    = pyqtSignal(str)
 
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame | None = None, alarm_query=None):
         super().__init__()
         self._df = df
+        self._alarm_query = alarm_query
 
     def run(self):
         try:
             self.progress.emit(30, "Computing backup times …")
-            result, err = compute_backup_times(self._df)
+            if self._df is not None:
+                result, err = compute_backup_times(self._df)
+            else:
+                result, err = compute_backup_times_for_query(self._alarm_query)
             self.progress.emit(100, "Done")
             self.finished.emit(result, err)
         except Exception:
             self.error.emit(traceback.format_exc())
-
-
-# ─────────────────────────────────────────────────────────────────
-# Restore-from-cache thread
-# ─────────────────────────────────────────────────────────────────
-class RestoreThread(QThread):
-    """Load cached DataFrame from Parquet in a background thread."""
-    finished = pyqtSignal(object)  # DataFrame or None
-    error = pyqtSignal(str)
-
-    def run(self):
-        try:
-            df = state.load_dataframe()
-            self.finished.emit(df)
-        except Exception as e:
-            self.error.emit(str(e))

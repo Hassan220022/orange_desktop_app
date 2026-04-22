@@ -20,7 +20,6 @@ from alarm_app.core.filters import compute_date_mask, parse_manual_days
 def _isolate_state_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(state_mod, "STATE_DIR", tmp_path)
     monkeypatch.setattr(state_mod, "STATE_FILE", tmp_path / "state.json")
-    monkeypatch.setattr(state_mod, "CACHE_FILE", tmp_path / "data_cache.parquet")
     monkeypatch.setattr(state_mod, "ALARM_IDS_FILE", tmp_path / "alarm_ids.json")
     monkeypatch.setattr(state_mod, "REVIEW_LOG_FILE", tmp_path / "review_log.jsonl")
     monkeypatch.setattr(state_mod, "OUTBOX_FILE", tmp_path / "sync_outbox.jsonl")

@@ -6,6 +6,8 @@ import os
 import re
 from datetime import datetime
 
+import pandas as pd
+
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QFrame, QSplitter, QTableWidget, QTableWidgetItem,
@@ -18,15 +20,18 @@ from PyQt5.QtGui import QColor, QPixmap, QDesktopServices
 try:
     from ...bdt.parser import BDTData, load_bdt_photos
     from ...bdt.validator import ValidationResult
+    from ...data.alarm_store import load_alarm_slice_for_bdt
     from ...data import state
 except ImportError:
     try:
         from alarm_app.bdt.parser import BDTData, load_bdt_photos
         from alarm_app.bdt.validator import ValidationResult
+        from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
         from alarm_app.data import state
     except ImportError:
         from bdt.parser import BDTData, load_bdt_photos
         from bdt.validator import ValidationResult
+        from data.alarm_store import load_alarm_slice_for_bdt
         from data import state
 
 
@@ -484,7 +489,7 @@ class BdtDetailPanel(QWidget):
 
         # ── Populate door alarm history ──────────────────────────
         self._bdt_door_table.setRowCount(0)
-        if bdt and bdt.test_date and self._viewer._full_df is not None and not self._viewer._full_df.empty:
+        if bdt and bdt.test_date:
             try:
                 try:
                     from ...bdt.validator import _find_door_alarms
@@ -493,9 +498,9 @@ class BdtDetailPanel(QWidget):
                         from alarm_app.bdt.validator import _find_door_alarms
                     except ImportError:
                         from bdt.validator import _find_door_alarms
-                import pandas as pd
                 test_date_ts = pd.Timestamp(bdt.test_date).normalize()
-                doors = _find_door_alarms(self._viewer._full_df, bdt.site_code, test_date_ts)
+                alarm_df = self._load_door_alarm_subset(bdt.site_code, test_date_ts)
+                doors = _find_door_alarms(alarm_df, bdt.site_code, test_date_ts)
                 if not doors.empty:
                     self._bdt_door_table.setRowCount(len(doors))
                     for i, (_, row) in enumerate(doors.iterrows()):
@@ -538,7 +543,6 @@ class BdtDetailPanel(QWidget):
                             load_second_most_recent_test,
                         )
                 from datetime import date as date_type, datetime as datetime_type
-
                 test_date = None
                 if bdt.test_date:
                     test_date = (bdt.test_date.date()
@@ -607,6 +611,14 @@ class BdtDetailPanel(QWidget):
         # ── Photo comparison setup ──
         self._current_bdt = bdt
         self._setup_photo_comparison(bdt)
+
+    @staticmethod
+    def _load_door_alarm_subset(site_code: str, test_date: pd.Timestamp) -> pd.DataFrame:
+        if not site_code or pd.isna(test_date):
+            return pd.DataFrame()
+        date_from = (pd.Timestamp(test_date) - pd.Timedelta(days=1)).to_pydatetime()
+        date_to = (pd.Timestamp(test_date) + pd.Timedelta(days=1)).to_pydatetime()
+        return load_alarm_slice_for_bdt([site_code], date_from, date_to)
 
     # ------------------------------------------------------------------
     # File opener

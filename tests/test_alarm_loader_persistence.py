@@ -65,18 +65,3 @@ def test_alarm_cache_message_reports_duckdb_failure(monkeypatch):
     )
 
     assert "warning: local alarm cache save failed" in msg
-
-
-def test_alarm_cache_message_reports_pickle_backend(monkeypatch):
-    monkeypatch.setattr(threads.state, "save_dataframe", lambda _df: "pickle")
-    monkeypatch.setattr(threads, "_db_create_engine", lambda: object())
-    monkeypatch.setattr(threads, "_db_init_db", lambda engine, include_alarm_records=False: None)
-    monkeypatch.setattr(threads, "_db_get_session_factory", lambda engine: (lambda: type("S", (), {"commit": lambda self: None, "close": lambda self: None})()))
-
-    msg = threads._persist_alarm_cache_and_file_index(
-        pd.DataFrame({"site_id": ["A001"]}),
-        [],
-        set(),
-    )
-
-    assert "cached 1 alarm row(s) in local pickle cache" in msg

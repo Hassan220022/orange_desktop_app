@@ -408,3 +408,76 @@ The migration is complete when:
 - export and analytics no longer require a resident full alarm DataFrame
 - `self._full_df` is no longer the authoritative alarm source
 
+## Execution Log
+
+### Stage 0: Baseline Validation
+
+Status: complete
+
+Changed:
+
+- Confirmed the workspace already contains a partial migration from the prior attempt.
+- Re-ran the current full test suite on the active tree.
+
+Validated:
+
+- `./.venv/bin/pytest -q`
+- Result: `660 passed, 12 skipped`
+
+Still in progress:
+
+- Review and integrate the remaining DB-driven viewer migration.
+- Remove the remaining `viewer._full_df` readers in table, backup, export, and BDT flows.
+
+### Stage 1: DuckDB Alarm Store + State Handoff
+
+Status: complete
+
+Changed:
+
+- Added `data/alarm_store.py` as the DuckDB-backed alarm query layer.
+- Switched `data/state.py` alarm persistence/load paths to delegate to `alarm_store`.
+- Added store/state coverage in `tests/test_alarm_store.py`.
+
+Validated:
+
+- Prior targeted validation from the earlier execution on this tree.
+- Full-suite revalidation in Stage 0 remained green after the partial migration state was resumed.
+
+Still in progress:
+
+- Viewer startup still restores and filters a full DataFrame.
+- Table paging, stats, facets, export, backup-time, and BDT flows are not yet fully DB-driven.
+
+### Stage 2: Query-Driven UI + Analytics Migration
+
+Status: complete
+
+Changed:
+
+- Split remaining work into parallel owned tracks:
+- Track A: `ui/viewer.py`, `ui/model.py`, viewer/model paging tests.
+- Track B: `ui/threads.py`, BDT panels, backup/export/query-backed subset tests.
+- Converted the alarm table/model path to page-oriented query loads from DuckDB.
+- Switched viewer startup restore, DB-mode load, search, sort, stats, facets, and header filters to `AlarmQuery` + `alarm_store`.
+- Moved backup-time, BDT validation, PM Accept report generation, and BDT detail door-alarm history to targeted DuckDB subsets instead of a resident master frame.
+- Rewired export and site-report generation to query filtered alarm subsets directly from DuckDB.
+- Added focused migration coverage in:
+- `tests/test_alarm_cache_ui.py`
+- `tests/test_alarm_store.py`
+- `tests/test_non_table_alarm_migration.py`
+
+Validated:
+
+- Targeted syntax/import check with `python -m py_compile` for the changed query/viewer/store modules and tests.
+- Targeted regression suite:
+- `./.venv/bin/pytest -q tests/test_alarm_cache_ui.py tests/test_non_table_alarm_migration.py tests/test_alarm_store.py tests/test_alarm_loader_persistence.py tests/test_state.py`
+- Result: `45 passed`
+- Full application suite:
+- `./.venv/bin/pytest -q`
+- Result: `664 passed, 12 skipped`
+
+Still in progress:
+
+- No implementation stages remain in progress for this migration plan.
+- `_full_df` remains in `ui/viewer.py` only as a compatibility fallback path, but the DB-driven runtime paths now use DuckDB query state rather than a resident authoritative master DataFrame.
