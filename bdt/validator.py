@@ -83,7 +83,6 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
     result.rules.append(_rule_1_photos(bdt))
     result.rules.append(_rule_2_power_alarm_match(bdt, alarm_df, tol_override=power_timing_tol))
     result.rules.append(_rule_3_string_vs_busbar(bdt))
-    result.rules.append(_rule_4_discharge_table(bdt, tolerance))
     result.rules.append(_rule_5_start_ampere(bdt))
     result.rules.append(_rule_6_end_voltage(bdt, health_pct))
     result.rules.append(_rule_7_inverse_relationship(bdt))

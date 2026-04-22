@@ -395,53 +395,27 @@ class FeatureFlagDialog(QDialog):
 
 
 class BdtParametersDialog(QDialog):
-    """Edit BDT validation parameters with inline explanations."""
+    """Edit active BDT validation parameters with inline explanations."""
 
-    def __init__(self, *, tolerance_pct: int, health_pct: int, parent=None):
+    def __init__(self, *, health_pct: int, parent=None):
         super().__init__(parent)
         self.setWindowTitle("BDT Validation Parameters")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(460)
         if parent:
             self.setStyleSheet(parent.styleSheet())
-        self._build(tolerance_pct, health_pct)
+        self._build(health_pct)
 
-    def _build(self, tolerance_pct: int, health_pct: int):
+    def _build(self, health_pct: int):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 16)
         lay.setSpacing(12)
 
         intro = QLabel(
-            "These parameters affect how BDT files are validated against the discharge table "
-            "and theoretical battery sizing calculations."
+            "These parameters affect the active BDT validation rules and their calculations."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color:#6c7086; font-size:12px; background:transparent;")
         lay.addWidget(intro)
-
-        tol_card = QFrame()
-        tol_card.setObjectName("workspace_card")
-        tol_lay = QVBoxLayout(tol_card)
-        tol_lay.setContentsMargins(12, 12, 12, 12)
-        tol_lay.setSpacing(8)
-        tol_title = QLabel("Tolerance")
-        tol_title.setObjectName("workspace_card_title")
-        tol_lay.addWidget(tol_title)
-        self._spn_tolerance = QSpinBox()
-        self._spn_tolerance.setRange(10, 20)
-        self._spn_tolerance.setValue(int(tolerance_pct))
-        self._spn_tolerance.setSuffix(" %")
-        self._spn_tolerance.setObjectName("filter_spin")
-        tol_lay.addWidget(self._spn_tolerance)
-        tol_help = QLabel(
-            "Allowed variance between the discharge duration written in the BDT sheet and the "
-            "duration reconstructed from the discharge table. This is used by Rule R4. "
-            "Example: 15% means the sheet can differ from the table by up to 15% before the "
-            "result is marked for revision."
-        )
-        tol_help.setWordWrap(True)
-        tol_help.setStyleSheet("color:#6c7086; font-size:11px; background:transparent;")
-        tol_lay.addWidget(tol_help)
-        lay.addWidget(tol_card)
 
         health_card = QFrame()
         health_card.setObjectName("workspace_card")
@@ -480,8 +454,8 @@ class BdtParametersDialog(QDialog):
         btn_row.addWidget(btn_save)
         lay.addLayout(btn_row)
 
-    def get_values(self) -> tuple[int, int]:
-        return self._spn_tolerance.value(), self._spn_health.value()
+    def get_values(self) -> int:
+        return self._spn_health.value()
 
 
 class AcceptedPmReportDialog(QDialog):
@@ -605,7 +579,6 @@ class BdtValidationIntroDialog(QDialog):
         self,
         *,
         source_label: str,
-        tolerance_pct: int,
         health_pct: int,
         skip_photos: bool,
         parent=None,
@@ -617,7 +590,6 @@ class BdtValidationIntroDialog(QDialog):
             self.setStyleSheet(parent.styleSheet())
         self._build(
             source_label=source_label,
-            tolerance_pct=tolerance_pct,
             health_pct=health_pct,
             skip_photos=skip_photos,
         )
@@ -626,7 +598,6 @@ class BdtValidationIntroDialog(QDialog):
         self,
         *,
         source_label: str,
-        tolerance_pct: int,
         health_pct: int,
         skip_photos: bool,
     ):
@@ -660,7 +631,6 @@ class BdtValidationIntroDialog(QDialog):
         settings_lay.addWidget(settings_title)
         for text in [
             f"Source: {source_label}",
-            f"Tolerance: {int(tolerance_pct)}%",
             f"Health: {int(health_pct)}%",
             f"Skip Photos: {'Enabled' if skip_photos else 'Disabled'}",
         ]:
@@ -700,7 +670,6 @@ class BdtValidationIntroDialog(QDialog):
         rules_title.setObjectName("workspace_card_title")
         rules_lay.addWidget(rules_title)
         for text in [
-            "Tolerance controls how much difference is allowed between the declared discharge duration and the duration reconstructed from the discharge table.",
             "Health controls the usable-capacity assumption for theoretical backup-time calculations on lead-acid batteries.",
             "Skip Photos ignores the photo-check rule during parsing when image content is not required for this run.",
         ]:
@@ -727,6 +696,77 @@ class BdtValidationIntroDialog(QDialog):
         btn_continue.clicked.connect(self.accept)
         btn_row.addWidget(btn_cancel)
         btn_row.addWidget(btn_continue)
+        lay.addLayout(btn_row)
+
+
+class BdtRulesReferenceDialog(QDialog):
+    """Reference dialog that explains each BDT validation rule."""
+
+    def __init__(self, *, rule_rows: list[tuple[str, str, str]], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("BDT Validation Rules")
+        self.setMinimumWidth(760)
+        self.setMinimumHeight(640)
+        if parent:
+            self.setStyleSheet(parent.styleSheet())
+        self._build(rule_rows)
+
+    def _build(self, rule_rows: list[tuple[str, str, str]]):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(12)
+
+        intro = QLabel(
+            "This reference explains what each BDT validation rule checks, so reviewers can read a verdict and understand the reason behind it."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#cdd6f4; font-size:13px; background:transparent;")
+        lay.addWidget(intro)
+
+        summary = QLabel(
+            "Use it when you need a plain-language explanation of the rule intent, not just the short rule label shown in the table."
+        )
+        summary.setWordWrap(True)
+        summary.setStyleSheet("color:#6c7086; font-size:12px; background:transparent;")
+        lay.addWidget(summary)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        container = QWidget()
+        rows_lay = QVBoxLayout(container)
+        rows_lay.setContentsMargins(0, 0, 0, 0)
+        rows_lay.setSpacing(10)
+
+        for rule_code, rule_name, description in rule_rows:
+            card = QFrame()
+            card.setObjectName("workspace_card")
+            card_lay = QVBoxLayout(card)
+            card_lay.setContentsMargins(12, 12, 12, 12)
+            card_lay.setSpacing(6)
+
+            title = QLabel(f"{rule_code} - {rule_name}")
+            title.setObjectName("workspace_card_title")
+            card_lay.addWidget(title)
+
+            body = QLabel(description)
+            body.setWordWrap(True)
+            body.setStyleSheet("color:#cdd6f4; font-size:12px; background:transparent;")
+            card_lay.addWidget(body)
+
+            rows_lay.addWidget(card)
+
+        rows_lay.addStretch()
+        scroll.setWidget(container)
+        lay.addWidget(scroll, 1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_close = QPushButton("Close")
+        btn_close.setObjectName("btn_search")
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(btn_close)
         lay.addLayout(btn_row)
 
 

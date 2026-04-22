@@ -285,7 +285,6 @@ class AlarmViewer(QMainWindow):
         # Tab 2: Test Validation
         self._bdt_validation_panel = BdtValidationPanel(self)
         # Bridge: existing code references self._xxx etc.
-        self._spn_tolerance = self._bdt_validation_panel.spn_tolerance
         self._spn_health = self._bdt_validation_panel.spn_health
         self._bdt_search = self._bdt_validation_panel.bdt_search
         self._bdt_table = self._bdt_validation_panel.bdt_table

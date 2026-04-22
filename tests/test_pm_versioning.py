@@ -4,6 +4,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 from alarm_app.db.engine import create_engine, init_db
 from alarm_app.db.models import PMRuleVersion, BDTTest
+from alarm_app.constants import BDT_RULES
 from alarm_app.db.repos.pm_repo import (
     get_or_create_rule_catalog, seed_rule_versions,
     get_or_create_parameter_set, save_validation_run, load_validation_history,
@@ -23,12 +24,12 @@ def session(tmp_path, monkeypatch):
 class TestRuleVersioning:
     def test_seed_creates_11_versions(self, session):
         versions = session.query(PMRuleVersion).all()
-        assert len(versions) == 11
+        assert len(versions) == len(BDT_RULES)
 
     def test_seed_is_idempotent(self, session):
         seed_rule_versions(session)  # call again
         versions = session.query(PMRuleVersion).all()
-        assert len(versions) == 11  # still 11, not 22
+        assert len(versions) == len(BDT_RULES)
 
     def test_versions_have_code_ref(self, session):
         versions = session.query(PMRuleVersion).all()
@@ -65,7 +66,7 @@ class TestValidationHistory:
         session.add(bdt)
         session.flush()
 
-        rules = [{"rule_code": f"R{i}", "verdict": "Accepted"} for i in range(1, 12)]
+        rules = [{"rule_code": code, "verdict": "Accepted"} for code, _ in BDT_RULES]
         save_validation_run(session, bdt_test_id=bdt.id,
                             alarm_input_sha256="ah1", validator_code_ref="v1",
                             overall_verdict="Accepted", rule_results=rules)
@@ -73,4 +74,4 @@ class TestValidationHistory:
         history = load_validation_history(session, "HIST")
         assert len(history) == 1
         assert history[0]["overall_verdict"] == "Accepted"
-        assert history[0]["rule_count"] == 11
+        assert history[0]["rule_count"] == len(BDT_RULES)

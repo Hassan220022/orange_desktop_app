@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from sqlalchemy.exc import OperationalError
+from alarm_app.constants import BDT_RULES
 
 from alarm_app.bdt.history import (
     BDTTestRecord,
@@ -166,7 +167,7 @@ class TestValidationRunPersistence:
 
         class _Res:
             overall = verdict
-            rules = [_Rule(f"R{i}") for i in range(1, 12)]
+            rules = [_Rule(code) for code, _ in BDT_RULES]
 
         return _Res()
 
@@ -192,7 +193,7 @@ class TestValidationRunPersistence:
 
         assert run is not None
         assert run["site_code"] == "0167DE"
-        assert run["rule_count"] == 11
+        assert run["rule_count"] == len(BDT_RULES)
         assert run["is_complete_rule_set"] is True
 
     def test_save_validation_run_is_idempotent_for_same_inputs(self, history_dir):

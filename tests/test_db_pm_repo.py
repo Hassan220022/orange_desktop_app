@@ -4,6 +4,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 from alarm_app.db.engine import create_engine, init_db
 from alarm_app.db.models import BDTTest, PMValidationRun, UploadedFile
+from alarm_app.constants import BDT_RULES
 from alarm_app.db.repos.pm_repo import (
     save_validation_run, get_or_create_rule_catalog, load_all_validation_results,
 )
@@ -32,14 +33,14 @@ class TestPMRepo:
     def test_get_or_create_catalog(self, session):
         catalog = get_or_create_rule_catalog(session)
         session.commit()
-        assert len(catalog) == 11
+        assert len(catalog) == len(BDT_RULES)
         assert "R1" in catalog
         assert "R11" in catalog
 
     def test_save_run_with_rules(self, session, bdt_test):
         rules = [
-            {"rule_code": f"R{i}", "verdict": "Accepted", "detail": f"Rule {i} OK"}
-            for i in range(1, 12)
+            {"rule_code": code, "verdict": "Accepted", "detail": f"{code} OK"}
+            for code, _ in BDT_RULES
         ]
         run = save_validation_run(
             session,
@@ -51,10 +52,10 @@ class TestPMRepo:
         )
         assert run is not None
         assert run.overall_verdict == "Accepted"
-        assert len(run.rule_results) == 11
+        assert len(run.rule_results) == len(BDT_RULES)
 
     def test_idempotent_duplicate_returns_none(self, session, bdt_test):
-        rules = [{"rule_code": f"R{i}", "verdict": "Accepted"} for i in range(1, 12)]
+        rules = [{"rule_code": code, "verdict": "Accepted"} for code, _ in BDT_RULES]
         run1 = save_validation_run(
             session, bdt_test_id=bdt_test.id,
             alarm_input_sha256="alarm_hash_1",
@@ -89,7 +90,7 @@ class TestPMRepo:
         session.add(bdt)
         session.flush()
 
-        rules = [{"rule_code": f"R{i}", "verdict": "Accepted", "detail": f"Rule {i} OK"} for i in range(1, 12)]
+        rules = [{"rule_code": code, "verdict": "Accepted", "detail": f"{code} OK"} for code, _ in BDT_RULES]
         save_validation_run(
             session,
             bdt_test_id=bdt.id,

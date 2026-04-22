@@ -9,6 +9,7 @@ Mark: @pytest.mark.golden -- skipped when fixtures don't exist.
 import json
 import pytest
 from pathlib import Path
+from alarm_app.constants import BDT_RULES
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "golden"
 
@@ -59,11 +60,11 @@ class TestBDTValidationGolden:
         results = _load("bdt_validation_results.json")
         assert isinstance(results, list)
 
-    def test_each_result_has_11_rules(self):
+    def test_each_result_has_expected_rule_count(self):
         results = _load("bdt_validation_results.json")
         for r in results:
-            assert len(r["rules"]) == 11, (
-                f"{r['filename']}: expected 11 rules, got {len(r['rules'])}"
+            assert len(r["rules"]) == len(BDT_RULES), (
+                f"{r['filename']}: expected {len(BDT_RULES)} rules, got {len(r['rules'])}"
             )
 
     def test_verdicts_are_valid(self):

@@ -18,13 +18,20 @@ from PyQt5.QtCore import Qt, pyqtSignal, QSignalBlocker
 from PyQt5.QtGui import QColor
 
 try:
-    from ...constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS, format_bdt_rule_label
+    from ...constants import (
+        BDT_RESULT_HEADERS,
+        BDT_RESULT_WIDTHS,
+        BDT_RULES,
+        BDT_RULE_EXPLANATIONS,
+        format_bdt_rule_label,
+    )
     from ..threads import ExportThread, BDTValidationThread
     from ...bdt.parser import BDTData
     from ...bdt.validator import ValidationResult
     from ...bdt.export import build_bdt_export_sheets
     from ..dialogs import (
         AcceptedPmReportDialog,
+        BdtRulesReferenceDialog,
         BdtValidationIntroDialog,
         BdtParametersDialog,
         ColumnFilterPopup,
@@ -35,13 +42,20 @@ try:
     from ...data.site_report import read_pm_accept_sheet, build_pm_accept_report
 except ImportError:
     try:
-        from alarm_app.constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS, format_bdt_rule_label
+        from alarm_app.constants import (
+            BDT_RESULT_HEADERS,
+            BDT_RESULT_WIDTHS,
+            BDT_RULES,
+            BDT_RULE_EXPLANATIONS,
+            format_bdt_rule_label,
+        )
         from alarm_app.ui.threads import ExportThread, BDTValidationThread
         from alarm_app.bdt.parser import BDTData
         from alarm_app.bdt.validator import ValidationResult
         from alarm_app.bdt.export import build_bdt_export_sheets
         from alarm_app.ui.dialogs import (
             AcceptedPmReportDialog,
+            BdtRulesReferenceDialog,
             BdtValidationIntroDialog,
             BdtParametersDialog,
             ColumnFilterPopup,
@@ -51,13 +65,20 @@ except ImportError:
         from alarm_app.data.alarm_store import AlarmQuery, distinct_values, query_alarms
         from alarm_app.data.site_report import read_pm_accept_sheet, build_pm_accept_report
     except ImportError:
-        from constants import BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS, format_bdt_rule_label
+        from constants import (
+            BDT_RESULT_HEADERS,
+            BDT_RESULT_WIDTHS,
+            BDT_RULES,
+            BDT_RULE_EXPLANATIONS,
+            format_bdt_rule_label,
+        )
         from ui.threads import ExportThread, BDTValidationThread
         from bdt.parser import BDTData
         from bdt.validator import ValidationResult
         from bdt.export import build_bdt_export_sheets
         from ui.dialogs import (
             AcceptedPmReportDialog,
+            BdtRulesReferenceDialog,
             BdtValidationIntroDialog,
             BdtParametersDialog,
             ColumnFilterPopup,
@@ -113,14 +134,6 @@ class BdtValidationPanel(QWidget):
         # PARAMETERS group
         params_group, params_row = _make_group("PARAMETERS")
 
-        self.spn_tolerance = QSpinBox()
-        self.spn_tolerance.setObjectName("filter_spin")
-        self.spn_tolerance.setRange(10, 20)
-        self.spn_tolerance.setValue(15)
-        self.spn_tolerance.setSuffix(" %")
-        self.spn_tolerance.setFixedWidth(82)
-        self.spn_tolerance.setVisible(False)
-
         self.spn_health = QSpinBox()
         self.spn_health.setObjectName("filter_spin")
         self.spn_health.setRange(50, 100)
@@ -139,6 +152,11 @@ class BdtValidationPanel(QWidget):
         self.btn_parameters.setObjectName("btn_dir")
         self.btn_parameters.clicked.connect(self._show_parameters_dialog)
         params_row.addWidget(self.btn_parameters)
+
+        self.btn_rule_guide = QPushButton("Explain Rules")
+        self.btn_rule_guide.setObjectName("btn_dir")
+        self.btn_rule_guide.clicked.connect(self._show_rules_reference_dialog)
+        params_group.layout().addWidget(self.btn_rule_guide)
 
         self._lbl_param_summary = QLabel("")
         self._lbl_param_summary.setWordWrap(True)
@@ -289,11 +307,9 @@ class BdtValidationPanel(QWidget):
         viewer = self._viewer
         source_mode = self._current_source_mode()
         viewer._sbar.showMessage("Opening BDT validation overview…")
-        tolerance_pct = self.spn_tolerance.value()
         health_pct_value = self.spn_health.value()
         intro_dialog = BdtValidationIntroDialog(
             source_label=self._validation_source_label(source_mode),
-            tolerance_pct=tolerance_pct,
             health_pct=health_pct_value,
             skip_photos=bool(viewer._skip_photos),
             parent=self,
@@ -367,7 +383,6 @@ class BdtValidationPanel(QWidget):
                 "BDT filenames must contain 'BDT'.")
             return
 
-        tolerance = tolerance_pct / 100.0
         health_pct = health_pct_value / 100.0
         self._viewer._last_bdt_health_pct = health_pct
 
@@ -382,7 +397,7 @@ class BdtValidationPanel(QWidget):
         self._db_seed_results = viewer._load_bdt_results_from_db() if source_mode == "both" else []
 
         self._bdt_thread = BDTValidationThread(
-            bdt_files, None, tolerance, health_pct, skip_photos=viewer._skip_photos)
+            bdt_files, None, 0.15, health_pct, skip_photos=viewer._skip_photos)
         self._bdt_thread.progress.connect(
             lambda v, m: (viewer._prog.setValue(v),
                           viewer._sbar.showMessage(m)))
@@ -514,6 +529,16 @@ class BdtValidationPanel(QWidget):
         self._pm_accept_export_thread.error.connect(self._on_pm_accept_export_error)
         self._pm_accept_export_thread.start()
 
+    def _show_rules_reference_dialog(self):
+        dialog = BdtRulesReferenceDialog(
+            rule_rows=[
+                (rule_code, rule_name, BDT_RULE_EXPLANATIONS.get(rule_code, rule_name))
+                for rule_code, rule_name in BDT_RULES
+            ],
+            parent=self,
+        )
+        dialog.exec_()
+
     def _on_pm_accept_export_done(self, fp: str):
         self.btn_pm_accept_report.setEnabled(True)
         self._viewer._prog.setVisible(False)
@@ -617,19 +642,16 @@ class BdtValidationPanel(QWidget):
 
     def _refresh_parameter_summary(self):
         self._lbl_param_summary.setText(
-            f"Tolerance {self.spn_tolerance.value()}% for Rule R4 discharge-table matching. "
             f"Health {self.spn_health.value()}% for Rule R8 battery sizing."
         )
 
     def _show_parameters_dialog(self):
         dlg = BdtParametersDialog(
-            tolerance_pct=self.spn_tolerance.value(),
             health_pct=self.spn_health.value(),
             parent=self,
         )
         if dlg.exec_() == QDialog.Accepted:
-            tolerance_pct, health_pct = dlg.get_values()
-            self.spn_tolerance.setValue(tolerance_pct)
+            health_pct = dlg.get_values()
             self.spn_health.setValue(health_pct)
             self._refresh_parameter_summary()
 

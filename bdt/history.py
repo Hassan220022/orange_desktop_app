@@ -17,9 +17,9 @@ from uuid import uuid5, NAMESPACE_URL
 import pandas as pd
 
 try:
-    from ..constants import APP_VERSION
+    from ..constants import APP_VERSION, BDT_RULES
 except ImportError:
-    from alarm_app.constants import APP_VERSION
+    from alarm_app.constants import APP_VERSION, BDT_RULES
 
 
 HISTORY_DIR = Path.home() / ".alarm_viewer" / "bdt_history"
@@ -302,7 +302,7 @@ def _build_run_payload(
         "params_sha256": params_sha256,
         "alarm_input_sha256": alarm_input_sha256,
         "rule_count": rule_count,
-        "is_complete_rule_set": rule_count == 11,
+        "is_complete_rule_set": rule_count == len(BDT_RULES),
         "created_at": datetime.now().isoformat(),
     }
 

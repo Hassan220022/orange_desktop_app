@@ -105,7 +105,6 @@ BDT_RULES = [
     ("R1", "Photos"),
     ("R2", "Power Alarm + Duration"),
     ("R3", "String vs Bus Bar Ampere"),
-    ("R4", "Discharge Table Match"),
     ("R5", "Starting I-Battery ampere"),
     ("R6", "End Voltage Range"),
     ("R7", "V/A Inverse"),
@@ -115,6 +114,18 @@ BDT_RULES = [
     ("R11", "Summary Checklist"),
 ]
 BDT_RULE_NAME_BY_CODE = dict(BDT_RULES)
+BDT_RULE_EXPLANATIONS = {
+    "R1": "Checks whether the BDT file contains the required evidence photos for the rectifier and battery setup.",
+    "R2": "Verifies that the power-cut alarm sequence matches the BDT start time and discharge duration using Power and Down alarm timing.",
+    "R3": "Compares the bus-bar ampere against the summed string amperes to make sure the string current distribution is believable.",
+    "R5": "Ensures the starting I-Battery current is approximately zero before the discharge test begins.",
+    "R6": "Checks that the test finished at an acceptable rectifier end-voltage range or reached the required completion duration.",
+    "R7": "Confirms that voltage and current follow the expected inverse trend during the discharge process.",
+    "R8": "Compares the measured discharge duration against the theoretical backup time calculated from battery size, strings, and load.",
+    "R9": "Checks that discharge current stays within the allowed tolerance instead of drifting abnormally during the test.",
+    "R10": "Requires a matching door alarm during the BDT test window for the same site, so the physical intervention is reflected in the alarm history.",
+    "R11": "Cross-checks the parsed BDT values against the summary/checklist fields to detect inconsistencies between sheets.",
+}
 
 
 def format_bdt_rule_label(rule_code: str, rule_name: str | None = None) -> str:
@@ -126,7 +137,7 @@ def format_bdt_rule_label(rule_code: str, rule_name: str | None = None) -> str:
 
 BDT_RESULT_HEADERS = [
     "File", "Site Code", "Test Date", "Verdict",
-    "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11",
+    "R1", "R2", "R3", "R5", "R6", "R7", "R8", "R9", "R10", "R11",
     "End Rectifier Voltage (V)", "Lead-acid SOH (%)",
 ]
 
@@ -166,11 +177,11 @@ BDT_SUMMARY_EXPORT_HEADERS = [
 
 BDT_RESULT_WIDTHS = {
     "File": 200, "Site Code": 90, "Test Date": 100, "Verdict": 90,
-    "R1": 65, "R2": 65, "R3": 65, "R4": 65,
+    "R1": 65, "R2": 65, "R3": 65,
     "R5": 65, "R6": 65, "R7": 65, "R8": 65, "R9": 65, "R10": 65, "R11": 65,
     "End Rectifier Voltage (V)": 170,
     "Lead-acid SOH (%)": 150,
-    "R1 Detail": 300, "R2 Detail": 300, "R3 Detail": 300, "R4 Detail": 300,
+    "R1 Detail": 300, "R2 Detail": 300, "R3 Detail": 300,
     "R5 Detail": 300, "R6 Detail": 300, "R7 Detail": 300,
     "R8 Detail": 300, "R9 Detail": 300, "R10 Detail": 300, "R11 Detail": 300,
 }

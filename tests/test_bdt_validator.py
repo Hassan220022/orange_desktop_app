@@ -181,7 +181,7 @@ class TestValidateBDTOverall:
         result = validate_bdt(bdt, alarm_df)
 
         assert [r.rule_id for r in result.rules] == [
-            "R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9",
+            "R1", "R2", "R3", "R5", "R6", "R7", "R8", "R9",
             "R10", "R11"
         ]
         assert result.overall == "Accepted"
