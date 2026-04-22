@@ -676,6 +676,15 @@ class BdtValidationPanel(QWidget):
 
     @staticmethod
     def _build_site_map(results: list) -> dict[str, list]:
+        def _sort_test_date(bdt) -> datetime:
+            test_date = getattr(bdt, "test_date", None)
+            if test_date is None:
+                return datetime.min
+            try:
+                return pd.Timestamp(test_date).to_pydatetime()
+            except Exception:
+                return datetime.min
+
         by_site: dict[str, list] = {}
         for res in results:
             bdt = getattr(res, "bdt_data", None)
@@ -683,7 +692,7 @@ class BdtValidationPanel(QWidget):
             if site_code and bdt is not None:
                 by_site.setdefault(site_code, []).append(bdt)
         for items in by_site.values():
-            items.sort(key=lambda b: getattr(b, "test_date", None) or datetime.min, reverse=True)
+            items.sort(key=_sort_test_date, reverse=True)
         return by_site
 
     @staticmethod

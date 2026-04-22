@@ -118,6 +118,18 @@ def test_r1_rejected_missing_rectifier():
     result = _rule_1_photos(bdt)
     assert result.verdict == "Rejected"
     assert result.passed is False
+
+
+def test_r1_rejects_ai_flagged_photo_slots():
+    slot = _slot("rectifier")
+    slot.verification = {"synthid": {"status": "detected", "confidence": 0.91}}
+    bdt = _bdt(photo_slots=[slot], required_photo_count=1)
+
+    result = _rule_1_photos(bdt)
+
+    assert result.verdict == "Rejected"
+    assert result.passed is False
+    assert "SynthID" in result.detail
     assert "rectifier" in result.detail
 
 

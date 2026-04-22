@@ -24,6 +24,7 @@ class PhotoSlot:
     image_data: bytes | None = None  # raw JPEG/PNG bytes, None if empty
     image_ext: str = ""              # "jpeg" or "png"
     category: str = "other"
+    verification: dict = field(default_factory=dict)
 
 
 @dataclass

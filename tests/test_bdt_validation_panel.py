@@ -1,3 +1,4 @@
+from datetime import date, datetime
 from types import SimpleNamespace
 
 from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
@@ -173,6 +174,19 @@ def test_copy_bdt_cell_copies_value_and_updates_status(monkeypatch):
 
     assert copied["text"] == "Rejected"
     assert panel._viewer._sbar.messages[-1] == ("Copied: Rejected", 2000)
+
+
+def test_build_site_map_sorts_mixed_date_and_datetime_values():
+    newer = SimpleNamespace(test_date=date(2026, 4, 20), file_path="newer.xlsx")
+    older = SimpleNamespace(test_date=datetime(2026, 4, 19, 8, 0), file_path="older.xlsx")
+    results = [
+        SimpleNamespace(site_code="AAA001", bdt_data=older),
+        SimpleNamespace(site_code="AAA001", bdt_data=newer),
+    ]
+
+    by_site = BdtValidationPanel._build_site_map(results)
+
+    assert by_site["AAA001"] == [newer, older]
 
 
 def test_generate_pm_accept_report_shows_intro_dialog_before_file_picker(monkeypatch):

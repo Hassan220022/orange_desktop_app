@@ -133,6 +133,31 @@ def _rule_1_photos(bdt: BDTData) -> RuleResult:
         getattr(bdt, "required_photo_count", BDT_REQUIRED_PHOTO_COUNT)
         or BDT_REQUIRED_PHOTO_COUNT
     )
+    ai_flagged_labels = [
+        str(getattr(slot, "label", "") or getattr(slot, "category", "") or "photo")
+        for slot in list(getattr(bdt, "photo_slots", []) or [])
+        if getattr(slot, "image_data", None)
+        and str(
+            (
+                dict(getattr(slot, "verification", {}) or {})
+                .get("synthid", {})
+                .get("status", "")
+            )
+            or ""
+        ).strip().lower() == "detected"
+    ]
+
+    if ai_flagged_labels:
+        sample = ", ".join(ai_flagged_labels[:3])
+        if len(ai_flagged_labels) > 3:
+            sample = f"{sample}, +{len(ai_flagged_labels) - 3} more"
+        return RuleResult(
+            rule_id="R1",
+            rule_name="Photos",
+            passed=False,
+            verdict="Rejected",
+            detail=f"AI-generated photo signal detected (SynthID): {sample}",
+        )
 
     # ── Branch 1: deferred mode with no slots → count-based fallback ──────────
     if detection_mode == "deferred" and not bdt.photo_slots:

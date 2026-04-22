@@ -693,6 +693,13 @@ QLabel#bdt_photo_label {
     background: transparent;
     padding: 2px 0 0 0;
 }
+QLabel#bdt_photo_meta {
+    color: #7f849c;
+    font-size: 9px;
+    font-weight: 500;
+    background: transparent;
+    padding: 1px 4px 2px 4px;
+}
 QFrame#bdt_photo_missing {
     background: #1a1a2a;
     border: 2px dashed #f38ba8;
@@ -1705,6 +1712,13 @@ QLabel#bdt_photo_label {
     font-weight: 600;
     background: transparent;
     padding: 2px 0 0 0;
+}
+QLabel#bdt_photo_meta {
+    color: #7c7f93;
+    font-size: 9px;
+    font-weight: 500;
+    background: transparent;
+    padding: 1px 4px 2px 4px;
 }
 QFrame#bdt_photo_missing {
     background: #dce0e8;
