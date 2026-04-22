@@ -8,6 +8,7 @@ between consecutive PM visits (battery type, count, rectifier, modules).
 import json
 import hashlib
 import logging
+import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -40,7 +41,7 @@ def _get_session():
             get_session_factory as _get_session_factory,
         )
         _engine = _create_engine()
-        _init_db(_engine)
+        _init_db(_engine, include_alarm_records=False)
         _SessionFactory = _get_session_factory(_engine)
     return _SessionFactory()
 
@@ -84,6 +85,10 @@ def _normalize_site_code(value) -> str:
 def _canonical_json_sha256(payload) -> str:
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _is_sqlite_lock_error(exc: Exception) -> bool:
+    return "database is locked" in str(exc).lower()
 
 
 def _alarm_subset_for_hash(alarm_df, site_code: str, test_date: str) -> list[dict]:
@@ -535,13 +540,12 @@ def save_validation_batch(
     run_payloads: list[dict] = []
     photo_jobs: list[dict] = []
     failed_items: list[dict] = []
+    from sqlalchemy.exc import IntegrityError as _IntegrityError, OperationalError as _OperationalError
 
     session = _get_session()
     try:
         parameter_set_id = _get_or_create_parameter_set(session, params) if params else None
         catalog_map = _get_or_create_rule_catalog(session)
-
-        from sqlalchemy.exc import IntegrityError as _IntegrityError
 
         for item in items:
             bdt_data = item.get("bdt_data")
@@ -556,86 +560,108 @@ def save_validation_batch(
             if not test_date:
                 continue
 
-            # Use savepoint-per-item isolation (FR-005)
-            try:
-                with session.begin_nested():
-                    bdt_dict = _build_bdt_dict(bdt_data)
-                    file_id = _register_bdt_uploaded_file(session, bdt_data)
-                    bdt_db = _save_bdt_test(session, bdt_dict, file_id=file_id)
-                    if bdt_db is None:
-                        continue
+            attempts = 0
+            max_attempts = 3
+            while attempts < max_attempts:
+                try:
+                    with session.begin_nested():
+                        bdt_dict = _build_bdt_dict(bdt_data)
+                        file_id = _register_bdt_uploaded_file(session, bdt_data)
+                        bdt_db = _save_bdt_test(session, bdt_dict, file_id=file_id)
+                        if bdt_db is None:
+                            break
 
-                    rule_results = _build_rule_results(validation_result)
-                    if not rule_results:
-                        continue
+                        rule_results = _build_rule_results(validation_result)
+                        if not rule_results:
+                            break
 
-                    alarm_input_sha256 = compute_alarm_input_sha256(alarm_df, site_code, test_date)
+                        alarm_input_sha256 = compute_alarm_input_sha256(alarm_df, site_code, test_date)
 
-                    # Build idempotency key for PM run
-                    idempotency_material = {
+                        # Build idempotency key for PM run
+                        idempotency_material = {
+                            "site_code": site_code,
+                            "test_date": test_date,
+                            "params_sha256": params_sha256,
+                            "alarm_input_sha256": alarm_input_sha256,
+                            "validator_code_ref": validator_ref,
+                        }
+                        idempotency_key = _canonical_json_sha256(idempotency_material)
+                        run_uuid = str(uuid5(NAMESPACE_URL, idempotency_key))
+                        overall_verdict = str(getattr(validation_result, "overall", "") or "")
+
+                        pm_run = _save_pm_run(
+                            session,
+                            bdt_test_id=bdt_db.id,
+                            alarm_input_sha256=alarm_input_sha256,
+                            validator_code_ref=validator_ref,
+                            overall_verdict=overall_verdict,
+                            rule_results=rule_results,
+                            params=params,
+                            autocommit=False,
+                            catalog_map=catalog_map,
+                            parameter_set_id=parameter_set_id,
+                        )
+
+                        if pm_run is not None:
+                            run_payloads.append(_build_run_payload(
+                                bdt_data=bdt_data,
+                                validation_result=validation_result,
+                                params=params,
+                                validator_ref=validator_ref,
+                                params_sha256=params_sha256,
+                                alarm_input_sha256=alarm_input_sha256,
+                                idempotency_key=idempotency_key,
+                                run_uuid=run_uuid,
+                                rule_count=len(rule_results),
+                            ))
+
+                            # Queue photo jobs only after PM run is successfully persisted
+                            photo_slots = list(getattr(bdt_data, "photo_slots", []) or [])
+                            if photo_slots:
+                                photo_jobs.append({
+                                    "bdt_test_id": int(bdt_db.id),
+                                    "photo_slots": photo_slots,
+                                })
+                    break
+                except _IntegrityError:
+                    # Duplicate: rollback savepoint only, continue with remaining items.
+                    # FR-005: duplicate PM run must not roll back whole batch.
+                    _log.debug("Duplicate BDT/PM run skipped for site=%s date=%s", site_code, test_date)
+                    failed_items.append({
                         "site_code": site_code,
                         "test_date": test_date,
-                        "params_sha256": params_sha256,
-                        "alarm_input_sha256": alarm_input_sha256,
-                        "validator_code_ref": validator_ref,
-                    }
-                    idempotency_key = _canonical_json_sha256(idempotency_material)
-                    run_uuid = str(uuid5(NAMESPACE_URL, idempotency_key))
-                    overall_verdict = str(getattr(validation_result, "overall", "") or "")
-
-                    pm_run = _save_pm_run(
-                        session,
-                        bdt_test_id=bdt_db.id,
-                        alarm_input_sha256=alarm_input_sha256,
-                        validator_code_ref=validator_ref,
-                        overall_verdict=overall_verdict,
-                        rule_results=rule_results,
-                        params=params,
-                        autocommit=False,
-                        catalog_map=catalog_map,
-                        parameter_set_id=parameter_set_id,
-                    )
-
-                    if pm_run is not None:
-                        run_payloads.append(_build_run_payload(
-                            bdt_data=bdt_data,
-                            validation_result=validation_result,
-                            params=params,
-                            validator_ref=validator_ref,
-                            params_sha256=params_sha256,
-                            alarm_input_sha256=alarm_input_sha256,
-                            idempotency_key=idempotency_key,
-                            run_uuid=run_uuid,
-                            rule_count=len(rule_results),
-                        ))
-
-                        # Queue photo jobs only after PM run is successfully persisted
-                        photo_slots = list(getattr(bdt_data, "photo_slots", []) or [])
-                        if photo_slots:
-                            photo_jobs.append({
-                                "bdt_test_id": int(bdt_db.id),
-                                "photo_slots": photo_slots,
-                            })
-            except _IntegrityError:
-                # Duplicate: rollback savepoint only, continue with remaining items.
-                # FR-005: duplicate PM run must not roll back whole batch.
-                _log.debug("Duplicate BDT/PM run skipped for site=%s date=%s", site_code, test_date)
-                failed_items.append({
-                    "site_code": site_code,
-                    "test_date": test_date,
-                    "error_type": "duplicate",
-                    "error_message": "Duplicate PM run skipped (idempotent)",
-                })
-            except Exception as e:
-                # Non-duplicate error: rollback savepoint only, log and continue.
-                # FR-005: item-scoped failure must not roll back whole batch.
-                _log.error("Failed to persist item site=%s date=%s: %s", site_code, test_date, str(e), exc_info=True)
-                failed_items.append({
-                    "site_code": site_code,
-                    "test_date": test_date,
-                    "error_type": "db_error",
-                    "error_message": str(e),
-                })
+                        "error_type": "duplicate",
+                        "error_message": "Duplicate PM run skipped (idempotent)",
+                    })
+                    break
+                except _OperationalError as e:
+                    attempts += 1
+                    if _is_sqlite_lock_error(e) and attempts < max_attempts:
+                        _log.warning(
+                            "SQLite lock while persisting BDT site=%s date=%s attempt=%d/%d; retrying",
+                            site_code, test_date, attempts, max_attempts,
+                        )
+                        time.sleep(0.2 * attempts)
+                        continue
+                    _log.error("Failed to persist item site=%s date=%s: %s", site_code, test_date, str(e), exc_info=True)
+                    failed_items.append({
+                        "site_code": site_code,
+                        "test_date": test_date,
+                        "error_type": "db_error",
+                        "error_message": str(e),
+                    })
+                    break
+                except Exception as e:
+                    # Non-duplicate error: rollback savepoint only, log and continue.
+                    # FR-005: item-scoped failure must not roll back whole batch.
+                    _log.error("Failed to persist item site=%s date=%s: %s", site_code, test_date, str(e), exc_info=True)
+                    failed_items.append({
+                        "site_code": site_code,
+                        "test_date": test_date,
+                        "error_type": "db_error",
+                        "error_message": str(e),
+                    })
+                    break
 
         session.commit()
     except Exception:

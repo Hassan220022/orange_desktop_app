@@ -1,6 +1,7 @@
 """Bootstrap backfill -- queue outbox events for existing local data."""
 
 import logging
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
 _log = logging.getLogger(__name__)
@@ -27,6 +28,9 @@ def _already_synced_entity_ids(session: Session, entity_type: str) -> set[str]:
 
 def bootstrap_alarm_records(session: Session, batch_size: int = 500) -> int:
     """Queue outbox events for alarm records not yet synced. Returns count."""
+    if not sa_inspect(session.bind).has_table("alarm_records"):
+        return 0
+
     synced = _already_synced_entity_ids(session, "alarm_record")
     device_id = get_or_create_device_id()
 

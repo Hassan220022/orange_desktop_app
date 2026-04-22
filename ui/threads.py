@@ -28,7 +28,6 @@ try:
     from ..db.engine import create_engine as _db_create_engine, init_db as _db_init_db, get_session_factory as _db_get_session_factory
     from ..db.hashing import compute_file_sha256
     from ..db.repos.file_repo import file_exists as _file_exists, register_file as _register_file
-    from ..db.repos.alarm_repo import bulk_upsert_alarms as _bulk_upsert_alarms
 except ImportError:
     try:
         from alarm_app.constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
@@ -45,7 +44,6 @@ except ImportError:
         from alarm_app.db.engine import create_engine as _db_create_engine, init_db as _db_init_db, get_session_factory as _db_get_session_factory
         from alarm_app.db.hashing import compute_file_sha256
         from alarm_app.db.repos.file_repo import file_exists as _file_exists, register_file as _register_file
-        from alarm_app.db.repos.alarm_repo import bulk_upsert_alarms as _bulk_upsert_alarms
     except ImportError:
         from constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
         from core.backup_time import compute_backup_times
@@ -61,9 +59,70 @@ except ImportError:
         from db.engine import create_engine as _db_create_engine, init_db as _db_init_db, get_session_factory as _db_get_session_factory
         from db.hashing import compute_file_sha256
         from db.repos.file_repo import file_exists as _file_exists, register_file as _register_file
-        from db.repos.alarm_repo import bulk_upsert_alarms as _bulk_upsert_alarms
 
 _log = logging.getLogger(__name__)
+
+
+def _persist_alarm_cache_and_file_index(
+    combined: pd.DataFrame,
+    infos_to_parse: list[tuple[int, dict]],
+    already_imported: set[str],
+) -> str:
+    """Persist the alarm cache to DuckDB and best-effort file metadata to SQLite.
+
+    Alarm restore depends on the DuckDB cache, so write that independently of any
+    SQLite metadata/index update. A SQLite lock must not prevent alarm cache save.
+    """
+    messages: list[str] = []
+
+    try:
+        backend = state.save_dataframe(combined)
+        if backend == "parquet":
+            messages.append(f"cached {len(combined):,} alarm row(s) in local parquet cache")
+        elif backend == "pickle":
+            messages.append(f"cached {len(combined):,} alarm row(s) in local pickle cache")
+        else:
+            messages.append(f"cached {len(combined):,} alarm row(s) in DuckDB")
+    except Exception:
+        _log.warning("DuckDB alarm cache save failed", exc_info=True)
+        messages.append("warning: local alarm cache save failed")
+
+    try:
+        bg_engine = _db_create_engine()
+        _db_init_db(bg_engine, include_alarm_records=False)
+        bg_factory = _db_get_session_factory(bg_engine)
+        bg_session = bg_factory()
+        try:
+            for _idx, info in infos_to_parse:
+                fp = info.get("path", "")
+                if fp and fp not in already_imported and os.path.isfile(fp):
+                    try:
+                        file_sha = compute_file_sha256(fp)
+                        ext = os.path.splitext(fp)[1].lower()
+                        source_kind = "alarm_xlsx" if ext in (".xlsx", ".xls") else "alarm_csv"
+                        _register_file(
+                            bg_session,
+                            file_sha256=file_sha,
+                            original_path=str(fp),
+                            original_name=info.get("filename", os.path.basename(fp)),
+                            file_size=os.path.getsize(fp),
+                            source_kind=source_kind,
+                        )
+                    except Exception:
+                        _log.warning("File registration failed for %s", fp, exc_info=True)
+                        try:
+                            bg_session.rollback()
+                        except Exception:
+                            pass
+            bg_session.commit()
+        finally:
+            bg_session.close()
+        _log.info("Alarm file registrations persisted to SQLite")
+    except Exception:
+        _log.warning("SQLite file registration persistence failed", exc_info=True)
+        messages.append("warning: file index save failed")
+
+    return "; " + "; ".join(messages) if messages else ""
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -96,7 +155,7 @@ class LoaderThread(QThread):
             db_session = None
             try:
                 _engine = _db_create_engine()
-                _db_init_db(_engine)
+                _db_init_db(_engine, include_alarm_records=False)
                 _factory = _db_get_session_factory(_engine)
                 db_session = _factory()
             except Exception:
@@ -199,13 +258,11 @@ class LoaderThread(QThread):
             combined = classify_by_alarm_id(combined, state.load_alarm_ids())
             combined = compute_site_down_flag(combined)
 
-            # ── Emit data to UI FIRST so the user sees results immediately ──
-            self.progress.emit(95, "Rendering …")
             skip_msg = ""
             duplicate_msg = f"; dropped {dropped_duplicates:,} duplicate row(s)" if dropped_duplicates else ""
+            persistence_msg = ""
 
-            # Close DB session before emitting — we'll open a fresh one
-            # for the background persist below.
+            # Close the dedup-check session before starting durable persistence.
             if db_session:
                 try:
                     db_session.close()
@@ -213,54 +270,12 @@ class LoaderThread(QThread):
                     pass
                 db_session = None
 
-            self.progress.emit(100, "Done!")
-            self.finished.emit(
+            self.progress.emit(95, "Saving locally …")
+            persistence_msg = _persist_alarm_cache_and_file_index(
                 combined,
-                f"Loaded {len(combined):,} records from {len(dfs)} file(s){skip_msg}{duplicate_msg}",
+                infos_to_parse,
+                _already_imported,
             )
-
-            # ── Background DB persist: file metadata + alarm rows ──
-            try:
-                bg_engine = _db_create_engine()
-                _db_init_db(bg_engine)
-                bg_factory = _db_get_session_factory(bg_engine)
-                bg_session = bg_factory()
-
-                for _idx, info in infos_to_parse:
-                    fp = info.get("path", "")
-                    if fp and fp not in _already_imported and os.path.isfile(fp):
-                        try:
-                            file_sha = compute_file_sha256(fp)
-                            ext = os.path.splitext(fp)[1].lower()
-                            source_kind = "alarm_xlsx" if ext in (".xlsx", ".xls") else "alarm_csv"
-                            _register_file(
-                                bg_session,
-                                file_sha256=file_sha,
-                                original_path=str(fp),
-                                original_name=info.get("filename", os.path.basename(fp)),
-                                file_size=os.path.getsize(fp),
-                                source_kind=source_kind,
-                            )
-                        except Exception:
-                            _log.warning("File registration failed for %s", fp, exc_info=True)
-                            try:
-                                bg_session.rollback()
-                            except Exception:
-                                pass
-                try:
-                    inserted, skipped = _bulk_upsert_alarms(bg_session, combined)
-                    _log.info(
-                        "Alarm rows persisted to DB: inserted=%d skipped=%d",
-                        inserted, skipped,
-                    )
-                    bg_session.commit()
-                except Exception:
-                    bg_session.rollback()
-                    raise
-                bg_session.close()
-                _log.info("File registrations and alarm rows persisted to DB")
-            except Exception:
-                _log.warning("DB persistence failed", exc_info=True)
 
             # Durable sync journal entries (local outbox) for future cloud migration.
             try:
@@ -294,6 +309,13 @@ class LoaderThread(QThread):
                 )
             except Exception:
                 pass
+
+            self.progress.emit(100, "Done!")
+            self.finished.emit(
+                combined,
+                f"Loaded {len(combined):,} records from {len(dfs)} file(s)"
+                f"{skip_msg}{duplicate_msg}{persistence_msg}",
+            )
 
         except Exception:
             self.error.emit(traceback.format_exc())
@@ -482,7 +504,7 @@ class BDTValidationThread(QThread):
                         key = bdt_data.site_code.strip().upper()
                         by_site.setdefault(key, []).append(bdt_data)
 
-            self.progress.emit(95, "Sorting results…")
+            self.progress.emit(92, "Sorting results…")
 
             # Sort each site's tests by date (newest first)
             for key in by_site:
@@ -490,11 +512,9 @@ class BDTValidationThread(QThread):
                     key=lambda b: b.test_date or datetime.min,
                     reverse=True)
 
-            self.progress.emit(100, "Done!")
-            self.finished.emit(results, by_site)
-
             if persist_items:
                 try:
+                    self.progress.emit(96, "Saving validation history …")
                     try:
                         from alarm_app.bdt.history import save_validation_batch
                     except ImportError:
@@ -544,6 +564,9 @@ class BDTValidationThread(QThread):
                         ).start()
                 except Exception:
                     _log.warning("Deferred BDT persistence failed", exc_info=True)
+
+            self.progress.emit(100, "Done!")
+            self.finished.emit(results, by_site)
 
         except Exception:
             self.error.emit(traceback.format_exc())

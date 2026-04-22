@@ -33,6 +33,20 @@ def test_init_db_creates_tables(tmp_path, monkeypatch):
         assert "blob_assets" in table_names
 
 
+def test_init_db_can_skip_alarm_records_table(tmp_path, monkeypatch):
+    monkeypatch.setattr("alarm_app.db.engine.STATE_DIR", tmp_path)
+    monkeypatch.setattr("alarm_app.db.engine.DB_PATH", tmp_path / "test.db")
+    from alarm_app.db.engine import create_engine, init_db
+    engine = create_engine()
+    init_db(engine, include_alarm_records=False)
+    with engine.connect() as conn:
+        result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()
+        table_names = [r[0] for r in result]
+        assert "alarm_records" not in table_names
+        assert "uploaded_files" in table_names
+        assert "bdt_tests" in table_names
+
+
 def test_sqlite_wal_mode(tmp_path, monkeypatch):
     monkeypatch.setattr("alarm_app.db.engine.STATE_DIR", tmp_path)
     monkeypatch.setattr("alarm_app.db.engine.DB_PATH", tmp_path / "test.db")

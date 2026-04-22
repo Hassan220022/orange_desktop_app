@@ -11,8 +11,16 @@ _log = logging.getLogger(__name__)
 def save_state(session: Session, state_dict: dict) -> None:
     """Save all key-value pairs from state_dict into ui_state table."""
     try:
+        keys = list(state_dict.keys())
+        existing_rows = {}
+        with session.no_autoflush:
+            if keys:
+                existing_rows = {
+                    row.key: row
+                    for row in session.query(UIState).filter(UIState.key.in_(keys)).all()
+                }
         for key, value in state_dict.items():
-            row = session.get(UIState, key)
+            row = existing_rows.get(key)
             val_json = json.dumps(value, default=str)
             if row:
                 row.value_json = val_json
@@ -43,7 +51,8 @@ def get_value(session: Session, key: str, default=None):
 def set_value(session: Session, key: str, value) -> None:
     """Set a single key-value pair."""
     try:
-        row = session.get(UIState, key)
+        with session.no_autoflush:
+            row = session.get(UIState, key)
         val_json = json.dumps(value, default=str)
         if row:
             row.value_json = val_json

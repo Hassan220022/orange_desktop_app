@@ -16,6 +16,10 @@ QWidget {
 }
 
 /* ── Left sidebar background ───────────────────────────────── */
+QWidget#activity_bar {
+    background: #0a0a14;
+    border-right: 1px solid #202032;
+}
 QWidget#sidebar {
     background: #0f0f1a;
     border-right: 1px solid #2a2a3e;
@@ -176,6 +180,28 @@ QPushButton#btn_dir {
 QPushButton#btn_dir:hover {
     background: #1a2744;
     border-color: #89b4fa;
+}
+QPushButton#activity_btn {
+    background: transparent;
+    color: #6c7086;
+    border: none;
+    border-left: 3px solid transparent;
+    border-radius: 10px;
+    padding: 10px 6px;
+    font-size: 11px;
+    font-weight: 700;
+    text-align: center;
+    min-width: 0px;
+}
+QPushButton#activity_btn:hover {
+    background: #171726;
+    color: #cdd6f4;
+    border-left-color: #454560;
+}
+QPushButton#activity_btn:checked {
+    background: #171726;
+    color: #89b4fa;
+    border-left-color: #89b4fa;
 }
 
 /* ── Inputs ─────────────────────────────────────────────────── */
@@ -352,6 +378,15 @@ QLabel#lbl_app_ver {
     color: #313244;
     font-size: 11px;
 }
+QLabel#lbl_workspace_tag {
+    color: #89b4fa;
+    background: #171726;
+    border: 1px solid #2a4070;
+    border-radius: 10px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+}
 QLabel#lbl_section {
     color: #45475a;
     font-size: 10px;
@@ -359,10 +394,45 @@ QLabel#lbl_section {
     letter-spacing: 1.5px;
     text-transform: uppercase;
 }
+QLabel#activity_brand {
+    color: #89b4fa;
+    background: #13131f;
+    border: 1px solid #2a2a3e;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 800;
+    padding: 10px 0;
+}
+QLabel#sidebar_brand {
+    color: #6c7086;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.9px;
+    text-transform: uppercase;
+}
+QLabel#sidebar_title {
+    color: #cdd6f4;
+    font-size: 18px;
+    font-weight: 700;
+}
+QLabel#sidebar_body {
+    color: #7f849c;
+    font-size: 12px;
+}
+QLabel#workspace_card_title {
+    color: #cdd6f4;
+    font-size: 12px;
+    font-weight: 700;
+}
 QLabel#lbl_green {
     color: #a6e3a1;
     font-weight: 600;
     font-size: 12px;
+}
+QFrame#workspace_card {
+    background: #10101c;
+    border: 1px solid #222236;
+    border-radius: 10px;
 }
 /* ── Progress bar ───────────────────────────────────────────── */
 QProgressBar {
@@ -958,6 +1028,10 @@ QWidget {
 }
 
 /* ── Left sidebar background ───────────────────────────────── */
+QWidget#activity_bar {
+    background: #ccd0da;
+    border-right: 1px solid #bcc0cc;
+}
 QWidget#sidebar {
     background: #e6e9ef;
     border-right: 1px solid #bcc0cc;
@@ -1118,6 +1192,28 @@ QPushButton#btn_dir {
 QPushButton#btn_dir:hover {
     background: #d5e0fc;
     border-color: #1e66f5;
+}
+QPushButton#activity_btn {
+    background: transparent;
+    color: #8c8fa1;
+    border: none;
+    border-left: 3px solid transparent;
+    border-radius: 10px;
+    padding: 10px 6px;
+    font-size: 11px;
+    font-weight: 700;
+    text-align: center;
+    min-width: 0px;
+}
+QPushButton#activity_btn:hover {
+    background: #e6e9ef;
+    color: #4c4f69;
+    border-left-color: #8c8fa1;
+}
+QPushButton#activity_btn:checked {
+    background: #eff1f5;
+    color: #1e66f5;
+    border-left-color: #1e66f5;
 }
 
 /* ── Inputs ─────────────────────────────────────────────────── */
@@ -1294,6 +1390,15 @@ QLabel#lbl_app_ver {
     color: #acb0be;
     font-size: 11px;
 }
+QLabel#lbl_workspace_tag {
+    color: #1e66f5;
+    background: #e6e9ef;
+    border: 1px solid #b7c9f7;
+    border-radius: 10px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+}
 QLabel#lbl_section {
     color: #9ca0b0;
     font-size: 10px;
@@ -1301,10 +1406,45 @@ QLabel#lbl_section {
     letter-spacing: 1.5px;
     text-transform: uppercase;
 }
+QLabel#activity_brand {
+    color: #1e66f5;
+    background: #eff1f5;
+    border: 1px solid #bcc0cc;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 800;
+    padding: 10px 0;
+}
+QLabel#sidebar_brand {
+    color: #8c8fa1;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.9px;
+    text-transform: uppercase;
+}
+QLabel#sidebar_title {
+    color: #4c4f69;
+    font-size: 18px;
+    font-weight: 700;
+}
+QLabel#sidebar_body {
+    color: #6c6f85;
+    font-size: 12px;
+}
+QLabel#workspace_card_title {
+    color: #4c4f69;
+    font-size: 12px;
+    font-weight: 700;
+}
 QLabel#lbl_green {
     color: #40a02b;
     font-weight: 600;
     font-size: 12px;
+}
+QFrame#workspace_card {
+    background: #eff1f5;
+    border: 1px solid #ccd0da;
+    border-radius: 10px;
 }
 /* ── Progress bar ───────────────────────────────────────────── */
 QProgressBar {

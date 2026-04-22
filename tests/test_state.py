@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -17,6 +18,7 @@ def _isolate_state_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(state_mod, "STATE_DIR", tmp_path)
     monkeypatch.setattr(state_mod, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(state_mod, "CACHE_FILE", tmp_path / "data_cache.parquet")
+    monkeypatch.setattr(state_mod, "CACHE_PICKLE_FILE", tmp_path / "data_cache.pkl")
     monkeypatch.setattr(state_mod, "ALARM_IDS_FILE", tmp_path / "alarm_ids.json")
     monkeypatch.setattr(state_mod, "REVIEW_LOG_FILE", tmp_path / "review_log.jsonl")
     monkeypatch.setattr(state_mod, "OUTBOX_FILE", tmp_path / "sync_outbox.jsonl")
@@ -71,6 +73,97 @@ class TestDataFramePersistence:
 
     def test_load_missing_returns_none(self):
         assert state_mod.load_dataframe() is None
+
+    def test_load_dataframe_works_when_feature_flags_state_read_fails(self, monkeypatch):
+        df = pd.DataFrame({
+            "site_id": ["A001"],
+            "occurred_on": pd.to_datetime(["2025-01-01"]),
+            "duration": ["01:00:00"],
+        })
+        state_mod.save_dataframe(df)
+
+        monkeypatch.setattr(
+            state_mod,
+            "load_state",
+            lambda: (_ for _ in ()).throw(RuntimeError("database is locked")),
+        )
+
+        loaded = state_mod.load_dataframe()
+        assert loaded is not None
+        assert loaded["site_id"].tolist() == ["A001"]
+
+    def test_falls_back_to_parquet_when_duckdb_unavailable(self, monkeypatch):
+        class _BrokenDuckDB:
+            def connect(self, *_args, **_kwargs):
+                raise RuntimeError("duckdb unavailable")
+
+        monkeypatch.setitem(sys.modules, "duckdb", _BrokenDuckDB())
+
+        df = pd.DataFrame({
+            "site_id": ["A001"],
+            "occurred_on": pd.to_datetime(["2025-01-01"]),
+            "duration": ["01:00:00"],
+        })
+        backend = state_mod.save_dataframe(df)
+        loaded = state_mod.load_dataframe()
+
+        assert backend == "parquet"
+        assert loaded is not None
+        assert loaded["site_id"].tolist() == ["A001"]
+
+    def test_falls_back_to_pickle_when_duckdb_and_parquet_unavailable(self, monkeypatch):
+        class _BrokenDuckDB:
+            def connect(self, *_args, **_kwargs):
+                raise RuntimeError("duckdb unavailable")
+
+        monkeypatch.setitem(sys.modules, "duckdb", _BrokenDuckDB())
+
+        original_to_parquet = pd.DataFrame.to_parquet
+
+        def _broken_to_parquet(self, *args, **kwargs):
+            raise RuntimeError("parquet unavailable")
+
+        monkeypatch.setattr(pd.DataFrame, "to_parquet", _broken_to_parquet)
+        try:
+            df = pd.DataFrame({
+                "site_id": ["A001"],
+                "occurred_on": pd.to_datetime(["2025-01-01"]),
+                "duration": ["01:00:00"],
+            })
+            backend = state_mod.save_dataframe(df)
+        finally:
+            monkeypatch.setattr(pd.DataFrame, "to_parquet", original_to_parquet)
+
+        loaded = state_mod.load_dataframe()
+        assert backend == "pickle"
+        assert loaded is not None
+        assert loaded["site_id"].tolist() == ["A001"]
+
+    def test_load_dataframe_falls_back_to_sqlite_alarm_records(self, monkeypatch):
+        # Ensure local cache files do not exist so fallback path is exercised.
+        state_mod.ALARM_DB_FILE.unlink(missing_ok=True)
+        state_mod.CACHE_FILE.unlink(missing_ok=True)
+
+        fallback_df = pd.DataFrame({
+            "site_id": ["A001"],
+            "alarm_name": ["Power"],
+            "duration": ["00:10:00"],
+        })
+        monkeypatch.setattr(state_mod, "_load_alarm_dataframe_from_sqlite", lambda: fallback_df)
+
+        rehydrated = {"called": False}
+
+        def _save(df):
+            rehydrated["called"] = True
+            assert len(df) == 1
+            return "duckdb"
+
+        monkeypatch.setattr(state_mod, "save_dataframe", _save)
+
+        loaded = state_mod.load_dataframe()
+        assert loaded is not None
+        assert loaded["site_id"].tolist() == ["A001"]
+        assert rehydrated["called"] is True
 
 
 # ── clear_cache ────────────────────────────────────────────────
@@ -285,4 +378,16 @@ class TestFeatureFlags:
             "sync_on": True,
             "cloud_read_on": False,
             "bootstrap_on": True,
+        }
+
+    def test_load_feature_flags_when_state_read_fails(self, monkeypatch):
+        monkeypatch.setattr(
+            state_mod,
+            "load_state",
+            lambda: (_ for _ in ()).throw(RuntimeError("database is locked")),
+        )
+        assert state_mod.load_feature_flags() == {
+            "sync_on": False,
+            "cloud_read_on": False,
+            "bootstrap_on": False,
         }

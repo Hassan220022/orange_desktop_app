@@ -45,8 +45,10 @@ class TestSaveValidationBatchIsolation:
         source = inspect.getsource(history_module.save_validation_batch)
 
         # save_bdt_test signature does not accept autocommit.
-        assert "_save_bdt_test(session, bdt_dict)" in source, \
-            "save_bdt_test must be called with (session, bdt_dict) only"
+        assert "_save_bdt_test(session, bdt_dict" in source, \
+            "save_bdt_test must be called without autocommit control"
+        assert "_save_bdt_test(session, bdt_dict, file_id=file_id)" in source, \
+            "save_bdt_test should receive the uploaded file link when available"
 
         # save_validation_run must disable internal commit for batch savepoint flow.
         assert "autocommit=False" in source, \

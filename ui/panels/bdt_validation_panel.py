@@ -231,32 +231,46 @@ class BdtValidationPanel(QWidget):
             viewer._reviewed_bdt_keys.clear()
             return
 
-        directory = viewer._edit_dir.text().strip()
-        if not directory or not os.path.isdir(directory):
-            QMessageBox.warning(
-                self, "No Directory",
-                "Set a directory in the sidebar first.")
-            return
+        bdt_files = [
+            viewer._bdt_file_list.item(i).data(Qt.UserRole)["path"]
+            for i in range(viewer._bdt_file_list.count())
+            if viewer._bdt_file_list.item(i).isSelected()
+        ] if hasattr(viewer, "_bdt_file_list") else []
+
+        directory = viewer._edit_bdt_dir.text().strip() if hasattr(viewer, "_edit_bdt_dir") else ""
+        if not directory:
+            directory = str(getattr(viewer, "_bdt_uploaded_folder_path", "") or "").strip()
+        if not directory:
+            directory = viewer._edit_dir.text().strip()
+        if not directory:
+            directory = str(getattr(viewer, "_uploaded_folder_path", "") or "").strip()
+
+        if directory and hasattr(viewer, "_edit_bdt_dir") and not viewer._edit_bdt_dir.text().strip():
+            viewer._edit_bdt_dir.setText(directory)
+        if directory and not viewer._edit_dir.text().strip():
+            viewer._edit_dir.setText(directory)
+        if not bdt_files and hasattr(viewer, "_bdt_file_infos") and viewer._bdt_file_infos:
+            bdt_files = [str(info.get("path", "")) for info in viewer._bdt_file_infos if info.get("path")]
 
         try:
             saved = state.load_state() or {}
-            saved["uploaded_folder_path"] = directory
+            saved["bdt_directory"] = directory
             state.save_state(saved)
         except Exception:
             pass
 
-        bdt_files = []
-        for root, _dirs, files in os.walk(directory):
-            for f in files:
-                fl = f.lower()
-                if (fl.endswith(".xlsx") and "bdt" in fl
-                        and not f.startswith("~$") and not f.startswith("._")):
-                    bdt_files.append(os.path.join(root, f))
+        if not bdt_files and directory and os.path.isdir(directory):
+            for root, _dirs, files in os.walk(directory):
+                for f in files:
+                    fl = f.lower()
+                    if (fl.endswith(".xlsx") and "bdt" in fl
+                            and not f.startswith("~$") and not f.startswith("._")):
+                        bdt_files.append(os.path.join(root, f))
 
         if not bdt_files:
             QMessageBox.information(
                 self, "No BDT Files",
-                "No BDT .xlsx files found in directory.\n"
+                "No BDT .xlsx files found in the selected BDT workspace.\n"
                 "BDT filenames must contain 'BDT'.")
             return
 

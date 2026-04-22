@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from alarm_app.bdt.history import (
     BDTTestRecord,
@@ -15,6 +16,7 @@ from alarm_app.bdt.history import (
     load_previous_test,
     compare_tests,
     save_validation_run,
+    save_validation_batch,
     compute_alarm_input_sha256,
     HISTORY_DIR,
 )
@@ -214,6 +216,46 @@ class TestValidationRunPersistence:
         assert first is not None and second is not None
         assert first["idempotency_key"] == second["idempotency_key"]
         assert first["run_id"] == second["run_id"]
+
+    def test_save_validation_batch_retries_sqlite_lock_once(self, history_dir, monkeypatch):
+        import alarm_app.bdt.history as history_module
+
+        bdt = _FakeBDT(
+            site_code="0167DE",
+            test_date=datetime(2026, 1, 11),
+            file_path=str(history_dir / "retry-bdt.xlsx"),
+        )
+        Path(bdt.file_path).write_bytes(b"fake")
+
+        result = self._make_validation_result()
+        alarm_df = pd.DataFrame([{"site_id": "0167DE", "occurred_on": "2026-01-11 09:00:00"}])
+
+        original_register = history_module._register_bdt_uploaded_file
+        calls = {"count": 0}
+
+        def _flaky_register(session, bdt_data):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise OperationalError(
+                    "INSERT INTO uploaded_files ...",
+                    {},
+                    Exception("database is locked"),
+                )
+            return original_register(session, bdt_data)
+
+        monkeypatch.setattr(history_module, "_register_bdt_uploaded_file", _flaky_register)
+        monkeypatch.setattr(history_module.time, "sleep", lambda _seconds: None)
+
+        run_payloads, photo_jobs, failed_items = save_validation_batch(
+            items=[{"bdt_data": bdt, "validation_result": result}],
+            alarm_df=alarm_df,
+            params={"tolerance": 0.15, "health_pct": 0.80},
+        )
+
+        assert calls["count"] == 2
+        assert len(run_payloads) == 1
+        assert photo_jobs == []
+        assert failed_items == []
 
     def test_compute_alarm_input_sha256_deterministic(self):
         df_a = pd.DataFrame(

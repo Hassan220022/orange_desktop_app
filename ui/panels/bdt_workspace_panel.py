@@ -1,0 +1,185 @@
+"""
+BdtWorkspacePanel — VS Code-style sidebar for the test validation workspace.
+"""
+
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+
+class BdtWorkspacePanel(QWidget):
+    """Sidebar for the BDT/Test Validation workspace."""
+
+    def __init__(self, viewer, parent=None):
+        super().__init__(parent)
+        self._viewer = viewer
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 16, 12, 12)
+        lay.setSpacing(12)
+
+        brand = QLabel("Orange Workspace")
+        brand.setObjectName("sidebar_brand")
+        lay.addWidget(brand)
+
+        sec = QLabel("TEST VALIDATION")
+        sec.setObjectName("lbl_section")
+        lay.addWidget(sec)
+
+        title = QLabel("Battery discharge validation")
+        title.setObjectName("sidebar_title")
+        lay.addWidget(title)
+
+        summary = QLabel("Browse BDT folders, inspect candidate files, then validate.")
+        summary.setWordWrap(True)
+        summary.setObjectName("sidebar_body")
+        lay.addWidget(summary)
+
+        dir_section = QLabel("DIRECTORY")
+        dir_section.setObjectName("lbl_section")
+        lay.addWidget(dir_section)
+
+        self.edit_dir = QLineEdit()
+        self.edit_dir.setPlaceholderText("Select or paste BDT path...")
+        lay.addWidget(self.edit_dir)
+
+        dir_row = QHBoxLayout()
+        dir_row.setSpacing(6)
+        btn_browse = QPushButton("Browse")
+        btn_browse.setObjectName("btn_dir")
+        btn_browse.clicked.connect(self._viewer._browse_bdt)
+        dir_row.addWidget(btn_browse)
+
+        btn_scan = QPushButton("Scan")
+        btn_scan.setObjectName("btn_dir")
+        btn_scan.clicked.connect(self._viewer._scan_bdt)
+        dir_row.addWidget(btn_scan)
+        lay.addLayout(dir_row)
+
+        files_section = QLabel("FILES")
+        files_section.setObjectName("lbl_section")
+        lay.addWidget(files_section)
+
+        self.lbl_file_count = QLabel("No directory scanned")
+        self.lbl_file_count.setObjectName("sidebar_body")
+        lay.addWidget(self.lbl_file_count)
+
+        self.file_list = QListWidget()
+        self.file_list.setSelectionMode(QAbstractItemView.MultiSelection)
+        self.file_list.setMinimumHeight(180)
+        lay.addWidget(self.file_list, 1)
+
+        file_actions = QHBoxLayout()
+        file_actions.setSpacing(5)
+        btn_all = QPushButton("All")
+        btn_all.setObjectName("btn_small")
+        btn_all.clicked.connect(self.file_list.selectAll)
+        file_actions.addWidget(btn_all)
+
+        btn_none = QPushButton("None")
+        btn_none.setObjectName("btn_small")
+        btn_none.clicked.connect(self.file_list.clearSelection)
+        file_actions.addWidget(btn_none)
+        file_actions.addStretch()
+        lay.addLayout(file_actions)
+
+        source_card = QFrame()
+        source_card.setObjectName("workspace_card")
+        source_lay = QVBoxLayout(source_card)
+        source_lay.setContentsMargins(12, 12, 12, 12)
+        source_lay.setSpacing(8)
+
+        source_label = QLabel("Validation Source")
+        source_label.setObjectName("workspace_card_title")
+        source_lay.addWidget(source_label)
+
+        self.cmb_bdt_source = QComboBox()
+        self.cmb_bdt_source.addItem("Directory", "directory")
+        self.cmb_bdt_source.addItem("DB", "db")
+        self.cmb_bdt_source.addItem("Both (Verify)", "both")
+        self.cmb_bdt_source.currentIndexChanged.connect(self._sync_to_main_panel)
+        source_lay.addWidget(self.cmb_bdt_source)
+        lay.addWidget(source_card)
+
+        actions_card = QFrame()
+        actions_card.setObjectName("workspace_card")
+        actions_lay = QVBoxLayout(actions_card)
+        actions_lay.setContentsMargins(12, 12, 12, 12)
+        actions_lay.setSpacing(8)
+
+        actions_title = QLabel("Workflow")
+        actions_title.setObjectName("workspace_card_title")
+        actions_lay.addWidget(actions_title)
+
+        btn_validate = QPushButton("Validate BDT Files")
+        btn_validate.setObjectName("btn_search")
+        btn_validate.clicked.connect(self._viewer._bdt_validation_panel._run_validation)
+        actions_lay.addWidget(btn_validate)
+
+        btn_report = QPushButton("Accepted PM Report")
+        btn_report.setObjectName("btn_export")
+        btn_report.clicked.connect(
+            self._viewer._bdt_validation_panel._generate_pm_accept_report
+        )
+        actions_lay.addWidget(btn_report)
+
+        btn_daily = QPushButton("Daily Review")
+        btn_daily.setObjectName("btn_dir")
+        btn_daily.clicked.connect(
+            self._viewer._bdt_validation_panel._show_daily_review_report
+        )
+        actions_lay.addWidget(btn_daily)
+
+        btn_export = QPushButton("Export Results")
+        btn_export.setObjectName("btn_load")
+        btn_export.clicked.connect(self._viewer._bdt_validation_panel._export_bdt_results)
+        actions_lay.addWidget(btn_export)
+
+        lay.addWidget(actions_card)
+
+        status_card = QFrame()
+        status_card.setObjectName("workspace_card")
+        status_lay = QVBoxLayout(status_card)
+        status_lay.setContentsMargins(12, 12, 12, 12)
+        status_lay.setSpacing(6)
+
+        status_title = QLabel("Context")
+        status_title.setObjectName("workspace_card_title")
+        status_lay.addWidget(status_title)
+
+        self.lbl_context = QLabel(
+            "This workspace validates the selected BDT files against the current alarm cache."
+        )
+        self.lbl_context.setWordWrap(True)
+        self.lbl_context.setObjectName("sidebar_body")
+        status_lay.addWidget(self.lbl_context)
+
+        lay.addWidget(status_card)
+        lay.addStretch()
+
+        self._viewer._bdt_validation_panel.cmb_bdt_source.currentIndexChanged.connect(
+            self._sync_from_main_panel
+        )
+        self._sync_from_main_panel()
+
+    def _sync_to_main_panel(self, index: int):
+        main_combo = self._viewer._bdt_validation_panel.cmb_bdt_source
+        if main_combo.currentIndex() != index:
+            main_combo.setCurrentIndex(index)
+
+    def _sync_from_main_panel(self, _index=None):
+        main_combo = self._viewer._bdt_validation_panel.cmb_bdt_source
+        index = main_combo.currentIndex()
+        if self.cmb_bdt_source.currentIndex() != index:
+            self.cmb_bdt_source.setCurrentIndex(index)

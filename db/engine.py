@@ -18,7 +18,13 @@ def create_engine(url: str | None = None):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         url = f"sqlite:///{DB_PATH}"
 
-    engine = _create_engine(url, echo=False)
+    engine_kwargs = {"echo": False}
+    if url.startswith("sqlite"):
+        # Allow concurrent desktop/background writers a chance to finish instead
+        # of immediately failing with "database is locked".
+        engine_kwargs["connect_args"] = {"timeout": 30}
+
+    engine = _create_engine(url, **engine_kwargs)
 
     url_type = "sqlite" if url.startswith("sqlite") else "postgres"
     _log.info("Engine created: type=%s", url_type)
@@ -29,8 +35,9 @@ def create_engine(url: str | None = None):
             cursor = dbapi_conn.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA busy_timeout=30000")
             cursor.close()
-            _log.debug("SQLite pragmas set: WAL mode, foreign keys enabled")
+            _log.debug("SQLite pragmas set: WAL mode, foreign keys enabled, busy timeout")
 
     return engine
 
@@ -48,13 +55,20 @@ def get_session(engine=None) -> Session:
     return factory()
 
 
-def init_db(engine=None):
-    """Create all tables and seed reference data."""
+def init_db(engine=None, include_alarm_records: bool = True):
+    """Create tables and seed reference data.
+
+    Desktop runtime stores alarm rows in DuckDB, so it can skip creating the
+    redundant SQLite `alarm_records` table. Web/server callers keep the table.
+    """
     from .models import Base
     if engine is None:
         engine = create_engine()
     _log.info("init_db called: creating tables")
-    Base.metadata.create_all(engine)
+    tables = list(Base.metadata.sorted_tables)
+    if not include_alarm_records:
+        tables = [t for t in tables if t.name != "alarm_records"]
+    Base.metadata.create_all(engine, tables=tables)
     _log.info("Tables created")
 
     from .seed import seed_database

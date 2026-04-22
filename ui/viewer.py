@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QMessageBox, QFrame, QHeaderView, QAbstractItemView,
     QProgressBar, QListWidget, QListWidgetItem,
     QCheckBox, QSpinBox, QMenu, QAction, QApplication,
-    QDialog, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem, QShortcut,
+    QDialog, QScrollArea, QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QShortcut,
     QGridLayout, QSizePolicy,
 )
 from PyQt5.QtCore import Qt, QDate, QThread, pyqtSignal
@@ -38,6 +38,7 @@ try:
                           FeatureFlagDialog)
     from .panels.search_panel import SearchPanel
     from .panels.left_panel import LeftPanel
+    from .panels.bdt_workspace_panel import BdtWorkspacePanel
     from .panels.bdt_validation_panel import BdtValidationPanel
     from .panels.bdt_detail_panel import BdtDetailPanel
     from ..core.filters import compute_date_mask, parse_manual_days
@@ -67,6 +68,7 @@ except ImportError:
                                           FeatureFlagDialog)
         from alarm_app.ui.panels.search_panel import SearchPanel
         from alarm_app.ui.panels.left_panel import LeftPanel
+        from alarm_app.ui.panels.bdt_workspace_panel import BdtWorkspacePanel
         from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
         from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
         from alarm_app.core.filters import compute_date_mask, parse_manual_days
@@ -95,6 +97,7 @@ except ImportError:
                                 FeatureFlagDialog)
         from ui.panels.search_panel import SearchPanel
         from ui.panels.left_panel import LeftPanel
+        from ui.panels.bdt_workspace_panel import BdtWorkspacePanel
         from ui.panels.bdt_validation_panel import BdtValidationPanel
         from ui.panels.bdt_detail_panel import BdtDetailPanel
         from core.filters import compute_date_mask, parse_manual_days
@@ -127,6 +130,8 @@ class AlarmViewer(QMainWindow):
         self._uploaded_site_keys: set[str] = set()
         self._uploaded_site_path = ""
         self._uploaded_folder_path = ""
+        self._bdt_uploaded_folder_path = ""
+        self._bdt_file_infos: list[dict] = []
         self._bdt_results: list = []
         self._bdt_by_site: dict = {}
         self._last_bdt_health_pct: float | None = None
@@ -171,6 +176,14 @@ class AlarmViewer(QMainWindow):
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(0)
 
+        self._workspace_defs = (
+            {"label": "Alarms", "nav": "Alarms"},
+            {"label": "Test Validation", "nav": "BDT"},
+        )
+
+        self._activity_bar = self._make_activity_bar()
+        main.addWidget(self._activity_bar)
+
         # Horizontal splitter: sidebar | content
         self._main_splitter = QSplitter(Qt.Horizontal)
         self._main_splitter.setHandleWidth(8)
@@ -187,7 +200,9 @@ class AlarmViewer(QMainWindow):
         self._btn_load = self._left_panel.btn_load
         self._cmb_alarm_source = self._left_panel.cmb_alarm_source
         self._lbl_loaded = self._left_panel.lbl_loaded
-        self._sidebar = self._left_panel
+        self._sidebar_stack = QStackedWidget()
+        self._sidebar_stack.addWidget(self._left_panel)
+        self._sidebar = self._sidebar_stack
         self._sidebar.setObjectName("sidebar")
         self._sidebar.setMinimumWidth(50)
         self._sidebar.setMaximumWidth(16777215)
@@ -213,6 +228,8 @@ class AlarmViewer(QMainWindow):
         self._tabs.setObjectName("main_tabs")
         self._tabs.setMinimumWidth(0)
         self._tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self._tabs.tabBar().hide()
+        self._tabs.currentChanged.connect(self._on_workspace_changed)
 
         # Tab 1: Alarms (existing content)
         alarms_tab = QWidget()
@@ -273,6 +290,11 @@ class AlarmViewer(QMainWindow):
         self._bdt_validation_panel.set_detail_panel(self._bdt_detail_panel)
         self._bdt_validation_panel.row_selected.connect(self._bdt_detail_panel_obj.populate)
         self._tabs.addTab(self._bdt_validation_panel, "Test Validation")
+        self._bdt_sidebar = BdtWorkspacePanel(self)
+        self._sidebar_stack.addWidget(self._bdt_sidebar)
+        self._edit_bdt_dir = self._bdt_sidebar.edit_dir
+        self._lbl_bdt_file_count = self._bdt_sidebar.lbl_file_count
+        self._bdt_file_list = self._bdt_sidebar.file_list
 
         rl.addWidget(self._tabs, 1)
 
@@ -285,7 +307,8 @@ class AlarmViewer(QMainWindow):
         self._main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
         self._apply_sidebar_constraints()
 
-        main.addWidget(self._main_splitter)
+        main.addWidget(self._main_splitter, 1)
+        self._set_workspace_view(0, persist=False)
 
         # Status bar
         self._sbar = QStatusBar()
@@ -317,6 +340,10 @@ class AlarmViewer(QMainWindow):
         ver = QLabel(f"v{APP_VERSION}")
         ver.setObjectName("lbl_app_ver")
         l.addWidget(ver)
+
+        self._lbl_workspace = QLabel(self._workspace_defs[0]["label"])
+        self._lbl_workspace.setObjectName("lbl_workspace_tag")
+        l.addWidget(self._lbl_workspace)
 
         btn_review = QPushButton("Daily Report")
         btn_review.setObjectName("btn_dir")
@@ -353,6 +380,56 @@ class AlarmViewer(QMainWindow):
         l.addWidget(self._lbl_count)
 
         return w
+
+    def _make_activity_bar(self):
+        w = QWidget()
+        w.setObjectName("activity_bar")
+        w.setFixedWidth(72)
+
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(8, 10, 8, 12)
+        lay.setSpacing(10)
+
+        # brand = QLabel("OR")
+        # brand.setObjectName("activity_brand")
+        # brand.setAlignment(Qt.AlignCenter)
+        # lay.addWidget(brand)
+
+        self._workspace_buttons = []
+        for index, workspace in enumerate(self._workspace_defs):
+            btn = QPushButton(workspace["nav"])
+            btn.setObjectName("activity_btn")
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setToolTip(workspace["label"])
+            btn.setFixedHeight(72)
+            btn.clicked.connect(lambda _checked=False, idx=index: self._set_workspace_view(idx))
+            lay.addWidget(btn)
+            self._workspace_buttons.append(btn)
+
+        lay.addStretch()
+        return w
+
+    def _set_workspace_view(self, index: int, persist: bool = True):
+        target = max(0, min(index, len(self._workspace_defs) - 1))
+        if self._tabs.currentIndex() != target:
+            self._tabs.setCurrentIndex(target)
+        self._apply_workspace_state(target)
+        if persist:
+            self._save_ui_state()
+
+    def _apply_workspace_state(self, index: int):
+        if hasattr(self, "_sidebar_stack"):
+            self._sidebar_stack.setCurrentIndex(index)
+        if hasattr(self, "_lbl_workspace"):
+            self._lbl_workspace.setText(self._workspace_defs[index]["label"])
+        for btn_index, btn in enumerate(getattr(self, "_workspace_buttons", [])):
+            btn.setChecked(btn_index == index)
+
+    def _on_workspace_changed(self, index: int):
+        if 0 <= index < len(self._workspace_defs):
+            self._apply_workspace_state(index)
 
     # ── table ────────────────────────────────────────────────────
     def _make_table(self):
@@ -450,8 +527,10 @@ class AlarmViewer(QMainWindow):
         d = {
             "directory": self._edit_dir.text(),
             "uploaded_folder_path": self._uploaded_folder_path or self._edit_dir.text(),
+            "bdt_directory": self._edit_bdt_dir.text(),
             "alarm_load_source": self._get_alarm_load_mode(),
             "bdt_load_source": self._bdt_validation_panel.cmb_bdt_source.currentData(),
+            "workspace_view": self._tabs.currentIndex(),
             "file_paths": file_paths,
             "file_hashes": state.compute_file_hashes(file_paths),
             "sync_on": self._sync_flags.get("sync_on", False),
@@ -499,10 +578,21 @@ class AlarmViewer(QMainWindow):
             self._theme_mode = s["theme_mode"]
             self._update_theme_button_label()
 
+        workspace_view = int(s.get("workspace_view", 0) or 0)
+        self._set_workspace_view(workspace_view, persist=False)
+
         # Directory & site filter
-        if s.get("directory"):
-            self._edit_dir.setText(s["directory"])
-        self._uploaded_folder_path = str(s.get("uploaded_folder_path") or s.get("directory") or "")
+        restored_directory = str(s.get("directory") or "")
+        self._uploaded_folder_path = str(s.get("uploaded_folder_path") or restored_directory or "")
+        self._bdt_uploaded_folder_path = str(
+            s.get("bdt_directory") or self._uploaded_folder_path or restored_directory or ""
+        )
+        if restored_directory:
+            self._edit_dir.setText(restored_directory)
+        elif self._uploaded_folder_path:
+            self._edit_dir.setText(self._uploaded_folder_path)
+        if self._bdt_uploaded_folder_path:
+            self._edit_bdt_dir.setText(self._bdt_uploaded_folder_path)
         alarm_load_source = str(s.get("alarm_load_source") or "directory")
         idx = self._cmb_alarm_source.findData(alarm_load_source)
         if idx >= 0:
@@ -579,40 +669,19 @@ class AlarmViewer(QMainWindow):
         # Stash file_paths for reference
         self._restored_file_paths = s.get("file_paths", [])
 
-        # Kick off background data restore (DB preferred, Parquet fallback)
-        try:
-            from alarm_app.db.engine import DB_PATH as _db_path
-        except ImportError:
-            from db.engine import DB_PATH as _db_path
-        if state.ALARM_DB_FILE.exists() or state.CACHE_FILE.exists() or _db_path.exists():
-            self._sbar.showMessage("Restoring previous session...")
+        # Restore only when a local DuckDB alarm cache is present.
+        if state.ALARM_DB_FILE.exists():
+            self._sbar.showMessage("Restoring cached alarms...")
             self._restore_thread = RestoreThread()
             self._restore_thread.finished.connect(self._on_cache_restored)
             self._restore_thread.error.connect(
-                lambda msg: self._sbar.showMessage("Cache restore failed — start fresh"))
+                lambda msg: self._sbar.showMessage("Cached alarm restore failed"))
             self._restore_thread.start()
 
     def _on_cache_restored(self, df):
-        """Called when background Parquet load completes."""
+        """Called when background local-cache restore completes."""
         if df is None or df.empty or "site_id" not in df.columns:
-            self._sbar.showMessage("No cached data found — start fresh")
-            state.clear_cache()
-            return
-
-        # Check if source files changed since cache was saved
-        saved_state = state.load_state() or {}
-        saved_hashes = saved_state.get("file_hashes", {})
-        file_paths = getattr(self, "_restored_file_paths", [])
-        if state.files_changed(saved_hashes, file_paths):
-            self._sbar.showMessage(
-                "Source files changed — reloading from disk…")
-            state.clear_cache()
-            # Populate file list and auto-load
-            directory = self._edit_dir.text().strip()
-            if directory and os.path.isdir(directory):
-                self._scan()
-                self._file_list.selectAll()
-                self._load()
+            self._sbar.showMessage("No cached alarm data found")
             return
 
         # Ensure datetime columns are proper dtype
@@ -626,9 +695,10 @@ class AlarmViewer(QMainWindow):
         self._full_df = df
 
         # Rebuild file_infos from restored paths so close-save works
+        restored_paths = list(getattr(self, "_restored_file_paths", []) or [])
         self._file_infos = [
             {"path": p, "filename": os.path.basename(p)}
-            for p in file_paths
+            for p in restored_paths
         ]
 
         self._lbl_loaded.setText(f"✓  {len(df):,} records (restored)")
@@ -724,7 +794,7 @@ class AlarmViewer(QMainWindow):
                         )
 
                     engine = create_engine()
-                    init_db(engine)
+                    init_db(engine, include_alarm_records=False)
                     SessionCls = get_session_factory(engine)
                     session = SessionCls()
                     try:
@@ -785,6 +855,29 @@ class AlarmViewer(QMainWindow):
             stay_bg="#d5e0fc", stay_border="#a8bff8", stay_hover="#c0d0fa",
             exit_bg="#f5d5da", exit_border="#e8a0b0", exit_hover="#f0c0c8",
         )
+
+    def _iter_background_threads(self):
+        panel_bdt_thread = getattr(self._bdt_validation_panel, "_bdt_thread", None)
+        for thread in (
+            getattr(self, "_loader", None),
+            getattr(self, "_restore_thread", None),
+            getattr(self, "_bt_thread", None),
+            panel_bdt_thread,
+        ):
+            if thread is not None:
+                yield thread
+
+    def _wait_for_background_threads(self, timeout_ms: int = 30000) -> bool:
+        all_finished = True
+        for thread in self._iter_background_threads():
+            try:
+                if thread.isRunning():
+                    self._sbar.showMessage("Waiting for background tasks to finish…")
+                    if not thread.wait(timeout_ms):
+                        all_finished = False
+            except Exception:
+                pass
+        return all_finished
 
     def closeEvent(self, event):
         """Always warn before closing."""
@@ -897,6 +990,15 @@ class AlarmViewer(QMainWindow):
             return
 
         self._stop_sync_worker()
+        if not self._wait_for_background_threads():
+            event.ignore()
+            QMessageBox.information(
+                self,
+                "Background Save In Progress",
+                "The app is still saving data to the local DB.\n"
+                "Wait a little longer, then close it again.",
+            )
+            return
 
         # Save session state before closing
         try:
@@ -1305,6 +1407,86 @@ class AlarmViewer(QMainWindow):
             self._uploaded_folder_path = d
             self._scan()
 
+    def _browse_bdt(self):
+        d = QFileDialog.getExistingDirectory(
+            self, "Select BDT Directory",
+            self._edit_bdt_dir.text() or self._edit_dir.text() or str(Path.home()))
+        if d:
+            self._edit_bdt_dir.setText(d)
+            self._bdt_uploaded_folder_path = d
+            self._scan_bdt()
+
+    def _discover_bdt_files(self, directory: str) -> list[dict]:
+        file_infos: list[dict] = []
+        root_dir = os.path.abspath(directory)
+        for root, _dirs, files in os.walk(root_dir):
+            for filename in sorted(files):
+                lower = filename.lower()
+                if (
+                    lower.endswith(".xlsx")
+                    and "bdt" in lower
+                    and not filename.startswith("~$")
+                    and not filename.startswith("._")
+                ):
+                    path = os.path.join(root, filename)
+                    try:
+                        size_kb = os.path.getsize(path) / 1024.0
+                    except OSError:
+                        size_kb = 0.0
+                    rel_path = os.path.relpath(path, root_dir)
+                    file_infos.append(
+                        {
+                            "path": path,
+                            "filename": filename,
+                            "ext": Path(filename).suffix,
+                            "size_kb": size_kb,
+                            "rel_path": rel_path,
+                        }
+                    )
+        return file_infos
+
+    def _scan_bdt(self):
+        directory = self._edit_bdt_dir.text().strip()
+        if not directory:
+            QMessageBox.warning(
+                self, "No Directory",
+                "Please enter or browse to a BDT directory first.")
+            return
+        if not os.path.isdir(directory):
+            QMessageBox.critical(
+                self, "Invalid Path",
+                f"Not a valid directory:\n{directory}")
+            return
+
+        self._bdt_uploaded_folder_path = directory
+        self._bdt_file_infos = self._discover_bdt_files(directory)
+        self._bdt_file_list.clear()
+
+        if not self._bdt_file_infos:
+            self._lbl_bdt_file_count.setText("No BDT .xlsx files found")
+            self._sbar.showMessage("No BDT files found in the selected directory")
+            return
+
+        max_f = min(max(len(f["filename"]) for f in self._bdt_file_infos), 48)
+        for info in self._bdt_file_infos:
+            line = (
+                f"{info['filename']:<{max_f}}  "
+                f"{info['ext'].upper().lstrip('.'):<4}  "
+                f"{info['size_kb']:>9.1f} KB"
+            )
+            rel_dir = os.path.dirname(info["rel_path"])
+            if rel_dir:
+                line += f"   -> {rel_dir}"
+            item = QListWidgetItem(line)
+            item.setData(Qt.UserRole, info)
+            item.setForeground(QColor("#6c7086"))
+            self._bdt_file_list.addItem(item)
+
+        self._bdt_file_list.selectAll()
+        n = len(self._bdt_file_infos)
+        self._lbl_bdt_file_count.setText(f"  {n} file{'s' if n != 1 else ''}")
+        self._sbar.showMessage(f"Found {n} BDT file(s) in the selected directory")
+
     def _scan(self):
         directory = self._edit_dir.text().strip()
         if not directory:
@@ -1362,7 +1544,7 @@ class AlarmViewer(QMainWindow):
         can_load = (mode == "db") or has_files
         self._btn_load.setEnabled(can_load)
         if mode == "db":
-            self._btn_load.setText("Load Alarm Data")
+            self._btn_load.setText("Load Cached Alarms")
         elif mode == "both":
             self._btn_load.setText("Load + Verify")
         else:
@@ -1372,21 +1554,65 @@ class AlarmViewer(QMainWindow):
         self._pending_alarm_load_mode = self._get_alarm_load_mode()
         if self._pending_alarm_load_mode == "db":
             df = self._load_alarm_dataframe_from_db()
-            if df is None or df.empty:
-                QMessageBox.information(self, "No Alarm Data", "No saved alarm rows found in the DB.")
-                self._sbar.showMessage("No saved alarm rows found in DB")
+            if df is not None and not df.empty:
+                self._apply_loaded_alarm_dataframe(
+                    df,
+                    f"Loaded {len(df):,} alarm records from local cache",
+                )
                 return
-            self._apply_loaded_alarm_dataframe(
-                df,
-                f"Loaded {len(df):,} alarm records from DB",
+
+            # Recovery path: if current session already has alarms in memory,
+            # refresh local cache and continue without blocking the user.
+            if not self._full_df.empty:
+                try:
+                    backend = state.save_dataframe(self._full_df)
+                    self._apply_loaded_alarm_dataframe(
+                        self._full_df.copy(),
+                        f"Recovered {len(self._full_df):,} alarm records from memory "
+                        f"and refreshed local {backend} cache",
+                    )
+                    return
+                except Exception:
+                    pass
+
+            has_selected_files = any(
+                self._file_list.item(i).isSelected()
+                for i in range(self._file_list.count())
             )
-            return
+            has_discovered_files = bool(getattr(self, "_file_infos", None))
+            if has_selected_files or has_discovered_files:
+                self._pending_alarm_load_mode = "directory"
+                if has_selected_files:
+                    self._sbar.showMessage(
+                        "No local cache found — loading selected files from directory instead"
+                    )
+                else:
+                    self._sbar.showMessage(
+                        "No local cache found — loading all discovered files from directory instead"
+                    )
+            else:
+                QMessageBox.information(
+                    self,
+                    "No Alarm Data",
+                    "No saved alarm rows were found in the local alarm cache.",
+                )
+                self._sbar.showMessage("No saved alarm rows found in local cache")
+                return
 
         selected = [
             self._file_list.item(i).data(Qt.UserRole)
             for i in range(self._file_list.count())
             if self._file_list.item(i).isSelected()
         ]
+        if (
+            self._pending_alarm_load_mode == "directory"
+            and not selected
+            and getattr(self, "_file_infos", None)
+        ):
+            selected = list(self._file_infos)
+            self._sbar.showMessage(
+                f"No local cache found — loading all discovered files ({len(selected)})"
+            )
         if not selected:
             QMessageBox.warning(
                 self, "Nothing Selected",
@@ -1419,7 +1645,7 @@ class AlarmViewer(QMainWindow):
                 merged = pd.concat([db_df, df], ignore_index=True)
                 df, dropped = deduplicate_alarm_rows(merged)
                 msg = (
-                    f"{msg}; merged with {len(db_df):,} DB record(s)"
+                    f"{msg}; merged with {len(db_df):,} cached record(s)"
                     f"{f'; dropped {dropped:,} duplicate row(s)' if dropped else ''}"
                 )
 
@@ -1436,19 +1662,7 @@ class AlarmViewer(QMainWindow):
 
     def _load_alarm_dataframe_from_db(self) -> pd.DataFrame | None:
         try:
-            try:
-                from alarm_app.db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
-                from alarm_app.db.repos.alarm_repo import load_alarms_as_df
-            except ImportError:
-                from db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
-                from db.repos.alarm_repo import load_alarms_as_df
-            engine = _ce()
-            _idb(engine)
-            session = _gsf(engine)()
-            try:
-                df = load_alarms_as_df(session)
-            finally:
-                session.close()
+            df = state.load_dataframe()
             return df if df is not None and not df.empty else None
         except Exception:
             return None
