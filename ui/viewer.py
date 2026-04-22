@@ -185,6 +185,7 @@ class AlarmViewer(QMainWindow):
         self._lbl_file_count = self._left_panel.lbl_file_count
         self._file_list = self._left_panel.file_list
         self._btn_load = self._left_panel.btn_load
+        self._cmb_alarm_source = self._left_panel.cmb_alarm_source
         self._lbl_loaded = self._left_panel.lbl_loaded
         self._sidebar = self._left_panel
         self._sidebar.setObjectName("sidebar")
@@ -449,6 +450,8 @@ class AlarmViewer(QMainWindow):
         d = {
             "directory": self._edit_dir.text(),
             "uploaded_folder_path": self._uploaded_folder_path or self._edit_dir.text(),
+            "alarm_load_source": self._get_alarm_load_mode(),
+            "bdt_load_source": self._bdt_validation_panel.cmb_bdt_source.currentData(),
             "file_paths": file_paths,
             "file_hashes": state.compute_file_hashes(file_paths),
             "sync_on": self._sync_flags.get("sync_on", False),
@@ -500,6 +503,14 @@ class AlarmViewer(QMainWindow):
         if s.get("directory"):
             self._edit_dir.setText(s["directory"])
         self._uploaded_folder_path = str(s.get("uploaded_folder_path") or s.get("directory") or "")
+        alarm_load_source = str(s.get("alarm_load_source") or "directory")
+        idx = self._cmb_alarm_source.findData(alarm_load_source)
+        if idx >= 0:
+            self._cmb_alarm_source.setCurrentIndex(idx)
+        bdt_load_source = str(s.get("bdt_load_source") or "directory")
+        bdt_idx = self._bdt_validation_panel.cmb_bdt_source.findData(bdt_load_source)
+        if bdt_idx >= 0:
+            self._bdt_validation_panel.cmb_bdt_source.setCurrentIndex(bdt_idx)
         if s.get("site_filter"):
             self._edit_site.setText(s["site_filter"])
 
@@ -652,38 +663,17 @@ class AlarmViewer(QMainWindow):
     def _restore_bdt_results(self):
         """Load previous BDT validation results from the DB into the UI."""
         try:
-            try:
-                from alarm_app.db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
-                from alarm_app.db.repos.pm_repo import load_all_validation_results
-            except ImportError:
-                from db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
-                from db.repos.pm_repo import load_all_validation_results
-            engine = _ce()
-            _idb(engine)
-            session = _gsf(engine)()
-            try:
-                results = load_all_validation_results(session)
-            finally:
-                session.close()
-
+            results = self._load_bdt_results_from_db()
             if not results:
                 return
 
-            self._bdt_results = results
-            self._bdt_by_site = {}
-            for vr in results:
-                if vr.site_code:
-                    key = vr.site_code.strip().upper()
-                    self._bdt_by_site.setdefault(key, []).append(
-                        vr.bdt_data if vr.bdt_data else vr)
-
-            # Populate the validation table if the panel exists
-            if hasattr(self, "_bdt_validation_panel"):
-                self._bdt_validation_panel.set_results(results)
-
-            self._sbar.showMessage(
-                f"Session restored — {len(self._full_df):,} alarms, "
-                f"{len(results)} BDT validations")
+            self._apply_bdt_results(
+                results,
+                status_message=(
+                    f"Session restored — {len(self._full_df):,} alarms, "
+                    f"{len(results)} BDT validations"
+                ),
+            )
         except Exception:
             pass  # BDT restore is best-effort
 
@@ -1338,7 +1328,7 @@ class AlarmViewer(QMainWindow):
                 "❌  No .csv / .xlsx files found")
             self._lbl_file_count.setStyleSheet(
                 "color:#f38ba8; font-size:11px;")
-            self._btn_load.setEnabled(False)
+            self._on_alarm_source_changed()
             return
 
         max_f = min(
@@ -1361,12 +1351,37 @@ class AlarmViewer(QMainWindow):
         n = len(self._file_infos)
         self._lbl_file_count.setText(f"  {n} file{'s' if n != 1 else ''}")
         self._lbl_file_count.setStyleSheet("color:#a6e3a1; font-size:11px;")
-        self._btn_load.setEnabled(True)
+        self._on_alarm_source_changed()
         self._sbar.showMessage(
             f"Found {n} file(s) — select files to load, "
             "then click 'Load Selected Files'.")
 
+    def _on_alarm_source_changed(self):
+        mode = self._get_alarm_load_mode()
+        has_files = bool(getattr(self, "_file_infos", []))
+        can_load = (mode == "db") or has_files
+        self._btn_load.setEnabled(can_load)
+        if mode == "db":
+            self._btn_load.setText("Load Alarm Data")
+        elif mode == "both":
+            self._btn_load.setText("Load + Verify")
+        else:
+            self._btn_load.setText("Load Selected Files")
+
     def _load(self):
+        self._pending_alarm_load_mode = self._get_alarm_load_mode()
+        if self._pending_alarm_load_mode == "db":
+            df = self._load_alarm_dataframe_from_db()
+            if df is None or df.empty:
+                QMessageBox.information(self, "No Alarm Data", "No saved alarm rows found in the DB.")
+                self._sbar.showMessage("No saved alarm rows found in DB")
+                return
+            self._apply_loaded_alarm_dataframe(
+                df,
+                f"Loaded {len(df):,} alarm records from DB",
+            )
+            return
+
         selected = [
             self._file_list.item(i).data(Qt.UserRole)
             for i in range(self._file_list.count())
@@ -1392,7 +1407,56 @@ class AlarmViewer(QMainWindow):
         self._loader.start()
 
     def _on_loaded(self, df: pd.DataFrame, msg: str):
-        # Classify by alarm ID config
+        if getattr(self, "_pending_alarm_load_mode", "directory") == "both":
+            try:
+                from alarm_app.data.loaders import deduplicate_alarm_rows
+            except ImportError:
+                from data.loaders import deduplicate_alarm_rows
+            db_df = self._load_alarm_dataframe_from_db()
+            if db_df is None:
+                db_df = pd.DataFrame()
+            if not db_df.empty:
+                merged = pd.concat([db_df, df], ignore_index=True)
+                df, dropped = deduplicate_alarm_rows(merged)
+                msg = (
+                    f"{msg}; merged with {len(db_df):,} DB record(s)"
+                    f"{f'; dropped {dropped:,} duplicate row(s)' if dropped else ''}"
+                )
+
+        self._apply_loaded_alarm_dataframe(df, msg)
+
+    def _on_error(self, msg: str):
+        self._btn_load.setEnabled(True)
+        self._prog.setVisible(False)
+        QMessageBox.critical(self, "Load Error", msg)
+        self._sbar.showMessage(f"Error: {msg}")
+
+    def _get_alarm_load_mode(self) -> str:
+        return str(self._cmb_alarm_source.currentData() or "directory")
+
+    def _load_alarm_dataframe_from_db(self) -> pd.DataFrame | None:
+        try:
+            try:
+                from alarm_app.db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
+                from alarm_app.db.repos.alarm_repo import load_alarms_as_df
+            except ImportError:
+                from db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
+                from db.repos.alarm_repo import load_alarms_as_df
+            engine = _ce()
+            _idb(engine)
+            session = _gsf(engine)()
+            try:
+                df = load_alarms_as_df(session)
+            finally:
+                session.close()
+            return df if df is not None and not df.empty else None
+        except Exception:
+            return None
+
+    def _apply_loaded_alarm_dataframe(self, df: pd.DataFrame, msg: str):
+        for col in ("occurred_on", "cleared_on"):
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce", format="mixed")
         alarm_ids = state.load_alarm_ids()
         df = classify_by_alarm_id(df, alarm_ids)
         df = compute_site_down_flag(df)
@@ -1407,7 +1471,6 @@ class AlarmViewer(QMainWindow):
         self._refresh_stats(df)
         self._reset_date_range(df)
 
-        # Respect the full current UI filter state immediately after load.
         view = self._apply_filters(df)
         self._populate(view)
         self._refresh_stats(view)
@@ -1415,11 +1478,37 @@ class AlarmViewer(QMainWindow):
         self._lbl_count.setText(
             f"Showing  {n:,}  of  {len(df):,} records")
 
-    def _on_error(self, msg: str):
-        self._btn_load.setEnabled(True)
-        self._prog.setVisible(False)
-        QMessageBox.critical(self, "Load Error", msg)
-        self._sbar.showMessage(f"Error: {msg}")
+    def _load_bdt_results_from_db(self) -> list:
+        try:
+            try:
+                from alarm_app.db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
+                from alarm_app.db.repos.pm_repo import load_all_validation_results
+            except ImportError:
+                from db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
+                from db.repos.pm_repo import load_all_validation_results
+            engine = _ce()
+            _idb(engine)
+            session = _gsf(engine)()
+            try:
+                return load_all_validation_results(session)
+            finally:
+                session.close()
+        except Exception:
+            return []
+
+    def _apply_bdt_results(self, results: list, status_message: str | None = None):
+        self._bdt_results = results
+        self._bdt_by_site = {}
+        for vr in results:
+            if vr.site_code and vr.bdt_data is not None:
+                key = vr.site_code.strip().upper()
+                self._bdt_by_site.setdefault(key, []).append(vr.bdt_data)
+        for key, items in self._bdt_by_site.items():
+            items.sort(key=lambda b: getattr(b, "test_date", None) or datetime.min, reverse=True)
+        if hasattr(self, "_bdt_validation_panel"):
+            self._bdt_validation_panel.set_results(results)
+        if status_message:
+            self._sbar.showMessage(status_message)
 
     def _apply_filters(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply current UI filters to *df* and return the subset."""

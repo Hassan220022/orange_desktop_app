@@ -4,7 +4,7 @@ LeftPanel — sidebar with directory browser and file list.
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel,
-    QListWidget, QAbstractItemView,
+    QListWidget, QAbstractItemView, QComboBox,
 )
 from PyQt5.QtCore import Qt
 
@@ -86,6 +86,14 @@ class LeftPanel(QWidget):
         self.btn_load.setObjectName("btn_load")
         self.btn_load.setEnabled(False)
         self.btn_load.clicked.connect(viewer._load)
+
+        self.cmb_alarm_source = QComboBox()
+        self.cmb_alarm_source.addItem("Directory", "directory")
+        self.cmb_alarm_source.addItem("DB", "db")
+        self.cmb_alarm_source.addItem("Both (Verify)", "both")
+        self.cmb_alarm_source.currentIndexChanged.connect(viewer._on_alarm_source_changed)
+        lay.addWidget(self.cmb_alarm_source)
+
         lay.addWidget(self.btn_load)
 
         self.lbl_loaded = QLabel("")

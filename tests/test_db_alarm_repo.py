@@ -4,7 +4,10 @@ import pandas as pd
 from datetime import datetime
 from sqlalchemy.orm import Session
 from alarm_app.db.engine import create_engine, init_db
-from alarm_app.db.repos.alarm_repo import bulk_upsert_alarms, load_alarms_as_df, count_alarms
+from alarm_app.db.repos.alarm_repo import (
+    bulk_upsert_alarms, load_alarms_as_df, count_alarms, _sqlite_max_multi_rows,
+)
+from alarm_app.db.repos.file_repo import register_file
 
 
 @pytest.fixture
@@ -68,3 +71,45 @@ class TestAlarmRepo:
     def test_empty_df_returns_empty(self, session):
         loaded = load_alarms_as_df(session)
         assert loaded.empty
+
+    def test_sqlite_multi_insert_chunk_uses_compile_option_limit(self, session, monkeypatch):
+        engine = session.get_bind()
+
+        class _FakeResult:
+            def fetchall(self):
+                return [("MAX_VARIABLE_NUMBER=32766",)]
+
+        class _FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def exec_driver_sql(self, sql):
+                assert sql == "PRAGMA compile_options"
+                return _FakeResult()
+
+        monkeypatch.setattr(engine, "connect", lambda: _FakeConn())
+        assert _sqlite_max_multi_rows(engine, 18) == 1820
+
+    def test_bulk_insert_uses_same_session_connection_as_pending_writes(self, session):
+        register_file(
+            session,
+            file_sha256="pending-file-sha",
+            original_path="/tmp/alarms.csv",
+            original_name="alarms.csv",
+            source_kind="alarm_csv",
+        )
+
+        df = _make_df([
+            {"site_id": "S1", "alarm_name": "Power", "occurred_on": datetime(2026, 1, 1)},
+            {"site_id": "S2", "alarm_name": "Door", "occurred_on": datetime(2026, 1, 1, 0, 1)},
+        ])
+
+        inserted, skipped = bulk_upsert_alarms(session, df)
+
+        assert inserted == 2
+        assert skipped == 0
+        session.commit()
+        assert count_alarms(session) == 2

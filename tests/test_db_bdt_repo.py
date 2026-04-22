@@ -2,6 +2,7 @@
 import pytest
 from datetime import date
 from sqlalchemy.orm import Session
+from alarm_app.db.models import UploadedFile
 from alarm_app.db.engine import create_engine, init_db
 from alarm_app.db.repos.bdt_repo import save_bdt_test, load_previous_test, save_bdt_photo
 
@@ -49,6 +50,30 @@ class TestBDTRepo:
 
     def test_load_previous_test_none(self, session):
         assert load_previous_test(session, "XYZ", date(2026, 1, 1)) is None
+
+    def test_duplicate_backfills_missing_file_id(self, session):
+        file_row = UploadedFile(
+            file_sha256="file_sha_1",
+            original_path="/tmp/test_bdt.xlsx",
+            original_name="test_bdt.xlsx",
+        )
+        session.add(file_row)
+        session.flush()
+
+        first = save_bdt_test(session, {
+            "site_code": "ABC",
+            "test_date": date(2026, 1, 1),
+            "battery_brand": "Narada",
+        })
+        assert first.file_id is None
+
+        second = save_bdt_test(session, {
+            "site_code": "ABC",
+            "test_date": date(2026, 1, 1),
+            "battery_brand": "Narada",
+        }, file_id=file_row.id)
+        assert second.id == first.id
+        assert second.file_id == file_row.id
 
     def test_save_photo(self, session):
         bdt = save_bdt_test(session, {"site_code": "ABC",

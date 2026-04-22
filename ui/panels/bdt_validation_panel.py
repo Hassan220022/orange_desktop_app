@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel,
     QFrame, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QSizePolicy, QMessageBox,
-    QFileDialog,
+    QFileDialog, QComboBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor
@@ -125,6 +125,14 @@ class BdtValidationPanel(QWidget):
         self.spn_health.setFixedWidth(82)
         params_row.addWidget(self.spn_health)
 
+        params_row.addWidget(_inline_label("Source"))
+        self.cmb_bdt_source = QComboBox()
+        self.cmb_bdt_source.setObjectName("filter_combo")
+        self.cmb_bdt_source.addItem("Directory", "directory")
+        self.cmb_bdt_source.addItem("DB", "db")
+        self.cmb_bdt_source.addItem("Both (Verify)", "both")
+        params_row.addWidget(self.cmb_bdt_source)
+
         header_row.addWidget(params_group)
 
         # SEARCH group
@@ -210,6 +218,19 @@ class BdtValidationPanel(QWidget):
     # ------------------------------------------------------------------
     def _run_validation(self):
         viewer = self._viewer
+        source_mode = self._current_source_mode()
+        if source_mode == "db":
+            results = viewer._load_bdt_results_from_db()
+            if not results:
+                QMessageBox.information(self, "No BDT Results", "No saved BDT validation results found in the DB.")
+                return
+            viewer._apply_bdt_results(
+                results,
+                status_message=f"Loaded {len(results)} BDT validation result(s) from DB",
+            )
+            viewer._reviewed_bdt_keys.clear()
+            return
+
         directory = viewer._edit_dir.text().strip()
         if not directory or not os.path.isdir(directory):
             QMessageBox.warning(
@@ -252,6 +273,8 @@ class BdtValidationPanel(QWidget):
             self._detail_panel_placeholder.setVisible(False)
         viewer._prog.setVisible(True)
         viewer._prog.setValue(0)
+        self._pending_bdt_source_mode = source_mode
+        self._db_seed_results = viewer._load_bdt_results_from_db() if source_mode == "both" else []
 
         self._bdt_thread = BDTValidationThread(
             bdt_files, alarm_df, tolerance, health_pct, skip_photos=viewer._skip_photos)
@@ -264,6 +287,9 @@ class BdtValidationPanel(QWidget):
 
     def _on_validation_done(self, results, by_site):
         viewer = self._viewer
+        if getattr(self, "_pending_bdt_source_mode", "directory") == "both":
+            results = self._merge_results(self._db_seed_results, results)
+            by_site = self._build_site_map(results)
         self._viewer._bdt_results = results
         self._viewer._bdt_by_site = by_site
         viewer._prog.setVisible(False)
@@ -413,6 +439,41 @@ class BdtValidationPanel(QWidget):
                 and "no alarm data" in str(rule.detail).lower()):
             return "No alarm data"
         return rule.verdict
+
+    def _current_source_mode(self) -> str:
+        return str(self.cmb_bdt_source.currentData() or "directory")
+
+    @staticmethod
+    def _result_identity(res) -> tuple[str, str, str]:
+        file_token = ""
+        bdt = getattr(res, "bdt_data", None)
+        if bdt and getattr(bdt, "file_path", ""):
+            file_token = os.path.basename(str(getattr(bdt, "file_path", ""))).strip().lower()
+        elif getattr(res, "filename", ""):
+            file_token = os.path.basename(str(getattr(res, "filename", ""))).strip().lower()
+        return (
+            str(getattr(res, "site_code", "") or "").strip().upper(),
+            str(getattr(res, "test_date", "") or "").strip(),
+            file_token,
+        )
+
+    def _merge_results(self, db_results: list, new_results: list) -> list:
+        ordered: dict[tuple[str, str, str], object] = {}
+        for res in list(db_results or []) + list(new_results or []):
+            ordered[self._result_identity(res)] = res
+        return list(ordered.values())
+
+    @staticmethod
+    def _build_site_map(results: list) -> dict[str, list]:
+        by_site: dict[str, list] = {}
+        for res in results:
+            bdt = getattr(res, "bdt_data", None)
+            site_code = str(getattr(res, "site_code", "") or "").strip().upper()
+            if site_code and bdt is not None:
+                by_site.setdefault(site_code, []).append(bdt)
+        for items in by_site.values():
+            items.sort(key=lambda b: getattr(b, "test_date", None) or datetime.min, reverse=True)
+        return by_site
 
     @staticmethod
     def _is_lithium_brand(brand: str | None) -> bool:

@@ -9,7 +9,6 @@ import logging
 import math
 
 import pandas as pd
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 from alarm_app.db.models import AlarmRecord
 from alarm_app.db.hashing import ALARM_HASH_COLS, _canonical_value
@@ -36,6 +35,29 @@ _DF_TO_DB = {
     "additional_info": "additional_info",
     "site_down": "site_down",
 }
+
+
+def _sqlite_max_multi_rows(connectable, num_columns: int, default_max_variables: int = 999) -> int:
+    """Return a safe max rows-per-statement for SQLite multi-row inserts."""
+    if num_columns <= 0:
+        return 1
+
+    max_variables = default_max_variables
+    try:
+        if hasattr(connectable, "exec_driver_sql"):
+            rows = connectable.exec_driver_sql("PRAGMA compile_options").fetchall()
+        else:
+            with connectable.connect() as conn:
+                rows = conn.exec_driver_sql("PRAGMA compile_options").fetchall()
+        for row in rows:
+            option = str(row[0] if isinstance(row, tuple) else row)
+            if option.startswith("MAX_VARIABLE_NUMBER="):
+                max_variables = int(option.split("=", 1)[1])
+                break
+    except Exception:
+        pass
+
+    return max(1, max_variables // num_columns)
 
 
 def _vectorized_row_hash(df: pd.DataFrame) -> pd.Series:
@@ -82,10 +104,10 @@ def bulk_upsert_alarms(session: Session, df: pd.DataFrame,
         _log.debug("Dropped %d in-batch duplicates", in_batch_dupes)
 
     # 3. Fetch existing hashes from DB
-    engine = session.get_bind()
+    conn = session.connection()
     existing = pd.read_sql(
         "SELECT row_hash FROM alarm_records",
-        engine,
+        conn,
     )
     existing_set = set(existing["row_hash"]) if not existing.empty else set()
     _log.debug("DB has %d existing hashes", len(existing_set))
@@ -116,13 +138,19 @@ def bulk_upsert_alarms(session: Session, df: pd.DataFrame,
 
     # 6. Bulk insert via pandas to_sql (much faster than ORM add_all)
     inserted = len(insert_df)
+    chunk_rows = 5000
+    if getattr(conn.dialect, "name", "") == "sqlite":
+        chunk_rows = min(
+            chunk_rows,
+            _sqlite_max_multi_rows(conn, len(insert_df.columns)),
+        )
     insert_df.to_sql(
         "alarm_records",
-        engine,
+        conn,
         if_exists="append",
         index=False,
         method="multi",
-        chunksize=5000,
+        chunksize=chunk_rows,
     )
 
     _log.info("Alarms upserted: inserted=%d, skipped=%d (of %d total)",
@@ -135,8 +163,8 @@ def load_alarms_as_df(session: Session) -> pd.DataFrame:
 
     Uses pd.read_sql for speed instead of ORM iteration.
     """
-    engine = session.get_bind()
-    df = pd.read_sql("SELECT * FROM alarm_records", engine)
+    conn = session.connection()
+    df = pd.read_sql("SELECT * FROM alarm_records", conn)
 
     if df.empty:
         return pd.DataFrame()
@@ -156,6 +184,6 @@ def load_alarms_as_df(session: Session) -> pd.DataFrame:
 
 def count_alarms(session: Session) -> int:
     """Return total alarm record count."""
-    engine = session.get_bind()
-    result = pd.read_sql("SELECT COUNT(*) as cnt FROM alarm_records", engine)
+    conn = session.connection()
+    result = pd.read_sql("SELECT COUNT(*) as cnt FROM alarm_records", conn)
     return int(result["cnt"].iloc[0]) if not result.empty else 0

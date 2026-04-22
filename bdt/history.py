@@ -227,6 +227,33 @@ def _build_bdt_dict(bdt_data, verdict: str | None = None) -> dict:
     return payload
 
 
+def _register_bdt_uploaded_file(session, bdt_data) -> int | None:
+    file_path = str(getattr(bdt_data, "file_path", "") or "").strip()
+    if not file_path:
+        return None
+    path_obj = Path(file_path)
+    if not path_obj.is_file():
+        return None
+
+    try:
+        from alarm_app.db.hashing import compute_file_sha256
+        from alarm_app.db.repos.file_repo import register_file as _register_file
+    except ImportError:
+        from db.hashing import compute_file_sha256
+        from db.repos.file_repo import register_file as _register_file
+
+    file_sha256 = compute_file_sha256(path_obj)
+    record = _register_file(
+        session,
+        file_sha256=file_sha256,
+        original_path=str(path_obj),
+        original_name=path_obj.name,
+        file_size=path_obj.stat().st_size,
+        source_kind="bdt_xlsx",
+    )
+    return int(record.id) if record and getattr(record, "id", None) else None
+
+
 def _build_rule_results(validation_result) -> list[dict]:
     rules = list(getattr(validation_result, "rules", []) or [])
     seen_rule_ids: set[str] = set()
@@ -290,7 +317,8 @@ def save_test_record(bdt, verdict: str) -> None:
     from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
     session = _get_session()
     try:
-        bdt_record = _save_bdt_test(session, bdt_dict)
+        file_id = _register_bdt_uploaded_file(session, bdt)
+        bdt_record = _save_bdt_test(session, bdt_dict, file_id=file_id)
         session.commit()
 
         # Persist photos to blob storage
@@ -450,7 +478,8 @@ def save_validation_run(
 
     session = _get_session()
     try:
-        bdt_db = _save_bdt_test(session, bdt_dict)
+        file_id = _register_bdt_uploaded_file(session, bdt_data)
+        bdt_db = _save_bdt_test(session, bdt_dict, file_id=file_id)
         session.flush()
 
         _save_pm_run(
@@ -531,7 +560,8 @@ def save_validation_batch(
             try:
                 with session.begin_nested():
                     bdt_dict = _build_bdt_dict(bdt_data)
-                    bdt_db = _save_bdt_test(session, bdt_dict)
+                    file_id = _register_bdt_uploaded_file(session, bdt_data)
+                    bdt_db = _save_bdt_test(session, bdt_dict, file_id=file_id)
                     if bdt_db is None:
                         continue
 

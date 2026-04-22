@@ -196,6 +196,8 @@ class LoaderThread(QThread):
                 combined["duration"] = combined["_duration_secs"].apply(_secs_to_hhmmss)
 
             combined, dropped_duplicates = deduplicate_alarm_rows(combined)
+            combined = classify_by_alarm_id(combined, state.load_alarm_ids())
+            combined = compute_site_down_flag(combined)
 
             # ── Emit data to UI FIRST so the user sees results immediately ──
             self.progress.emit(95, "Rendering …")
@@ -217,11 +219,7 @@ class LoaderThread(QThread):
                 f"Loaded {len(combined):,} records from {len(dfs)} file(s){skip_msg}{duplicate_msg}",
             )
 
-            # ── Background DB persist: file metadata only ──
-            # Alarm rows stay in-memory (DataFrame) and persist via Parquet
-            # in state.save_dataframe(). Writing 1.8M rows to SQLite is too
-            # slow for the desktop use case. The DB stores file registrations,
-            # BDT tests, PM runs, and sync events — not bulk alarm rows.
+            # ── Background DB persist: file metadata + alarm rows ──
             try:
                 bg_engine = _db_create_engine()
                 _db_init_db(bg_engine)
@@ -250,13 +248,19 @@ class LoaderThread(QThread):
                             except Exception:
                                 pass
                 try:
+                    inserted, skipped = _bulk_upsert_alarms(bg_session, combined)
+                    _log.info(
+                        "Alarm rows persisted to DB: inserted=%d skipped=%d",
+                        inserted, skipped,
+                    )
                     bg_session.commit()
                 except Exception:
-                    pass
+                    bg_session.rollback()
+                    raise
                 bg_session.close()
-                _log.info("File registrations persisted to DB")
+                _log.info("File registrations and alarm rows persisted to DB")
             except Exception:
-                _log.warning("DB file registration failed", exc_info=True)
+                _log.warning("DB persistence failed", exc_info=True)
 
             # Durable sync journal entries (local outbox) for future cloud migration.
             try:

@@ -3,8 +3,10 @@ import pytest
 from datetime import date
 from sqlalchemy.orm import Session
 from alarm_app.db.engine import create_engine, init_db
-from alarm_app.db.models import BDTTest, PMValidationRun
-from alarm_app.db.repos.pm_repo import save_validation_run, get_or_create_rule_catalog
+from alarm_app.db.models import BDTTest, PMValidationRun, UploadedFile
+from alarm_app.db.repos.pm_repo import (
+    save_validation_run, get_or_create_rule_catalog, load_all_validation_results,
+)
 
 
 @pytest.fixture
@@ -67,3 +69,38 @@ class TestPMRepo:
         )
         assert run1 is not None
         assert run2 is None
+
+    def test_load_all_validation_results_restores_bdt_file_path(self, session):
+        uploaded = UploadedFile(
+            file_sha256="bdt_file_sha_1",
+            original_path="/tmp/original_test_bdt.xlsx",
+            original_name="original_test_bdt.xlsx",
+            source_kind="bdt_xlsx",
+        )
+        session.add(uploaded)
+        session.flush()
+
+        bdt = BDTTest(
+            site_code="TEST",
+            test_date=date(2026, 1, 1),
+            content_hash="test_hash_with_file",
+            file_id=uploaded.id,
+        )
+        session.add(bdt)
+        session.flush()
+
+        rules = [{"rule_code": f"R{i}", "verdict": "Accepted", "detail": f"Rule {i} OK"} for i in range(1, 12)]
+        save_validation_run(
+            session,
+            bdt_test_id=bdt.id,
+            alarm_input_sha256="alarm_hash_with_file",
+            validator_code_ref="v1.0",
+            overall_verdict="Accepted",
+            rule_results=rules,
+        )
+
+        results = load_all_validation_results(session)
+        assert len(results) == 1
+        assert results[0].filename == "original_test_bdt.xlsx"
+        assert results[0].bdt_data is not None
+        assert results[0].bdt_data.file_path == "/tmp/original_test_bdt.xlsx"

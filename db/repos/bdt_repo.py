@@ -19,6 +19,9 @@ def save_bdt_test(session: Session, bdt_dict: dict,
         content_hash=content_hash
     ).first()
     if existing:
+        if file_id is not None and existing.file_id is None:
+            existing.file_id = file_id
+            session.flush()
         return existing
 
     test_date = bdt_dict.get("test_date")

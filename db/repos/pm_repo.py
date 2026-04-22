@@ -162,7 +162,7 @@ def load_all_validation_results(session: Session) -> list:
     Reconstructs the same objects the BDTValidationThread produces,
     so the UI can display them without re-running validation.
     """
-    from alarm_app.db.models import BDTTest
+    from alarm_app.db.models import BDTTest, UploadedFile
     from alarm_app.bdt.validator import ValidationResult, RuleResult
     from alarm_app.bdt.parser import BDTData
 
@@ -182,6 +182,7 @@ def load_all_validation_results(session: Session) -> list:
         bdt_db = session.get(BDTTest, run.bdt_test_id)
         if not bdt_db:
             continue
+        uploaded_file = session.get(UploadedFile, bdt_db.file_id) if bdt_db.file_id else None
 
         # Reconstruct BDTData with fields from DB
         from alarm_app.bdt.parser import PhotoSlot
@@ -226,8 +227,8 @@ def load_all_validation_results(session: Session) -> list:
                 pass
 
         bdt_data = BDTData(
-            file_path="",
-            filename="",
+            file_path=str(uploaded_file.original_path or "") if uploaded_file else "",
+            filename=str(uploaded_file.original_name or "") if uploaded_file else "",
             site_code=bdt_db.site_code or "",
             site_name=bdt_db.site_name or "",
             test_date=bdt_db.test_date,
@@ -275,7 +276,10 @@ def load_all_validation_results(session: Session) -> list:
             ))
 
         vr = ValidationResult(
-            filename=bdt_db.site_code or "",
+            filename=(
+                str(uploaded_file.original_name or "")
+                if uploaded_file else (bdt_db.site_code or "")
+            ),
             site_code=bdt_db.site_code or "",
             test_date=str(bdt_db.test_date) if bdt_db.test_date else "",
             overall=run.overall_verdict or "",
