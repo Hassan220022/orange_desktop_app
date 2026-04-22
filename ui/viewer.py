@@ -326,7 +326,9 @@ class AlarmViewer(QMainWindow):
             "Browse to a directory, then scan for alarm files.")
 
         self._prog = QProgressBar()
-        self._prog.setFixedSize(260, 4)
+        self._prog.setRange(0, 100)
+        self._prog.setTextVisible(False)
+        self._prog.setFixedSize(320, 12)
         self._prog.setVisible(False)
         self._sbar.addPermanentWidget(self._prog)
 

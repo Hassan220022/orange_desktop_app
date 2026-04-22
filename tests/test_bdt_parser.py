@@ -23,6 +23,7 @@ from alarm_app.bdt.parser import (
     _resolve_bdt_sheet_name,
     _safe_float,
     _safe_str,
+    load_bdt_photos,
     parse_bdt_file,
 )
 from alarm_app.bdt.models import Section, SectionImage, WorkbookParseManifest
@@ -754,6 +755,11 @@ class TestParseBdtFile:
             if saved is not None:
                 sys.modules["python_calamine"] = saved
 
+    def test_missing_file_path_fails_closed(self):
+        result = parse_bdt_file("", skip_photos=True)
+
+        assert any("missing file path" in e.lower() for e in result.errors)
+
     def test_calamine_open_succeeds_but_sheet_read_fails_then_openpyxl_fallback(self):
         """If calamine opens but fails reading rows, fallback to openpyxl."""
         mock_wb = MagicMock()
@@ -930,6 +936,18 @@ class TestResolveBdtSheetName:
 
     def test_missing_match(self):
         assert _resolve_bdt_sheet_name(["Sheet1", "Data"], "random.xlsx") is None
+
+
+def test_load_bdt_photos_handles_missing_file_path():
+    bdt = BDTData(file_path="", filename="")
+    bdt.photos_deferred = True
+
+    load_bdt_photos(bdt)
+
+    assert bdt.photo_slots == []
+    assert bdt.photo_count == 0
+    assert bdt.photo_detection_mode == "unavailable"
+    assert bdt.photos_deferred is False
 
 
 # ═══════════════════════════════════════════════════════════════════════

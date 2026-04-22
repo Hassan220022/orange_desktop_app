@@ -484,6 +484,252 @@ class BdtParametersDialog(QDialog):
         return self._spn_tolerance.value(), self._spn_health.value()
 
 
+class AcceptedPmReportDialog(QDialog):
+    """Explain the Accepted PM report workflow before the user selects a sheet."""
+
+    def __init__(self, *, health_pct: int, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Accepted PM Report")
+        self.setMinimumWidth(680)
+        if parent:
+            self.setStyleSheet(parent.styleSheet())
+        self._build(health_pct)
+
+    def _build(self, health_pct: int):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(12)
+
+        intro = QLabel(
+            "This workflow cross-checks an accepted PM list against the current BDT validation "
+            "results and the local alarm store, then exports a correlation workbook for review."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#cdd6f4; font-size:13px; background:transparent;")
+        lay.addWidget(intro)
+
+        summary = QLabel(
+            "Use this when you need to confirm whether accepted PM activity lines up with the "
+            "best matching BDT test and the related Power/Down alarm timeline."
+        )
+        summary.setWordWrap(True)
+        summary.setStyleSheet("color:#6c7086; font-size:12px; background:transparent;")
+        lay.addWidget(summary)
+
+        steps_card = QFrame()
+        steps_card.setObjectName("workspace_card")
+        steps_lay = QVBoxLayout(steps_card)
+        steps_lay.setContentsMargins(12, 12, 12, 12)
+        steps_lay.setSpacing(8)
+        steps_title = QLabel("What This Action Does")
+        steps_title.setObjectName("workspace_card_title")
+        steps_lay.addWidget(steps_title)
+        for text in [
+            "1. Reads the uploaded Accepted PM workbook or CSV and tries to identify the site, date, and optional acceptance-status columns automatically.",
+            "2. Keeps only accepted rows when the sheet contains a status column with values such as Accepted or Accept.",
+            "3. Pulls the matching alarm subset from the local DuckDB alarm store using the sheet site IDs and date window.",
+            "4. Matches each accepted PM row to the closest BDT validation result by site and test date.",
+            "5. Exports one report showing the PM row, matched BDT verdict, theoretical backup estimate, measured test duration, and correlated alarm times.",
+        ]:
+            lbl = QLabel(text)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("color:#cdd6f4; font-size:12px; background:transparent;")
+            steps_lay.addWidget(lbl)
+        lay.addWidget(steps_card)
+
+        fields_card = QFrame()
+        fields_card.setObjectName("workspace_card")
+        fields_lay = QVBoxLayout(fields_card)
+        fields_lay.setContentsMargins(12, 12, 12, 12)
+        fields_lay.setSpacing(8)
+        fields_title = QLabel("What You Need Before Running It")
+        fields_title.setObjectName("workspace_card_title")
+        fields_lay.addWidget(fields_title)
+        for text in [
+            "Validated BDT results must already be loaded in this workspace.",
+            "The local alarm store must contain matching alarm history for the same sites and dates.",
+            "The input sheet should contain a site identifier column and a test/date column. A status column is optional.",
+            f"The current BDT health parameter ({int(health_pct)}%) is used when calculating theoretical backup time from BDT inputs.",
+        ]:
+            lbl = QLabel(text)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("color:#cdd6f4; font-size:12px; background:transparent;")
+            fields_lay.addWidget(lbl)
+        lay.addWidget(fields_card)
+
+        output_card = QFrame()
+        output_card.setObjectName("workspace_card")
+        output_lay = QVBoxLayout(output_card)
+        output_lay.setContentsMargins(12, 12, 12, 12)
+        output_lay.setSpacing(8)
+        output_title = QLabel("Main Output Columns")
+        output_title.setObjectName("workspace_card_title")
+        output_lay.addWidget(output_title)
+        for text in [
+            "Matched BDT file name, test date, and validation verdict",
+            "Theoretical backup time from BDT inputs",
+            "Measured backup time from the BDT discharge duration",
+            "Power alarm start, down alarm start, and power clear timestamps",
+            "Backup time calculated from the matched alarm pair and the final alarm-correlation status",
+        ]:
+            lbl = QLabel(f"\u2022 {text}")
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("color:#cdd6f4; font-size:12px; background:transparent;")
+            output_lay.addWidget(lbl)
+        lay.addWidget(output_card)
+
+        note = QLabel(
+            "If no matching alarm rows are found for the uploaded sites and dates, the report will stop before export."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#fab387; font-size:11px; background:transparent;")
+        lay.addWidget(note)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setObjectName("btn_clear")
+        btn_cancel.clicked.connect(self.reject)
+        btn_continue = QPushButton("Choose Accepted PM Sheet")
+        btn_continue.setObjectName("btn_search")
+        btn_continue.clicked.connect(self.accept)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_continue)
+        lay.addLayout(btn_row)
+
+
+class BdtValidationIntroDialog(QDialog):
+    """Explain the BDT validation workflow before the run starts."""
+
+    def __init__(
+        self,
+        *,
+        source_label: str,
+        tolerance_pct: int,
+        health_pct: int,
+        skip_photos: bool,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Validate BDT Files")
+        self.setMinimumWidth(700)
+        if parent:
+            self.setStyleSheet(parent.styleSheet())
+        self._build(
+            source_label=source_label,
+            tolerance_pct=tolerance_pct,
+            health_pct=health_pct,
+            skip_photos=skip_photos,
+        )
+
+    def _build(
+        self,
+        *,
+        source_label: str,
+        tolerance_pct: int,
+        health_pct: int,
+        skip_photos: bool,
+    ):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(12)
+
+        intro = QLabel(
+            "This workflow parses the selected BDT files, applies the full validation rule set, "
+            "and produces one validation result per file with rule-by-rule verdicts."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#cdd6f4; font-size:13px; background:transparent;")
+        lay.addWidget(intro)
+
+        summary = QLabel(
+            "Use this before review or export when you want the app to inspect the BDT workbook "
+            "structure, compare it against alarm history, and calculate the final acceptance verdict."
+        )
+        summary.setWordWrap(True)
+        summary.setStyleSheet("color:#6c7086; font-size:12px; background:transparent;")
+        lay.addWidget(summary)
+
+        settings_card = QFrame()
+        settings_card.setObjectName("workspace_card")
+        settings_lay = QVBoxLayout(settings_card)
+        settings_lay.setContentsMargins(12, 12, 12, 12)
+        settings_lay.setSpacing(8)
+        settings_title = QLabel("Run Settings")
+        settings_title.setObjectName("workspace_card_title")
+        settings_lay.addWidget(settings_title)
+        for text in [
+            f"Source: {source_label}",
+            f"Tolerance: {int(tolerance_pct)}%",
+            f"Health: {int(health_pct)}%",
+            f"Skip Photos: {'Enabled' if skip_photos else 'Disabled'}",
+        ]:
+            lbl = QLabel(f"\u2022 {text}")
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("color:#cdd6f4; font-size:12px; background:transparent;")
+            settings_lay.addWidget(lbl)
+        lay.addWidget(settings_card)
+
+        steps_card = QFrame()
+        steps_card.setObjectName("workspace_card")
+        steps_lay = QVBoxLayout(steps_card)
+        steps_lay.setContentsMargins(12, 12, 12, 12)
+        steps_lay.setSpacing(8)
+        steps_title = QLabel("What Validation Does")
+        steps_title.setObjectName("workspace_card_title")
+        steps_lay.addWidget(steps_title)
+        for text in [
+            "1. Reads the selected BDT workbooks from the chosen source mode.",
+            "2. Parses the BDT sheets into structured battery, discharge-table, and summary data.",
+            "3. Loads the relevant alarm slice for each site/date when alarm-backed rules need correlation.",
+            "4. Runs the BDT validation rules and records Accepted, Rejected, Revise, or N/A for each rule.",
+            "5. Saves the validation results so they can be reviewed, exported, and reopened later from DB.",
+        ]:
+            lbl = QLabel(text)
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("color:#cdd6f4; font-size:12px; background:transparent;")
+            steps_lay.addWidget(lbl)
+        lay.addWidget(steps_card)
+
+        rules_card = QFrame()
+        rules_card.setObjectName("workspace_card")
+        rules_lay = QVBoxLayout(rules_card)
+        rules_lay.setContentsMargins(12, 12, 12, 12)
+        rules_lay.setSpacing(8)
+        rules_title = QLabel("What The Main Parameters Affect")
+        rules_title.setObjectName("workspace_card_title")
+        rules_lay.addWidget(rules_title)
+        for text in [
+            "Tolerance controls how much difference is allowed between the declared discharge duration and the duration reconstructed from the discharge table.",
+            "Health controls the usable-capacity assumption for theoretical backup-time calculations on lead-acid batteries.",
+            "Skip Photos ignores the photo-check rule during parsing when image content is not required for this run.",
+        ]:
+            lbl = QLabel(f"\u2022 {text}")
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet("color:#cdd6f4; font-size:12px; background:transparent;")
+            rules_lay.addWidget(lbl)
+        lay.addWidget(rules_card)
+
+        note = QLabel(
+            "If no BDT files are selected or discovered for the chosen source, the run will stop before validation starts."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#fab387; font-size:11px; background:transparent;")
+        lay.addWidget(note)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setObjectName("btn_clear")
+        btn_cancel.clicked.connect(self.reject)
+        btn_continue = QPushButton("Start Validation")
+        btn_continue.setObjectName("btn_search")
+        btn_continue.clicked.connect(self.accept)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_continue)
+        lay.addLayout(btn_row)
+
+
 class BackupTimeDialog(QDialog):
     def __init__(self, df: pd.DataFrame, parent=None):
         super().__init__(parent)

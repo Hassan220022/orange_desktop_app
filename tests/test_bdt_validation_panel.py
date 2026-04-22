@@ -166,3 +166,83 @@ def test_copy_bdt_cell_copies_value_and_updates_status(monkeypatch):
 
     assert copied["text"] == "Rejected"
     assert panel._viewer._sbar.messages[-1] == ("Copied: Rejected", 2000)
+
+
+def test_generate_pm_accept_report_shows_intro_dialog_before_file_picker(monkeypatch):
+    calls = {}
+    viewer = SimpleNamespace(
+        _bdt_results=[_result("AAA001", "2026-04-19", "Accepted", "a.xlsx")],
+        _last_bdt_health_pct=0.8,
+        _uploaded_folder_path="",
+        _edit_dir=SimpleNamespace(text=lambda: "/tmp"),
+        _sbar=SimpleNamespace(messages=[], showMessage=lambda msg, timeout=0: viewer._sbar.messages.append((msg, timeout))),
+    )
+    panel = SimpleNamespace(
+        _viewer=viewer,
+        spn_health=SimpleNamespace(value=lambda: 80),
+    )
+
+    class _Dialog:
+        def __init__(self, *, health_pct, parent=None):
+            calls["health_pct"] = health_pct
+            calls["parent"] = parent
+
+        def exec_(self):
+            return 0
+
+    monkeypatch.setattr(
+        "alarm_app.ui.panels.bdt_validation_panel.AcceptedPmReportDialog",
+        _Dialog,
+    )
+    monkeypatch.setattr(
+        "alarm_app.ui.panels.bdt_validation_panel.QFileDialog.getOpenFileName",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("file picker should not open when intro is cancelled")),
+    )
+
+    BdtValidationPanel._generate_pm_accept_report(panel)
+
+    assert calls["health_pct"] == 80
+    assert calls["parent"] is panel
+    assert viewer._sbar.messages[-1] == ("Accepted PM report cancelled", 0)
+
+
+def test_run_validation_shows_intro_dialog_before_starting(monkeypatch):
+    calls = {}
+    viewer = SimpleNamespace(
+        _skip_photos=True,
+        _sbar=SimpleNamespace(messages=[], showMessage=lambda msg, timeout=0: viewer._sbar.messages.append((msg, timeout))),
+    )
+    panel = SimpleNamespace(
+        _viewer=viewer,
+        spn_tolerance=SimpleNamespace(value=lambda: 15),
+        spn_health=SimpleNamespace(value=lambda: 80),
+        _current_source_mode=lambda: "both",
+        _validation_source_label=lambda source_mode: BdtValidationPanel._validation_source_label(source_mode),
+    )
+
+    class _Dialog:
+        def __init__(self, *, source_label, tolerance_pct, health_pct, skip_photos, parent=None):
+            calls["source_label"] = source_label
+            calls["tolerance_pct"] = tolerance_pct
+            calls["health_pct"] = health_pct
+            calls["skip_photos"] = skip_photos
+            calls["parent"] = parent
+
+        def exec_(self):
+            return 0
+
+    monkeypatch.setattr(
+        "alarm_app.ui.panels.bdt_validation_panel.BdtValidationIntroDialog",
+        _Dialog,
+    )
+
+    BdtValidationPanel._run_validation(panel)
+
+    assert calls == {
+        "source_label": "Both (Verify)",
+        "tolerance_pct": 15,
+        "health_pct": 80,
+        "skip_photos": True,
+        "parent": panel,
+    }
+    assert viewer._sbar.messages[-1] == ("BDT validation cancelled", 0)

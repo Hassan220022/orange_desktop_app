@@ -23,7 +23,13 @@ try:
     from ...bdt.parser import BDTData
     from ...bdt.validator import ValidationResult
     from ...bdt.export import build_bdt_export_sheets
-    from ..dialogs import BdtParametersDialog, ColumnFilterPopup, DailyReviewReportDialog
+    from ..dialogs import (
+        AcceptedPmReportDialog,
+        BdtValidationIntroDialog,
+        BdtParametersDialog,
+        ColumnFilterPopup,
+        DailyReviewReportDialog,
+    )
     from ...data import state
     from ...data.alarm_store import AlarmQuery, distinct_values, query_alarms
     from ...data.site_report import read_pm_accept_sheet, build_pm_accept_report
@@ -34,7 +40,13 @@ except ImportError:
         from alarm_app.bdt.parser import BDTData
         from alarm_app.bdt.validator import ValidationResult
         from alarm_app.bdt.export import build_bdt_export_sheets
-        from alarm_app.ui.dialogs import BdtParametersDialog, ColumnFilterPopup, DailyReviewReportDialog
+        from alarm_app.ui.dialogs import (
+            AcceptedPmReportDialog,
+            BdtValidationIntroDialog,
+            BdtParametersDialog,
+            ColumnFilterPopup,
+            DailyReviewReportDialog,
+        )
         from alarm_app.data import state
         from alarm_app.data.alarm_store import AlarmQuery, distinct_values, query_alarms
         from alarm_app.data.site_report import read_pm_accept_sheet, build_pm_accept_report
@@ -44,7 +56,13 @@ except ImportError:
         from bdt.parser import BDTData
         from bdt.validator import ValidationResult
         from bdt.export import build_bdt_export_sheets
-        from ui.dialogs import BdtParametersDialog, ColumnFilterPopup, DailyReviewReportDialog
+        from ui.dialogs import (
+            AcceptedPmReportDialog,
+            BdtValidationIntroDialog,
+            BdtParametersDialog,
+            ColumnFilterPopup,
+            DailyReviewReportDialog,
+        )
         from data import state
         from data.alarm_store import AlarmQuery, distinct_values, query_alarms
         from data.site_report import read_pm_accept_sheet, build_pm_accept_report
@@ -256,15 +274,45 @@ class BdtValidationPanel(QWidget):
         self.bdt_splitter.setStretchFactor(0, 0)
         self.bdt_splitter.setStretchFactor(1, 1)
 
+    @staticmethod
+    def _validation_source_label(source_mode: str) -> str:
+        return {
+            "directory": "Directory",
+            "db": "DB",
+            "both": "Both (Verify)",
+        }.get(str(source_mode or "").strip().lower(), "Directory")
+
     # ------------------------------------------------------------------
     # Validation logic
     # ------------------------------------------------------------------
     def _run_validation(self):
         viewer = self._viewer
         source_mode = self._current_source_mode()
+        viewer._sbar.showMessage("Opening BDT validation overview…")
+        tolerance_pct = self.spn_tolerance.value()
+        health_pct_value = self.spn_health.value()
+        intro_dialog = BdtValidationIntroDialog(
+            source_label=self._validation_source_label(source_mode),
+            tolerance_pct=tolerance_pct,
+            health_pct=health_pct_value,
+            skip_photos=bool(viewer._skip_photos),
+            parent=self,
+        )
+        if intro_dialog.exec_() != QDialog.Accepted:
+            viewer._sbar.showMessage("BDT validation cancelled")
+            return
+
+        viewer._prog.setVisible(True)
+        viewer._prog.setValue(5)
+        viewer._sbar.showMessage("Preparing BDT validation…")
+        QApplication.processEvents()
+
         if source_mode == "db":
+            viewer._prog.setValue(35)
+            viewer._sbar.showMessage("Loading saved BDT validation results from DB…")
             results = viewer._load_bdt_results_from_db()
             if not results:
+                viewer._prog.setVisible(False)
                 QMessageBox.information(self, "No BDT Results", "No saved BDT validation results found in the DB.")
                 return
             viewer._apply_bdt_results(
@@ -272,6 +320,7 @@ class BdtValidationPanel(QWidget):
                 status_message=f"Loaded {len(results)} BDT validation result(s) from DB",
             )
             viewer._reviewed_bdt_keys.clear()
+            viewer._prog.setVisible(False)
             return
 
         bdt_files = [
@@ -311,14 +360,15 @@ class BdtValidationPanel(QWidget):
                         bdt_files.append(os.path.join(root, f))
 
         if not bdt_files:
+            viewer._prog.setVisible(False)
             QMessageBox.information(
                 self, "No BDT Files",
                 "No BDT .xlsx files found in the selected BDT workspace.\n"
                 "BDT filenames must contain 'BDT'.")
             return
 
-        tolerance = self.spn_tolerance.value() / 100.0
-        health_pct = self.spn_health.value() / 100.0
+        tolerance = tolerance_pct / 100.0
+        health_pct = health_pct_value / 100.0
         self._viewer._last_bdt_health_pct = health_pct
 
         viewer._sbar.showMessage(
@@ -327,8 +377,7 @@ class BdtValidationPanel(QWidget):
         self._viewer._bdt_by_site = {}
         if self._detail_panel_placeholder:
             self._detail_panel_placeholder.setVisible(False)
-        viewer._prog.setVisible(True)
-        viewer._prog.setValue(0)
+        viewer._prog.setValue(10)
         self._pending_bdt_source_mode = source_mode
         self._db_seed_results = viewer._load_bdt_results_from_db() if source_mode == "both" else []
 
@@ -365,6 +414,26 @@ class BdtValidationPanel(QWidget):
             QMessageBox.information(self, "No BDT Results", "Run validation first.")
             return
 
+        viewer._sbar.showMessage("Opening Accepted PM report overview…")
+
+        health_pct = (
+            viewer._last_bdt_health_pct
+            if viewer._last_bdt_health_pct is not None
+            else self.spn_health.value() / 100.0
+        )
+        intro_dialog = AcceptedPmReportDialog(
+            health_pct=round(float(health_pct) * 100),
+            parent=self,
+        )
+        if intro_dialog.exec_() != QDialog.Accepted:
+            viewer._sbar.showMessage("Accepted PM report cancelled")
+            return
+
+        viewer._prog.setVisible(True)
+        viewer._prog.setValue(5)
+        viewer._sbar.showMessage("Preparing Accepted PM report…")
+        QApplication.processEvents()
+
         start_dir = (
             getattr(viewer, "_uploaded_folder_path", "")
             or viewer._edit_dir.text().strip()
@@ -377,24 +446,28 @@ class BdtValidationPanel(QWidget):
             "Spreadsheet Files (*.xlsx *.xls *.csv)",
         )
         if not in_path:
+            viewer._prog.setVisible(False)
+            viewer._prog.setValue(0)
+            viewer._sbar.showMessage("Accepted PM report cancelled")
             return
 
         try:
+            viewer._prog.setValue(20)
             viewer._sbar.showMessage("Reading Accepted PM list …")
             site_reference_df = self._reference_alarm_sites_df()
             pm_df, sheet_name, site_col, date_col, status_col = read_pm_accept_sheet(
                 in_path, site_reference_df
             )
+            viewer._prog.setValue(45)
+            viewer._sbar.showMessage("Loading matching alarm history …")
             alarm_df = self._load_pm_accept_alarm_subset(pm_df, site_col, date_col)
             if alarm_df.empty:
+                viewer._prog.setVisible(False)
                 QMessageBox.information(self, "No Alarm Data", "No matching alarm records were found in the local alarm store.")
                 viewer._sbar.showMessage("Accepted PM report has no matching alarm data")
                 return
-            health_pct = (
-                viewer._last_bdt_health_pct
-                if viewer._last_bdt_health_pct is not None
-                else self.spn_health.value() / 100.0
-            )
+            viewer._prog.setValue(70)
+            viewer._sbar.showMessage("Building Accepted PM correlation report …")
             report_df = build_pm_accept_report(
                 pm_df=pm_df,
                 site_id_column=site_col,
@@ -405,11 +478,15 @@ class BdtValidationPanel(QWidget):
                 status_column=status_col,
             )
         except Exception as exc:
+            viewer._prog.setVisible(False)
             QMessageBox.critical(self, "Accepted PM Report Error", str(exc))
             viewer._sbar.showMessage("Accepted PM report failed")
             return
 
         default_name = f"accepted_pm_backup_report_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        viewer._prog.setValue(85)
+        viewer._sbar.showMessage("Choose where to save the Accepted PM report …")
+        QApplication.processEvents()
         out_path, _ = QFileDialog.getSaveFileName(
             self,
             "Export Accepted PM Backup Report",
@@ -417,6 +494,8 @@ class BdtValidationPanel(QWidget):
             "Excel Files (*.xlsx)",
         )
         if not out_path:
+            viewer._prog.setVisible(False)
+            viewer._prog.setValue(0)
             viewer._sbar.showMessage("Accepted PM report export cancelled")
             return
 
@@ -425,7 +504,11 @@ class BdtValidationPanel(QWidget):
         viewer._sbar.showMessage("Exporting Accepted PM backup report …")
         self._pm_accept_export_thread = ExportThread({export_sheet_name: report_df}, out_path)
         self._pm_accept_export_thread.progress.connect(
-            lambda _v, m: viewer._sbar.showMessage(m)
+            lambda v, m: (
+                viewer._prog.setVisible(True),
+                viewer._prog.setValue(v),
+                viewer._sbar.showMessage(m),
+            )
         )
         self._pm_accept_export_thread.finished.connect(self._on_pm_accept_export_done)
         self._pm_accept_export_thread.error.connect(self._on_pm_accept_export_error)
@@ -433,11 +516,13 @@ class BdtValidationPanel(QWidget):
 
     def _on_pm_accept_export_done(self, fp: str):
         self.btn_pm_accept_report.setEnabled(True)
+        self._viewer._prog.setVisible(False)
         QMessageBox.information(self, "Export OK", f"Saved to:\n{fp}")
         self._viewer._sbar.showMessage(f"Accepted PM backup report → {fp}")
 
     def _on_pm_accept_export_error(self, msg: str):
         self.btn_pm_accept_report.setEnabled(True)
+        self._viewer._prog.setVisible(False)
         QMessageBox.critical(self, "Export Failed", msg)
         self._viewer._sbar.showMessage("Accepted PM report export failed")
 

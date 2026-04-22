@@ -711,6 +711,9 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
     """
     import os
     data = BDTData(file_path=file_path, filename=os.path.basename(file_path))
+    if not str(file_path or "").strip():
+        data.errors.append("Cannot open file: missing file path")
+        return data
 
     # ── Read sheet data with calamine (fast path) ────────
     rows = None
@@ -1118,6 +1121,16 @@ def load_bdt_photos(bdt: BDTData) -> None:
     if bdt.photo_slots:
         bdt.photos_deferred = False
         return  # already loaded
+    if not str(getattr(bdt, "file_path", "") or "").strip():
+        bdt.photo_slots = []
+        bdt.photo_count = 0
+        bdt.photo_layout_id = "LAYOUT_PHOTO_6"
+        bdt.required_photo_count = 6
+        bdt.photo_mapping_confidence = "low"
+        bdt.photo_detection_mode = "unavailable"
+        bdt.photo_categories_found = []
+        bdt.photos_deferred = False
+        return
     (
         bdt.photo_slots,
         bdt.photo_count,
@@ -1392,6 +1405,8 @@ def _extract_photo_slots(
     bdt_sheet_name: str | None = None,
 ) -> tuple[list[PhotoSlot], int, str, int, str, str, list[str]]:
     """Extract labelled photo slots using structural parsing only."""
+    if not str(file_path or "").strip():
+        return [], 0, "LAYOUT_PHOTO_6", 6, "low", "unavailable", []
     try:
         return _extract_photo_slots_structural(
             file_path,

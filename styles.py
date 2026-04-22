@@ -436,17 +436,18 @@ QFrame#workspace_card {
 }
 /* ── Progress bar ───────────────────────────────────────────── */
 QProgressBar {
-    border: none;
-    border-radius: 3px;
-    background: #1e1e2e;
+    border: 1px solid #2a2a3e;
+    border-radius: 6px;
+    background: #11111b;
     text-align: center;
     color: transparent;
-    max-height: 4px;
+    min-height: 12px;
+    max-height: 12px;
 }
 QProgressBar::chunk {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                                 stop:0 #89b4fa, stop:1 #cba6f7);
-    border-radius: 3px;
+    border-radius: 5px;
 }
 
 /* ── Splitter ───────────────────────────────────────────────── */
@@ -1448,17 +1449,18 @@ QFrame#workspace_card {
 }
 /* ── Progress bar ───────────────────────────────────────────── */
 QProgressBar {
-    border: none;
-    border-radius: 3px;
-    background: #ccd0da;
+    border: 1px solid #bcc0cc;
+    border-radius: 6px;
+    background: #e6e9ef;
     text-align: center;
     color: transparent;
-    max-height: 4px;
+    min-height: 12px;
+    max-height: 12px;
 }
 QProgressBar::chunk {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                                 stop:0 #1e66f5, stop:1 #8839ef);
-    border-radius: 3px;
+    border-radius: 5px;
 }
 
 /* ── Splitter ───────────────────────────────────────────────── */
