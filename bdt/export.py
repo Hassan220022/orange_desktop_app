@@ -15,15 +15,21 @@ import pandas as pd
 
 try:
     from ..constants import (
+        BDT_RULES,
+        BDT_RULE_NAME_BY_CODE,
         BDT_PM_SUMMARY_HEADERS,
         BDT_SUMMARY_EXPORT_HEADERS,
         BDT_SUMMARY_SHEET_NAME,
+        format_bdt_rule_label,
     )
 except ImportError:
     from alarm_app.constants import (
+        BDT_RULES,
+        BDT_RULE_NAME_BY_CODE,
         BDT_PM_SUMMARY_HEADERS,
         BDT_SUMMARY_EXPORT_HEADERS,
         BDT_SUMMARY_SHEET_NAME,
+        format_bdt_rule_label,
     )
 
 
@@ -113,6 +119,21 @@ _TEXT_ONLY_COLUMNS = {
     "4G Type",
 }
 _NUMERIC_RE = re.compile(r"^-?\d+(?:[.,]\d+)?$")
+_VALIDATION_SHEET_NAME = "Validation Results"
+_RULE_EVIDENCE_SHEET_NAME = "Rule Evidence"
+_RULE_EXPORT_HEADERS = [format_bdt_rule_label(rule_id, rule_name) for rule_id, rule_name in BDT_RULES]
+_RULE_DETAIL_EXPORT_HEADERS = [f"{header} - Detail" for header in _RULE_EXPORT_HEADERS]
+_VALIDATION_EXPORT_HEADERS = [
+    "File",
+    "Site Code",
+    "Test Date",
+    "Verdict",
+    "Verdict Reason",
+    *_RULE_EXPORT_HEADERS,
+    "End Rectifier Voltage (V)",
+    "Lead-acid SOH (%)",
+    *_RULE_DETAIL_EXPORT_HEADERS,
+]
 
 
 def _clean_text(value: Any) -> str:
@@ -423,5 +444,131 @@ def build_pm_summary_rows(results, health_pct: float | None = None) -> list[dict
 
 
 def build_bdt_export_sheets(results, health_pct: float | None = None) -> dict[str, pd.DataFrame]:
+    validation_rows = build_validation_rows(results, health_pct=health_pct)
+    rule_rows = build_rule_evidence_rows(results)
     pm_rows = build_pm_summary_rows(results, health_pct=health_pct)
-    return {BDT_SUMMARY_SHEET_NAME: pd.DataFrame(pm_rows, columns=BDT_SUMMARY_EXPORT_HEADERS)}
+    return {
+        _VALIDATION_SHEET_NAME: pd.DataFrame(validation_rows, columns=_VALIDATION_EXPORT_HEADERS),
+        _RULE_EVIDENCE_SHEET_NAME: pd.DataFrame(
+            rule_rows,
+            columns=[
+                "File",
+                "Site Code",
+                "Test Date",
+                "Overall Verdict",
+                "Rule ID",
+                "Rule Name",
+                "Rule Verdict",
+                "Rule Detail",
+            ],
+        ),
+        BDT_SUMMARY_SHEET_NAME: pd.DataFrame(pm_rows, columns=BDT_SUMMARY_EXPORT_HEADERS),
+    }
+
+
+def _rule_cell_text(rule) -> str:
+    verdict = str(getattr(rule, "verdict", "") or "").strip()
+    if verdict in {"Accepted", "Rejected", "Revise"}:
+        return verdict
+    return "No data"
+
+
+def _aggregate_verdict_reason(rules) -> str:
+    prioritized = []
+    seen: set[tuple[str, str]] = set()
+    for verdict in ("Rejected", "Revise", "N/A", "No data"):
+        for rule in rules or []:
+            rule_verdict = str(getattr(rule, "verdict", "") or "").strip()
+            visible_verdict = _rule_cell_text(rule)
+            if verdict in {"N/A", "No data"}:
+                if visible_verdict != "No data":
+                    continue
+            elif rule_verdict != verdict:
+                continue
+            detail = str(getattr(rule, "detail", "") or "").strip()
+            if not detail:
+                continue
+            rule_id = str(getattr(rule, "rule_id", "") or "").strip()
+            rule_name = str(getattr(rule, "rule_name", "") or BDT_RULE_NAME_BY_CODE.get(rule_id, rule_id)).strip()
+            dedupe_key = (rule_id, detail)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            prioritized.append(f"{format_bdt_rule_label(rule_id, rule_name)}: {detail}")
+    return " | ".join(prioritized)
+
+
+def _format_end_rectifier_voltage(bdt) -> str:
+    end_voltage = getattr(bdt, "end_voltage", None) if bdt is not None else None
+    if end_voltage is None:
+        return "--"
+    return f"{float(end_voltage):.2f}"
+
+
+def _is_lithium_brand(brand: str | None) -> bool:
+    return "lith" in (brand or "").lower()
+
+
+def _format_lead_acid_soh(bdt, health_pct: float | None) -> str:
+    if bdt is None or health_pct is None:
+        return "--"
+    if _is_lithium_brand(getattr(bdt, "battery_brand", None)):
+        return "--"
+    return f"{health_pct * 100.0:.0f}"
+
+
+def build_validation_rows(results, health_pct: float | None = None) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for res in results:
+        bdt = getattr(res, "bdt_data", None)
+        rules = list(getattr(res, "rules", []) or [])
+        row = {
+            "File": str(getattr(res, "filename", "") or "--"),
+            "Site Code": str(getattr(res, "site_code", "") or "--"),
+            "Test Date": str(getattr(res, "test_date", "") or "--"),
+            "Verdict": str(getattr(res, "overall", "") or "--"),
+            "Verdict Reason": _aggregate_verdict_reason(rules),
+            "End Rectifier Voltage (V)": _format_end_rectifier_voltage(bdt),
+            "Lead-acid SOH (%)": _format_lead_acid_soh(bdt, health_pct),
+        }
+        details = {
+            f"{format_bdt_rule_label(rule_id, rule_name)} - Detail": ""
+            for rule_id, rule_name in BDT_RULES
+        }
+        for rule_id, rule_name in BDT_RULES:
+            row[format_bdt_rule_label(rule_id, rule_name)] = "No data"
+        for rule in rules:
+            rule_id = str(getattr(rule, "rule_id", "") or "")
+            if rule_id:
+                rule_name = str(getattr(rule, "rule_name", "") or BDT_RULE_NAME_BY_CODE.get(rule_id, rule_id))
+                label = format_bdt_rule_label(rule_id, rule_name)
+                row[label] = _rule_cell_text(rule)
+                details[f"{label} - Detail"] = str(getattr(rule, "detail", "") or "")
+        row.update(details)
+        rows.append({column: row.get(column, "") for column in _VALIDATION_EXPORT_HEADERS})
+    return rows
+
+
+def build_rule_evidence_rows(results) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for res in results:
+        base = {
+            "File": str(getattr(res, "filename", "") or "--"),
+            "Site Code": str(getattr(res, "site_code", "") or "--"),
+            "Test Date": str(getattr(res, "test_date", "") or "--"),
+            "Overall Verdict": str(getattr(res, "overall", "") or "--"),
+        }
+        for rule in getattr(res, "rules", []) or []:
+            rule_id = str(getattr(rule, "rule_id", "") or "")
+            rows.append(
+                {
+                    **base,
+                    "Rule ID": rule_id,
+                    "Rule Name": str(
+                        getattr(rule, "rule_name", "") or BDT_RULE_NAME_BY_CODE.get(rule_id, rule_id)
+                    ),
+                    "Rule Verdict": _rule_cell_text(rule),
+                    "Rule Detail": str(getattr(rule, "detail", "") or ""),
+                }
+            )
+    return rows

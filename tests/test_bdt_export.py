@@ -4,13 +4,19 @@ from datetime import datetime
 
 from alarm_app.bdt.export import build_bdt_export_sheets
 from alarm_app.bdt.parser import BDTData
-from alarm_app.bdt.validator import ValidationResult
-from alarm_app.constants import BDT_SUMMARY_EXPORT_HEADERS, BDT_SUMMARY_SHEET_NAME
+from alarm_app.bdt.validator import RuleResult, ValidationResult
+from alarm_app.constants import (
+    BDT_SUMMARY_EXPORT_HEADERS,
+    BDT_SUMMARY_SHEET_NAME,
+    format_bdt_rule_label,
+)
 
 
 def _make_result(
     *,
     summary_data: dict[str, str] | None = None,
+    rules: list[RuleResult] | None = None,
+    overall: str = "Accepted",
     **bdt_overrides,
 ) -> ValidationResult:
     bdt_defaults = {
@@ -27,21 +33,95 @@ def _make_result(
         filename=bdt.filename,
         site_code=bdt.site_code,
         test_date="2026-01-11",
-        overall="Accepted",
-        rules=[],
+        overall=overall,
+        rules=rules or [],
         parse_errors=[],
         bdt_data=bdt,
     )
 
 
 class TestBDTExport:
-    def test_builds_single_weekly_sheet_with_expected_headers(self):
+    def test_builds_validation_rule_and_summary_sheets(self):
         res = _make_result(summary_data={"Week": "W1", "Short Code": "0167DE"})
         sheets = build_bdt_export_sheets([res], health_pct=0.8)
 
-        assert list(sheets.keys()) == [BDT_SUMMARY_SHEET_NAME]
+        assert list(sheets.keys()) == [
+            "Validation Results",
+            "Rule Evidence",
+            BDT_SUMMARY_SHEET_NAME,
+        ]
+        validation_headers = list(sheets["Validation Results"].columns)
+        assert validation_headers[:5] == [
+            "File",
+            "Site Code",
+            "Test Date",
+            "Verdict",
+            "Verdict Reason",
+        ]
+        assert format_bdt_rule_label("R1", "Photos") in validation_headers
+        assert f"{format_bdt_rule_label('R1', 'Photos')} - Detail" in validation_headers
         assert list(sheets[BDT_SUMMARY_SHEET_NAME].columns) == BDT_SUMMARY_EXPORT_HEADERS
-        assert len(sheets[BDT_SUMMARY_SHEET_NAME].columns) == 53
+        assert len(sheets["Rule Evidence"].columns) == 8
+
+    def test_validation_sheet_exports_rule_verdicts_and_details(self):
+        res = _make_result(
+            overall="Rejected",
+            rules=[
+                RuleResult("R1", "Photos", False, "Rejected", "AI-generated photo signal detected"),
+                RuleResult("R2", "Power Alarm + Duration", True, "Accepted", "Matched window"),
+                RuleResult("R10", "Door Alarm Condition", None, "N/A", "No alarm data loaded"),
+            ],
+            end_voltage=46.25,
+            battery_brand="Narada",
+        )
+
+        row = build_bdt_export_sheets([res], health_pct=0.8)["Validation Results"].iloc[0]
+
+        assert row["Verdict"] == "Rejected"
+        assert row["Verdict Reason"] == (
+            "R1 - Photos: AI-generated photo signal detected | "
+            "R10 - Door Alarm Condition: No alarm data loaded"
+        )
+        assert row["R1 - Photos"] == "Rejected"
+        assert row["R2 - Power Alarm + Duration"] == "Accepted"
+        assert row["R10 - Door Alarm Condition"] == "No data"
+        assert row["R1 - Photos - Detail"] == "AI-generated photo signal detected"
+        assert row["R2 - Power Alarm + Duration - Detail"] == "Matched window"
+        assert row["R10 - Door Alarm Condition - Detail"] == "No alarm data loaded"
+        assert row["End Rectifier Voltage (V)"] == "46.25"
+        assert row["Lead-acid SOH (%)"] == "80"
+
+    def test_validation_sheet_includes_revise_reasons_in_verdict_reason(self):
+        res = _make_result(
+            overall="Revise",
+            rules=[
+                RuleResult("R1", "Photos", False, "Revise", "Missing 2 photos"),
+                RuleResult("R8", "Sizing vs Actual", False, "Revise", "Actual runtime below sizing expectation"),
+            ],
+        )
+
+        row = build_bdt_export_sheets([res], health_pct=0.8)["Validation Results"].iloc[0]
+
+        assert row["Verdict Reason"] == (
+            "R1 - Photos: Missing 2 photos | "
+            "R8 - Sizing vs Actual: Actual runtime below sizing expectation"
+        )
+
+    def test_rule_evidence_sheet_expands_one_row_per_rule(self):
+        res = _make_result(
+            overall="Revise",
+            rules=[
+                RuleResult("R1", "Photos", False, "Revise", "Missing 2 photos"),
+                RuleResult("R8", "Sizing vs Actual", True, "Accepted", "Within sizing window"),
+            ],
+        )
+
+        sheet = build_bdt_export_sheets([res], health_pct=0.8)["Rule Evidence"]
+
+        assert len(sheet) == 2
+        assert list(sheet["Rule ID"]) == ["R1", "R8"]
+        assert list(sheet["Rule Verdict"]) == ["Revise", "Accepted"]
+        assert list(sheet["Overall Verdict"]) == ["Revise", "Revise"]
 
     def test_pm_summary_reads_normal_summary_keys(self):
         res = _make_result(
