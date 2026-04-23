@@ -101,6 +101,8 @@ class BdtValidationPanel(QWidget):
         self._bdt_page_size = 500
         self._bdt_page_offset = 0
         self._bdt_filtered_results: list = []
+        self._bdt_row_map_cache: dict[int, dict[str, str]] = {}
+        self._bdt_distinct_cache: dict[str, list[str]] = {}
         self._build(viewer)
 
     # ------------------------------------------------------------------
@@ -412,6 +414,7 @@ class BdtValidationPanel(QWidget):
             by_site = self._build_site_map(results)
         self._viewer._bdt_results = results
         self._viewer._bdt_by_site = by_site
+        self._invalidate_bdt_filter_cache()
         viewer._prog.setVisible(False)
         self._viewer._reviewed_bdt_keys.clear()
         self._populate_bdt_table()
@@ -554,8 +557,13 @@ class BdtValidationPanel(QWidget):
     def set_results(self, results: list):
         """Load validation results (e.g. restored from DB) and populate the table."""
         self._viewer._bdt_results = results
+        self._invalidate_bdt_filter_cache()
         self._bdt_page_offset = 0
         self._populate_bdt_table()
+
+    def _invalidate_bdt_filter_cache(self):
+        self._bdt_row_map_cache.clear()
+        self._bdt_distinct_cache.clear()
 
     def _populate_bdt_table(self):
         results = self._viewer._bdt_results
@@ -610,6 +618,10 @@ class BdtValidationPanel(QWidget):
         self._update_bdt_pagination_controls()
 
     def _row_map_for_result(self, res) -> dict[str, str]:
+        cache_key = id(res)
+        cached = self._bdt_row_map_cache.get(cache_key)
+        if cached is not None:
+            return cached
         row_map = {
             "File": getattr(res, "filename", "") or "--",
             "Site Code": getattr(res, "site_code", "") or "--",
@@ -621,7 +633,22 @@ class BdtValidationPanel(QWidget):
         }
         for rule in getattr(res, "rules", []) or []:
             row_map[getattr(rule, "rule_id", "")] = self._rule_cell_text(rule)
+        self._bdt_row_map_cache[cache_key] = row_map
         return row_map
+
+    def _distinct_bdt_values(self, col_name: str) -> list[str]:
+        cached = self._bdt_distinct_cache.get(col_name)
+        if cached is not None:
+            return cached
+        values = sorted(
+            {
+                str(self._row_map_for_result(res).get(col_name, "--"))
+                for res in self._viewer._bdt_results
+            },
+            key=lambda value: value.lower() if value else "",
+        )
+        self._bdt_distinct_cache[col_name] = values
+        return values
 
     @staticmethod
     def _display_header_name(col_name: str) -> str:
@@ -737,8 +764,8 @@ class BdtValidationPanel(QWidget):
                     show = str(getattr(res, "test_date", "") or "") == text
                 else:
                     show = (
-                        text_lower in str(getattr(res, "site_code", "") or "").lower()
-                        or text_lower in str(getattr(res, "filename", "") or "").lower()
+                        text_lower in str(row_map.get("Site Code", "")).lower()
+                        or text_lower in str(row_map.get("File", "")).lower()
                     )
 
             if show and self._bdt_col_filters:
@@ -760,13 +787,7 @@ class BdtValidationPanel(QWidget):
         if logical_index >= len(BDT_RESULT_HEADERS) or not self._viewer._bdt_results:
             return
         col_name = BDT_RESULT_HEADERS[logical_index]
-        unique = sorted(
-            {
-                str(self._row_map_for_result(res).get(col_name, "--"))
-                for res in self._viewer._bdt_results
-            },
-            key=lambda value: value.lower() if value else "",
-        )
+        unique = self._distinct_bdt_values(col_name)
         popup = ColumnFilterPopup(
             col_name,
             self._display_header_name(col_name),

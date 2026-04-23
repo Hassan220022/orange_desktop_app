@@ -2,6 +2,7 @@ from datetime import date, datetime
 from types import SimpleNamespace
 
 from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
+from alarm_app.ui.dialogs import ColumnFilterPopup
 
 
 class _FakeTable:
@@ -64,6 +65,8 @@ def _panel_for(results):
     panel._bdt_page_size = 2
     panel._bdt_page_offset = 0
     panel._bdt_filtered_results = []
+    panel._bdt_row_map_cache = {}
+    panel._bdt_distinct_cache = {}
     panel.bdt_table = _FakeTable(len(results))
     panel.bdt_search = SimpleNamespace(text=lambda: "")
     panel.bdt_summary = _Label()
@@ -73,7 +76,9 @@ def _panel_for(results):
     panel._btn_bdt_next_page = _Button()
     panel._format_end_rectifier_voltage = lambda bdt: "--"
     panel._format_lead_acid_soh = lambda bdt: "--"
+    panel._invalidate_bdt_filter_cache = lambda: BdtValidationPanel._invalidate_bdt_filter_cache(panel)
     panel._row_map_for_result = lambda res: BdtValidationPanel._row_map_for_result(panel, res)
+    panel._distinct_bdt_values = lambda col_name: BdtValidationPanel._distinct_bdt_values(panel, col_name)
     panel._filtered_bdt_results_for_text = lambda text: BdtValidationPanel._filtered_bdt_results_for_text(panel, text)
     panel._update_bdt_pagination_controls = lambda: BdtValidationPanel._update_bdt_pagination_controls(panel)
     panel._populate_bdt_table = lambda: BdtValidationPanel._populate_bdt_table(panel)
@@ -291,3 +296,32 @@ def test_show_rules_reference_dialog_passes_all_rules(monkeypatch):
     assert len(calls["rule_rows"]) == 10
     assert calls["rule_rows"][0][0] == "R1"
     assert calls["rule_rows"][-1][0] == "R11"
+
+
+def test_distinct_bdt_values_uses_cached_row_maps():
+    results = [
+        _result("CCC003", "2026-04-21", "Accepted", "c.xlsx"),
+        _result("AAA001", "2026-04-19", "Accepted", "a.xlsx"),
+    ]
+    panel = _panel_for(results)
+    calls = {"count": 0}
+
+    def _counting_row_map(res):
+        calls["count"] += 1
+        return BdtValidationPanel._row_map_for_result(panel, res)
+
+    panel._row_map_for_result = _counting_row_map
+
+    first = BdtValidationPanel._distinct_bdt_values(panel, "Site Code")
+    second = BdtValidationPanel._distinct_bdt_values(panel, "Site Code")
+
+    assert first == ["AAA001", "CCC003"]
+    assert second == first
+    assert calls["count"] == 2
+
+
+def test_column_filter_popup_style_switches_for_light_mode():
+    style = ColumnFilterPopup._style_for_mode("light")
+
+    assert "#eff1f5" in style
+    assert "#4c4f69" in style

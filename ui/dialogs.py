@@ -33,9 +33,11 @@ class ColumnFilterPopup(QDialog):
 
     applied = pyqtSignal(str, object)  # (column_name, selected_values_set_or_None)
 
-    _STYLE = """
+    _STYLE_DARK = """
     QDialog { background:#1a1a2a; border:1px solid #2a2a3e; border-radius:8px; }
-    QLabel { color:#cdd6f4; background:transparent; }
+    QLabel, QWidget#filter_list_inner, QScrollArea, QScrollArea > QWidget > QWidget {
+        color:#cdd6f4; background:#1a1a2a;
+    }
     QLabel#lbl_hdr { color:#6c7086; font-size:11px; font-weight:700;
                      letter-spacing:0.5px; text-transform:uppercase; }
     QPushButton { background:#2a2a3e; color:#cdd6f4; border:1px solid #3a3a52;
@@ -56,7 +58,38 @@ class ColumnFilterPopup(QDialog):
     QCheckBox::indicator { width:16px; height:16px; border-radius:4px;
                            border:1px solid #3a3a52; background:#13131f; }
     QCheckBox::indicator:checked { background:#1a2744; border-color:#89b4fa; }
-    QScrollArea { border:none; background:transparent; }
+    QScrollArea { border:none; background:#1a1a2a; }
+    QScrollArea QWidget#filter_list_inner { background:#1a1a2a; }
+    """
+
+    _STYLE_LIGHT = """
+    QDialog { background:#eff1f5; border:1px solid #bcc0cc; border-radius:8px; }
+    QLabel, QWidget#filter_list_inner, QScrollArea, QScrollArea > QWidget > QWidget {
+        color:#4c4f69; background:#eff1f5;
+    }
+    QLabel#lbl_hdr { color:#7c7f93; font-size:11px; font-weight:700;
+                     letter-spacing:0.5px; text-transform:uppercase; }
+    QPushButton { background:#ccd0da; color:#4c4f69; border:1px solid #bcc0cc;
+                  border-radius:5px; padding:6px 14px; font-size:12px;
+                  font-weight:600; min-width:60px; }
+    QPushButton:hover { background:#dce0e8; border-color:#1e66f5; color:#1e66f5; }
+    QPushButton#btn_sort_asc, QPushButton#btn_sort_desc {
+        background:#dce8ff; color:#1e66f5; border-color:#8caaee;
+    }
+    QPushButton#btn_apply { background:#d8f1dd; color:#2f7d32; border-color:#81c995; }
+    QPushButton#btn_apply:hover { background:#c7ebcf; border-color:#2f7d32; }
+    QPushButton#btn_clear { background:#f8d7df; color:#c2415d; border-color:#e78284; }
+    QPushButton#btn_clear:hover { background:#f5c3cf; border-color:#c2415d; }
+    QLineEdit { background:#ffffff; color:#4c4f69; border:1px solid #bcc0cc;
+                border-radius:5px; padding:5px 8px; font-size:12px; }
+    QLineEdit:focus { border-color:#7287fd; }
+    QCheckBox { color:#4c4f69; font-size:12px; spacing:6px;
+                background:transparent; padding:3px 0; }
+    QCheckBox::indicator { width:16px; height:16px; border-radius:4px;
+                           border:1px solid #8c8fa1; background:#ffffff; }
+    QCheckBox::indicator:checked { background:#dce8ff; border-color:#1e66f5; }
+    QScrollArea { border:none; background:#eff1f5; }
+    QScrollArea QWidget#filter_list_inner { background:#eff1f5; }
     """
 
     def __init__(self, col_name: str, display_name: str,
@@ -64,13 +97,32 @@ class ColumnFilterPopup(QDialog):
                  selected: set | None,
                  sort_callback, parent=None):
         super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint)
-        self.setStyleSheet(self._STYLE)
+        self.setStyleSheet(self._style_for_mode(self._resolved_theme_mode(parent)))
         self._col = col_name
         self._sort_cb = sort_callback
         self._checks: list[tuple[QCheckBox, str]] = []
         self.setFixedWidth(280)
         self.setMaximumHeight(440)
         self._build(display_name, unique_values, selected)
+
+    @classmethod
+    def _style_for_mode(cls, mode: str) -> str:
+        return cls._STYLE_LIGHT if mode == "light" else cls._STYLE_DARK
+
+    @staticmethod
+    def _resolved_theme_mode(parent) -> str:
+        current = parent
+        while current is not None:
+            mode = getattr(current, "_theme_mode", None)
+            if mode:
+                if mode == "auto" and hasattr(current, "_detect_os_theme"):
+                    try:
+                        return str(current._detect_os_theme() or "dark")
+                    except Exception:
+                        return "dark"
+                return str(mode)
+            current = current.parent() if hasattr(current, "parent") else None
+        return "dark"
 
     def _build(self, display_name, values, selected):
         lay = QVBoxLayout(self)
@@ -115,6 +167,7 @@ class ColumnFilterPopup(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         inner = QWidget()
+        inner.setObjectName("filter_list_inner")
         self._list_lay = QVBoxLayout(inner)
         self._list_lay.setContentsMargins(4, 0, 4, 0)
         self._list_lay.setSpacing(1)
