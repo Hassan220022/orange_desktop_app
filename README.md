@@ -314,7 +314,7 @@ QTableView display
 | R1   | Photos                | Required photo categories (rectifier and batteries) are present |
 | R2   | Power Alarm + Duration | Rejects when summary duration exists without a Power alarm; otherwise aligns power-alarm duration with BDT duration using a default ±15 minute tolerance (configurable) |
 | R3   | String vs Bus Bar Ampere | Uses `E = bus bar ampere - sum(string amperes)` and accepts only when `-3 <= E <= 0` |
-| R4   | Discharge Table Match | Reported backup time matches discharge readings               |
+<!-- | R4   | Discharge Table Match | Reported backup time matches discharge readings               | -->
 | R5   | Starting I-Battery ampere | Starting battery current is approximately 0 A (`|I| < 0.5A`) |
 | R6   | End Voltage / Completion | Accepted when discharge is `>= 180` min OR end voltage is `45.0--47.0 V` |
 | R7   | V/A Inverse           | Voltage and ampere show inverse correlation during discharge  |
