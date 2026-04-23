@@ -60,6 +60,7 @@ QPushButton {
     font-weight: 600;
     font-size: 12px;
     min-width: 0px;
+    min-height: 34px;
 }
 QPushButton:hover {
     background: #313150;
@@ -140,6 +141,7 @@ QPushButton#btn_load {
     border: 1px solid #4a3018;
     font-size: 13px;
     padding: 8px 14px;
+    min-height: 38px;
 }
 QPushButton#btn_load:hover {
     background: #3a2814;
@@ -160,6 +162,7 @@ QPushButton#btn_small {
     padding: 4px 10px;
     min-width: 38px;
     font-size: 11px;
+    min-height: 28px;
 }
 QPushButton#btn_small:hover {
     background: #2a2a3e;
@@ -176,6 +179,7 @@ QPushButton#btn_dir {
     padding: 6px 12px;
     font-size: 12px;
     min-width: 60px;
+    min-height: 34px;
 }
 QPushButton#btn_dir:hover {
     background: #1a2744;
@@ -1080,6 +1084,7 @@ QPushButton {
     font-weight: 600;
     font-size: 12px;
     min-width: 0px;
+    min-height: 34px;
 }
 QPushButton:hover {
     background: #bcc0cc;
@@ -1160,6 +1165,7 @@ QPushButton#btn_load {
     border: 1px solid #f0c8a0;
     font-size: 13px;
     padding: 8px 14px;
+    min-height: 38px;
 }
 QPushButton#btn_load:hover {
     background: #f8d4b8;
@@ -1180,6 +1186,7 @@ QPushButton#btn_small {
     padding: 4px 10px;
     min-width: 38px;
     font-size: 11px;
+    min-height: 28px;
 }
 QPushButton#btn_small:hover {
     background: #ccd0da;
@@ -1196,6 +1203,7 @@ QPushButton#btn_dir {
     padding: 6px 12px;
     font-size: 12px;
     min-width: 60px;
+    min-height: 34px;
 }
 QPushButton#btn_dir:hover {
     background: #d5e0fc;

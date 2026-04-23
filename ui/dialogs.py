@@ -28,6 +28,21 @@ except ImportError:
         from data import state
 
 
+def _resolved_parent_theme_mode(parent) -> str:
+    current = parent
+    while current is not None:
+        mode = getattr(current, "_theme_mode", None)
+        if mode:
+            if mode == "auto" and hasattr(current, "_detect_os_theme"):
+                try:
+                    return str(current._detect_os_theme() or "dark")
+                except Exception:
+                    return "dark"
+            return str(mode)
+        current = current.parent() if hasattr(current, "parent") else None
+    return "dark"
+
+
 class ColumnFilterPopup(QDialog):
     """Google-Sheets-style column filter popup with sort + value checkboxes."""
 
@@ -111,18 +126,7 @@ class ColumnFilterPopup(QDialog):
 
     @staticmethod
     def _resolved_theme_mode(parent) -> str:
-        current = parent
-        while current is not None:
-            mode = getattr(current, "_theme_mode", None)
-            if mode:
-                if mode == "auto" and hasattr(current, "_detect_os_theme"):
-                    try:
-                        return str(current._detect_os_theme() or "dark")
-                    except Exception:
-                        return "dark"
-                return str(mode)
-            current = current.parent() if hasattr(current, "parent") else None
-        return "dark"
+        return _resolved_parent_theme_mode(parent)
 
     def _build(self, display_name, values, selected):
         lay = QVBoxLayout(self)
@@ -760,9 +764,25 @@ class BdtRulesReferenceDialog(QDialog):
         self.setWindowTitle("BDT Validation Rules")
         self.setMinimumWidth(760)
         self.setMinimumHeight(640)
+        self._theme_mode = _resolved_parent_theme_mode(parent)
         if parent:
             self.setStyleSheet(parent.styleSheet())
         self._build(rule_rows)
+
+    def _label_style(self, role: str) -> str:
+        if self._theme_mode == "light":
+            palette = {
+                "intro": "color:#4c4f69; font-size:13px; font-weight:600; background:transparent;",
+                "summary": "color:#7c7f93; font-size:12px; background:transparent;",
+                "body": "color:#5c5f77; font-size:12px; background:transparent;",
+            }
+        else:
+            palette = {
+                "intro": "color:#cdd6f4; font-size:13px; font-weight:600; background:transparent;",
+                "summary": "color:#6c7086; font-size:12px; background:transparent;",
+                "body": "color:#cdd6f4; font-size:12px; background:transparent;",
+            }
+        return palette[role]
 
     def _build(self, rule_rows: list[tuple[str, str, str]]):
         lay = QVBoxLayout(self)
@@ -773,14 +793,14 @@ class BdtRulesReferenceDialog(QDialog):
             "This reference explains what each BDT validation rule checks, so reviewers can read a verdict and understand the reason behind it."
         )
         intro.setWordWrap(True)
-        intro.setStyleSheet("color:#cdd6f4; font-size:13px; background:transparent;")
+        intro.setStyleSheet(self._label_style("intro"))
         lay.addWidget(intro)
 
         summary = QLabel(
             "Use it when you need a plain-language explanation of the rule intent, not just the short rule label shown in the table."
         )
         summary.setWordWrap(True)
-        summary.setStyleSheet("color:#6c7086; font-size:12px; background:transparent;")
+        summary.setStyleSheet(self._label_style("summary"))
         lay.addWidget(summary)
 
         scroll = QScrollArea()
@@ -805,7 +825,7 @@ class BdtRulesReferenceDialog(QDialog):
 
             body = QLabel(description)
             body.setWordWrap(True)
-            body.setStyleSheet("color:#cdd6f4; font-size:12px; background:transparent;")
+            body.setStyleSheet(self._label_style("body"))
             card_lay.addWidget(body)
 
             rows_lay.addWidget(card)

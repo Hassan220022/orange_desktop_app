@@ -238,7 +238,7 @@ class BdtDetailPanel(QWidget):
         discharge_wrap_lay.setSpacing(8)
 
         self._bdt_discharge_table = QTableWidget(0, len(self._discharge_headers(0)))
-        self._bdt_discharge_table.setHorizontalHeaderLabels(self._discharge_headers(0))
+        self._apply_discharge_header_items(self._bdt_discharge_table, 0)
         self._bdt_discharge_table.setEditTriggers(
             QAbstractItemView.NoEditTriggers)
         self._bdt_discharge_table.setSelectionBehavior(
@@ -248,12 +248,19 @@ class BdtDetailPanel(QWidget):
         self._bdt_discharge_table.verticalHeader().setDefaultSectionSize(24)
         self._bdt_discharge_table.setMinimumHeight(140)
         self._bdt_discharge_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self._bdt_discharge_table.setStyleSheet(
+            "QTableWidget { gridline-color: #c7cfdf; }"
+            "QTableWidget::item { padding: 6px 8px; }"
+        )
         dis_hdr = self._bdt_discharge_table.horizontalHeader()
+        dis_hdr.setDefaultAlignment(Qt.AlignCenter)
+        dis_hdr.setMinimumHeight(56)
+        dis_hdr.setFixedHeight(74)
         dis_hdr.resizeSection(0, 190)
-        dis_hdr.resizeSection(1, 90)
-        dis_hdr.resizeSection(2, 90)
-        dis_hdr.resizeSection(3, 100)
-        dis_hdr.resizeSection(4, 100)
+        dis_hdr.resizeSection(1, 122)
+        dis_hdr.resizeSection(2, 122)
+        dis_hdr.resizeSection(3, 132)
+        dis_hdr.resizeSection(4, 118)
         dis_hdr.setStretchLastSection(True)
         discharge_wrap_lay.addWidget(self._bdt_discharge_table, 1)
 
@@ -546,10 +553,11 @@ class BdtDetailPanel(QWidget):
         self._bdt_discharge_table.setRowCount(0)
         self._bdt_active_discharge_strings = 0
         self._bdt_discharge_table.setColumnCount(len(self._discharge_headers(0)))
-        self._bdt_discharge_table.setHorizontalHeaderLabels(self._discharge_headers(0))
+        self._apply_discharge_header_items(self._bdt_discharge_table, 0)
         self._apply_discharge_column_visibility()
         if bdt:
             rows = self._build_discharge_detail_rows(bdt)
+            theme_mode = self._resolved_theme_mode()
             self._bdt_active_discharge_strings = max(
                 (len(row["strings"]) for row in rows),
                 default=0,
@@ -557,19 +565,22 @@ class BdtDetailPanel(QWidget):
             self._bdt_discharge_table.setRowCount(len(rows))
             start_bg = QColor("#1a2744")
             end_bg = QColor("#2e1a22")
-            string_headers = self._discharge_headers(self._bdt_active_discharge_strings)
+            string_headers = self._discharge_display_headers(self._bdt_active_discharge_strings)
             if self._bdt_discharge_table.columnCount() != len(string_headers):
                 self._bdt_discharge_table.setColumnCount(len(string_headers))
-            self._bdt_discharge_table.setHorizontalHeaderLabels(string_headers)
+            self._apply_discharge_header_items(
+                self._bdt_discharge_table,
+                self._bdt_active_discharge_strings,
+            )
             dis_hdr = self._bdt_discharge_table.horizontalHeader()
             dis_hdr.setStretchLastSection(False)
             for col in range(self._bdt_discharge_table.columnCount()):
                 if col == 0:
-                    dis_hdr.resizeSection(col, 260)
+                    dis_hdr.resizeSection(col, 270)
                 elif col < len(self._DISCHARGE_FIXED_HEADERS):
-                    dis_hdr.resizeSection(col, 135)
+                    dis_hdr.resizeSection(col, 160)
                 else:
-                    dis_hdr.resizeSection(col, 108)
+                    dis_hdr.resizeSection(col, 138)
 
             for r, row in enumerate(rows):
                 values = [
@@ -591,10 +602,16 @@ class BdtDetailPanel(QWidget):
                         item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                     else:
                         item.setTextAlignment(Qt.AlignCenter)
+                    _, section_bg = self._discharge_section_palette(
+                        self._discharge_section_index_for_column(c),
+                        theme_mode,
+                    )
                     if row["row_kind"] == "before":
                         item.setBackground(start_bg)
                     elif row["row_kind"] == "after":
                         item.setBackground(end_bg)
+                    else:
+                        item.setBackground(section_bg)
                     if c == 4 and row["delta_sum_minus_bus"] is not None:
                         delta = float(row["delta_sum_minus_bus"])
                         if -3.0 <= delta <= 0.0:
@@ -764,6 +781,120 @@ class BdtDetailPanel(QWidget):
         for idx in range(1, limit + 1):
             headers.extend([f"S{idx} V", f"S{idx} A"])
         return headers
+
+    @classmethod
+    def _discharge_display_headers(cls, active_strings: int | None = None) -> list[str]:
+        headers = [
+            "TIME: MIN (H)",
+            "REC BUS\nV",
+            "REC BUS\nA",
+            "Σ STRING\nA",
+            "Δ Σ-BUS",
+        ]
+        limit = cls._DISCHARGE_MAX_STRINGS if active_strings is None else max(0, min(cls._DISCHARGE_MAX_STRINGS, int(active_strings)))
+        for idx in range(1, limit + 1):
+            headers.extend([f"STRING {idx}\nV", f"STRING {idx}\nA"])
+        return headers
+
+    @classmethod
+    def _discharge_section_index_for_column(cls, col: int) -> int:
+        if col <= 4:
+            return col
+        return 5 + ((col - 5) // 2)
+
+    @classmethod
+    def _discharge_section_palette(cls, section_index: int, theme_mode: str = "dark") -> tuple[QColor, QColor]:
+        if theme_mode == "light":
+            header_palette = [
+                QColor("#edf2ff"),
+                QColor("#eaf2ff"),
+                QColor("#eef4ff"),
+                QColor("#f4efff"),
+                QColor("#fff0f6"),
+                QColor("#eef5ff"),
+                QColor("#f4f9ff"),
+                QColor("#eef5ff"),
+                QColor("#f4f9ff"),
+                QColor("#eef5ff"),
+                QColor("#f4f9ff"),
+            ]
+            body_palette = [
+                QColor("#fbfcff"),
+                QColor("#f6f9ff"),
+                QColor("#f8faff"),
+                QColor("#faf8ff"),
+                QColor("#fff8fb"),
+                QColor("#f4f8ff"),
+                QColor("#f8fbff"),
+                QColor("#f4f8ff"),
+                QColor("#f8fbff"),
+                QColor("#f4f8ff"),
+                QColor("#f8fbff"),
+                QColor("#f4f8ff"),
+                QColor("#f8fbff"),
+            ]
+            header = header_palette[section_index] if section_index < len(header_palette) else QColor("#eef5ff" if section_index % 2 == 0 else "#f4f9ff")
+            body = body_palette[section_index] if section_index < len(body_palette) else QColor("#f4f8ff" if section_index % 2 == 0 else "#f8fbff")
+            return header, body
+
+        header_palette = [
+            QColor("#1f2134"),
+            QColor("#18263d"),
+            QColor("#1d2940"),
+            QColor("#2a2240"),
+            QColor("#3a2230"),
+            QColor("#15283d"),
+            QColor("#1b3143"),
+            QColor("#15283d"),
+            QColor("#1b3143"),
+            QColor("#15283d"),
+            QColor("#1b3143"),
+        ]
+        body_palette = [
+            QColor("#171825"),
+            QColor("#121d2f"),
+            QColor("#152235"),
+            QColor("#1e1930"),
+            QColor("#281720"),
+            QColor("#101d2c"),
+            QColor("#142430"),
+            QColor("#101d2c"),
+            QColor("#142430"),
+            QColor("#101d2c"),
+            QColor("#142430"),
+            QColor("#101d2c"),
+            QColor("#142430"),
+        ]
+        header = header_palette[section_index] if section_index < len(header_palette) else QColor("#15283d" if section_index % 2 == 0 else "#1b3143")
+        body = body_palette[section_index] if section_index < len(body_palette) else QColor("#101d2c" if section_index % 2 == 0 else "#142430")
+        return header, body
+
+    def _resolved_theme_mode(self) -> str:
+        mode = str(getattr(self._viewer, "_theme_mode", "dark") or "dark")
+        if mode == "auto" and hasattr(self._viewer, "_detect_os_theme"):
+            try:
+                return str(self._viewer._detect_os_theme() or "dark")
+            except Exception:
+                return "dark"
+        return mode
+
+    def _apply_discharge_header_items(self, table: QTableWidget, active_strings: int):
+        theme_mode = self._resolved_theme_mode()
+        header_fg = QColor("#5c6784") if theme_mode == "light" else QColor("#a6c8ff")
+        for col, text in enumerate(self._discharge_display_headers(active_strings)):
+            item = QTableWidgetItem(text)
+            item.setTextAlignment(Qt.AlignCenter)
+            header_bg, _ = self._discharge_section_palette(
+                self._discharge_section_index_for_column(col),
+                theme_mode,
+            )
+            item.setBackground(header_bg)
+            item.setForeground(header_fg)
+            font = item.font()
+            font.setBold(True)
+            font.setPointSize(max(font.pointSize(), 10))
+            item.setFont(font)
+            table.setHorizontalHeaderItem(col, item)
 
     @staticmethod
     def _format_discharge_value(value) -> str:

@@ -1505,13 +1505,17 @@ class AlarmViewer(QMainWindow):
             self._main_splitter.setSizes([0, sizes[0] + sizes[1]])
         else:
             max_open = self._max_sidebar_width()
-            target = max(1, min(self._sidebar_width or 260, max_open))
+            target = max(self._min_sidebar_width(), min(self._sidebar_width or 260, max_open))
             total = max(1, sizes[0] + sizes[1])
             target = min(target, total - 1)
             self._main_splitter.setSizes([target, total - target])
 
     def _min_sidebar_width(self) -> int:
-        return 1
+        current_sidebar = None
+        if hasattr(self, "_sidebar_stack"):
+            current_sidebar = self._sidebar_stack.currentWidget()
+        recommended = int(getattr(current_sidebar, "_recommended_min_width", 0) or 0)
+        return max(1, recommended)
 
     def _max_sidebar_width(self) -> int:
         if not hasattr(self, "_main_splitter"):
@@ -1536,11 +1540,15 @@ class AlarmViewer(QMainWindow):
         sizes = self._main_splitter.sizes()
         if len(sizes) != 2:
             return
+        min_open = min(self._min_sidebar_width(), max_open)
         left, right = sizes
         total = max(1, left + right)
         if left > max_open:
             self._main_splitter.setSizes([max_open, total - max_open])
             self._sidebar_width = max_open
+        elif 0 < left < min_open:
+            self._main_splitter.setSizes([min_open, total - min_open])
+            self._sidebar_width = min_open
         elif left > 0:
             self._sidebar_width = left
 
@@ -1670,6 +1678,8 @@ class AlarmViewer(QMainWindow):
             self._bdt_table.verticalHeader().setDefaultSectionSize(row_h)
         if hasattr(self, "_main_splitter"):
             self._apply_sidebar_constraints()
+        if hasattr(self, "_bdt_sidebar") and hasattr(self._bdt_sidebar, "_refresh_responsive_metrics"):
+            self._bdt_sidebar._refresh_responsive_metrics()
         if hasattr(self, "_sbar"):
             self._sbar.showMessage(f"UI zoom: {pct}%", 1800)
 

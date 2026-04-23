@@ -165,6 +165,44 @@ def test_detect_active_discharge_strings_ignores_empty_trailing_strings():
     assert BdtDetailPanel._detect_active_discharge_strings(string_rows) == 2
 
 
+def test_discharge_display_headers_expand_group_labels():
+    headers = BdtDetailPanel._discharge_display_headers(2)
+
+    assert headers[:5] == [
+        "TIME: MIN (H)",
+        "REC BUS\nV",
+        "REC BUS\nA",
+        "Σ STRING\nA",
+        "Δ Σ-BUS",
+    ]
+    assert headers[5:] == ["STRING 1\nV", "STRING 1\nA", "STRING 2\nV", "STRING 2\nA"]
+
+
+def test_discharge_section_index_groups_string_pairs_together():
+    assert BdtDetailPanel._discharge_section_index_for_column(0) == 0
+    assert BdtDetailPanel._discharge_section_index_for_column(4) == 4
+    assert BdtDetailPanel._discharge_section_index_for_column(5) == 5
+    assert BdtDetailPanel._discharge_section_index_for_column(6) == 5
+    assert BdtDetailPanel._discharge_section_index_for_column(7) == 6
+    assert BdtDetailPanel._discharge_section_index_for_column(8) == 6
+
+
+def test_discharge_section_palette_keeps_sections_visually_distinct():
+    rec_bus_header, rec_bus_body = BdtDetailPanel._discharge_section_palette(1, "dark")
+    string_one_header, string_one_body = BdtDetailPanel._discharge_section_palette(5, "dark")
+
+    assert rec_bus_header != string_one_header
+    assert rec_bus_body != string_one_body
+
+
+def test_discharge_section_palette_supports_light_and_dark_modes():
+    light_header, light_body = BdtDetailPanel._discharge_section_palette(1, "light")
+    dark_header, dark_body = BdtDetailPanel._discharge_section_palette(1, "dark")
+
+    assert light_header != dark_header
+    assert light_body != dark_body
+
+
 class _FakeTable:
     def __init__(self):
         self.hidden = {}

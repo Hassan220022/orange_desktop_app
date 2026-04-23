@@ -12,9 +12,11 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QListWidget,
     QPushButton,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
+from PyQt5.QtCore import QEvent
 
 
 class BdtWorkspacePanel(QWidget):
@@ -40,6 +42,7 @@ class BdtWorkspacePanel(QWidget):
 
         title = QLabel("Battery discharge validation")
         title.setObjectName("sidebar_title")
+        title.setWordWrap(True)
         lay.addWidget(title)
 
         summary = QLabel("Browse BDT folders, inspect candidate files, then validate.")
@@ -59,11 +62,13 @@ class BdtWorkspacePanel(QWidget):
         dir_row.setSpacing(6)
         btn_browse = QPushButton("Browse")
         btn_browse.setObjectName("btn_dir")
+        btn_browse.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_browse.clicked.connect(self._viewer._browse_bdt)
         dir_row.addWidget(btn_browse)
 
         btn_scan = QPushButton("Scan")
         btn_scan.setObjectName("btn_dir")
+        btn_scan.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_scan.clicked.connect(self._viewer._scan_bdt)
         dir_row.addWidget(btn_scan)
         lay.addLayout(dir_row)
@@ -85,11 +90,13 @@ class BdtWorkspacePanel(QWidget):
         file_actions.setSpacing(5)
         btn_all = QPushButton("All")
         btn_all.setObjectName("btn_small")
+        btn_all.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_all.clicked.connect(self.file_list.selectAll)
         file_actions.addWidget(btn_all)
 
         btn_none = QPushButton("None")
         btn_none.setObjectName("btn_small")
+        btn_none.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_none.clicked.connect(self.file_list.clearSelection)
         file_actions.addWidget(btn_none)
         file_actions.addStretch()
@@ -125,11 +132,13 @@ class BdtWorkspacePanel(QWidget):
 
         btn_validate = QPushButton("Validate BDT Files")
         btn_validate.setObjectName("btn_search")
+        btn_validate.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_validate.clicked.connect(self._viewer._bdt_validation_panel._run_validation)
         actions_lay.addWidget(btn_validate)
 
         btn_report = QPushButton("Accepted PM Report")
         btn_report.setObjectName("btn_export")
+        btn_report.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_report.clicked.connect(
             self._viewer._bdt_validation_panel._generate_pm_accept_report
         )
@@ -137,6 +146,7 @@ class BdtWorkspacePanel(QWidget):
 
         btn_daily = QPushButton("Daily Review")
         btn_daily.setObjectName("btn_dir")
+        btn_daily.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_daily.clicked.connect(
             self._viewer._bdt_validation_panel._show_daily_review_report
         )
@@ -144,6 +154,7 @@ class BdtWorkspacePanel(QWidget):
 
         btn_export = QPushButton("Export Results")
         btn_export.setObjectName("btn_load")
+        btn_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_export.clicked.connect(self._viewer._bdt_validation_panel._export_bdt_results)
         actions_lay.addWidget(btn_export)
 
@@ -186,11 +197,54 @@ class BdtWorkspacePanel(QWidget):
         lay.addWidget(status_card)
         lay.addStretch()
 
+        self._adaptive_primary_buttons = [
+            btn_browse,
+            btn_scan,
+            btn_validate,
+            btn_report,
+            btn_daily,
+            btn_export,
+        ]
+        self._adaptive_small_buttons = [btn_all, btn_none]
+
         self._viewer._bdt_validation_panel.cmb_bdt_source.currentIndexChanged.connect(
             self._sync_from_main_panel
         )
         self._sync_from_main_panel()
         self._sync_skip_photos_from_viewer()
+        self._refresh_responsive_metrics()
+
+    def _refresh_responsive_metrics(self):
+        primary_height = 0
+        content_width = 0
+        for btn in getattr(self, "_adaptive_primary_buttons", []):
+            fm = btn.fontMetrics()
+            primary_height = max(primary_height, int(fm.height() * 2.25))
+            content_width = max(content_width, fm.horizontalAdvance(btn.text()) + 56)
+        primary_height = max(primary_height, 40)
+        for btn in getattr(self, "_adaptive_primary_buttons", []):
+            btn.setMinimumHeight(primary_height)
+
+        small_height = 0
+        for btn in getattr(self, "_adaptive_small_buttons", []):
+            small_height = max(small_height, int(btn.fontMetrics().height() * 1.8))
+        small_height = max(small_height, 30)
+        for btn in getattr(self, "_adaptive_small_buttons", []):
+            btn.setMinimumHeight(small_height)
+
+        combo_width = self.cmb_bdt_source.fontMetrics().horizontalAdvance("Both (Verify)") + 72
+        sidebar_min = max(300, content_width + 24, combo_width + 40)
+        self._recommended_min_width = sidebar_min
+        self.setMinimumWidth(sidebar_min)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in {QEvent.FontChange, QEvent.StyleChange, QEvent.PaletteChange}:
+            self._refresh_responsive_metrics()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_responsive_metrics()
 
     def _sync_to_main_panel(self, index: int):
         main_combo = self._viewer._bdt_validation_panel.cmb_bdt_source
