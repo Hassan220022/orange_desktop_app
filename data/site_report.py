@@ -46,6 +46,7 @@ _PM_ACCEPT_REPORT_COLUMNS = [
     "Matched BDT File Name",
     "Matched BDT Test Date",
     "Matched BDT Validation Verdict",
+    "Matched BDT Validation Reasons",
     "Theoretical Backup Time From BDT Inputs (mins)",
     "Measured Backup Time From BDT Test Duration (mins)",
     "Power Alarm Start Time",
@@ -498,6 +499,36 @@ def _build_bdt_test_window(result: Any, target_date: date | None) -> tuple[pd.Ti
     return start_ts, None
 
 
+def _aggregate_matched_bdt_reasons(result: Any) -> str:
+    rules = getattr(result, "rules", None) or []
+    if not rules:
+        return ""
+
+    overall = str(getattr(result, "overall", "") or "").strip().lower()
+    include_verdicts: set[str]
+    if overall == "rejected":
+        include_verdicts = {"rejected", "no data", "n/a"}
+    elif overall == "revise":
+        include_verdicts = {"revise", "rejected", "no data", "n/a"}
+    elif overall == "accepted":
+        return ""
+    else:
+        include_verdicts = {"rejected", "revise", "no data", "n/a"}
+
+    reasons: list[str] = []
+    seen: set[str] = set()
+    for rule in rules:
+        verdict = str(getattr(rule, "verdict", "") or "").strip().lower()
+        detail = str(getattr(rule, "detail", "") or "").strip()
+        if verdict not in include_verdicts or not detail:
+            continue
+        if detail in seen:
+            continue
+        seen.add(detail)
+        reasons.append(detail)
+    return " | ".join(reasons)
+
+
 def _pick_site_incident_for_date(site_df: pd.DataFrame, target_date: date | None) -> dict[str, str]:
     if site_df.empty:
         return {
@@ -695,6 +726,7 @@ def build_pm_accept_report(
             out.at[idx, col_map["Matched BDT File Name"]] = str(getattr(chosen, "filename", "") or "")
             out.at[idx, col_map["Matched BDT Test Date"]] = str(getattr(chosen, "test_date", "") or "")
             out.at[idx, col_map["Matched BDT Validation Verdict"]] = str(getattr(chosen, "overall", "") or "")
+            out.at[idx, col_map["Matched BDT Validation Reasons"]] = _aggregate_matched_bdt_reasons(chosen)
             theoretical = _theoretical_backup_minutes_like_bdt(bdt, health_pct)
             if theoretical is not None:
                 out.at[idx, col_map["Theoretical Backup Time From BDT Inputs (mins)"]] = f"{theoretical:.1f}"

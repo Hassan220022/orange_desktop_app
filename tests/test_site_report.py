@@ -292,6 +292,7 @@ def test_build_pm_accept_report_maps_bdt_and_alarm_fields():
     row = report.iloc[0]
     assert row["Matched BDT File Name"] == "BDT_0117CA.xlsx"
     assert row["Matched BDT Validation Verdict"] == "Accepted"
+    assert row["Matched BDT Validation Reasons"] == ""
     assert row["Measured Backup Time From BDT Test Duration (mins)"] == "130.0"
     assert row["Power Alarm Start Time"] == "2025-01-01 10:00:00"
     assert row["Down Alarm Start Time"] == "2025-01-01 11:30:00"
@@ -370,3 +371,54 @@ def test_build_pm_accept_report_prefers_alarm_pair_within_bdt_time_window():
     assert row["Power Alarm Start Time"] == "2025-01-01 10:05:00"
     assert row["Down Alarm Start Time"] == "2025-01-01 11:30:00"
     assert row["Backup Time Calculated From Alarm Pair (HH:MM:SS)"] == "01:25:00"
+
+
+def test_build_pm_accept_report_includes_matched_bdt_validation_reasons():
+    pm_df = pd.DataFrame(
+        {
+            "Site Code": ["0117CA"],
+            "Actual Done Date": ["2025-01-01"],
+            "PM Status": ["Accepted"],
+        }
+    )
+    bdt_data = SimpleNamespace(
+        battery_ah=100.0,
+        battery_voltage=48.0,
+        num_strings=1,
+        start_voltage=48.0,
+        start_ampere=40.0,
+        battery_brand="Lithium",
+        discharge_minutes=130.0,
+        test_date=pd.Timestamp("2025-01-01"),
+    )
+    bdt_results = [
+        SimpleNamespace(
+            filename="BDT_0117CA.xlsx",
+            site_code="0117CA",
+            test_date="2025-01-01",
+            overall="Rejected",
+            rules=[
+                SimpleNamespace(verdict="Rejected", detail="Missing required photo categories: ['batteries']"),
+                SimpleNamespace(verdict="Accepted", detail="Matched power/down timing window"),
+                SimpleNamespace(verdict="N/A", detail="No door alarm data loaded"),
+            ],
+            bdt_data=bdt_data,
+        )
+    ]
+    alarm_df = pd.DataFrame(columns=["site_id", "alarm_category", "occurred_on", "cleared_on"])
+
+    report = build_pm_accept_report(
+        pm_df=pm_df,
+        site_id_column="Site Code",
+        date_column="Actual Done Date",
+        bdt_results=bdt_results,
+        alarm_df=alarm_df,
+        health_pct=0.8,
+        status_column="PM Status",
+    )
+
+    row = report.iloc[0]
+    assert row["Matched BDT Validation Verdict"] == "Rejected"
+    assert row["Matched BDT Validation Reasons"] == (
+        "Missing required photo categories: ['batteries'] | No door alarm data loaded"
+    )
