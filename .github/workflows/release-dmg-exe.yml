@@ -1,4 +1,4 @@
-name: Release macOS App + Windows EXE
+name: Release Installers
 
 permissions:
   contents: write
@@ -13,33 +13,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  read-version:
+  prepare-version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.ver.outputs.value }}
+      version: ${{ steps.read.outputs.value }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Extract version from constants.py
-        id: ver
+      - name: Read current app version
+        id: read
         run: |
-          VERSION=$(python3 -c "
-          import re, sys
-          for line in open('constants.py'):
-              m = re.match(r'APP_VERSION\s*=\s*[\"\']([\d.]+)[\"\']\s*$', line)
-              if m:
-                  print(m.group(1))
-                  sys.exit(0)
-          sys.exit(1)
-          ")
+          VERSION=$(python3 scripts/print_version.py)
           echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Building release for version ${VERSION}"
 
-  build-windows-exe:
+  build-windows-installer:
     runs-on: windows-latest
-    needs: read-version
+    needs: prepare-version
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set release version
+        shell: pwsh
+        run: |
+          Set-Content -Path VERSION -Value "${{ needs.prepare-version.outputs.version }}"
 
       - uses: actions/setup-python@v5
         with:
@@ -51,61 +48,64 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build Windows executable
+      - name: Build Windows app bundle
         shell: pwsh
         run: |
-          pyinstaller `
-            --noconfirm `
-            --onefile `
-            --windowed `
-            --name AlarmViewer `
-            --icon assets/app_icon.ico `
-            --add-data "assets/app_icon.png;assets" `
-            --paths . `
-            --distpath dist `
-            --workpath build `
-            --specpath . `
-            --hidden-import pandas `
-            --hidden-import openpyxl `
-            --hidden-import xlrd `
-            --hidden-import pyarrow `
-            --hidden-import python_calamine `
-            scripts/pyinstaller_entry.py
+          pyinstaller --noconfirm AlarmViewer.spec
+
+      - name: Smoke test bundled app
+        shell: pwsh
+        run: |
+          dist\AlarmViewer\AlarmViewer.exe --version
+          dist\AlarmViewer\AlarmViewer.exe --smoke-test
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: iscc /DMyAppVersion=${{ needs.prepare-version.outputs.version }} installer/windows/AlarmViewer.iss
 
       - uses: actions/upload-artifact@v4
         with:
-          name: release-windows-exe
-          path: dist/AlarmViewer.exe
+          name: release-windows-installer
+          path: dist/AlarmViewer-Setup.exe
           if-no-files-found: error
 
-  build-macos-app:
+  build-macos-installer:
     runs-on: macos-14
-    needs: read-version
+    needs: prepare-version
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set release version
+        run: printf '%s\n' '${{ needs.prepare-version.outputs.version }}' > VERSION
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Make scripts executable
-        run: chmod +x scripts/build_macos.sh
+        run: chmod +x scripts/build_macos.sh scripts/build_macos_installer.sh
 
-      - name: Build app bundle
-        run: ./scripts/build_macos.sh
+      - name: Build app bundle and DMG
+        run: ./scripts/build_macos_installer.sh
 
-      - name: Zip macOS app bundle
-        run: ditto -c -k --sequesterRsrc --keepParent dist/AlarmViewer.app dist/AlarmViewer-macOS-app.zip
+      - name: Smoke test app bundle
+        run: |
+          dist/AlarmViewer.app/Contents/MacOS/AlarmViewer --version
+          dist/AlarmViewer.app/Contents/MacOS/AlarmViewer --smoke-test
 
       - uses: actions/upload-artifact@v4
         with:
-          name: release-macos-app
-          path: dist/AlarmViewer-macOS-app.zip
+          name: release-macos-installer
+          path: dist/AlarmViewer-macOS.dmg
           if-no-files-found: error
 
   publish-release:
     runs-on: ubuntu-latest
-    needs: [read-version, build-windows-exe, build-macos-app]
+    needs: [prepare-version, build-windows-installer, build-macos-installer]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -114,27 +114,26 @@ jobs:
       - name: Compute release metadata
         id: meta
         env:
-          VERSION: ${{ needs.read-version.outputs.version }}
+          VERSION: ${{ needs.prepare-version.outputs.version }}
           SHA: ${{ github.sha }}
-          RUN_ID: ${{ github.run_id }}
         run: |
           SHORT_SHA="${SHA:0:7}"
-          TAG_NAME="build-${RUN_ID}"
+          TAG_NAME="v${VERSION}"
           RELEASE_NAME="Alarm Viewer v${VERSION} (${SHORT_SHA})"
           echo "tag=${TAG_NAME}" >> "$GITHUB_OUTPUT"
           echo "name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
           echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
 
-      - name: Download EXE artifact
+      - name: Download Windows installer artifact
         uses: actions/download-artifact@v4
         with:
-          name: release-windows-exe
+          name: release-windows-installer
           path: release-assets
 
-      - name: Download macOS app artifact
+      - name: Download macOS installer artifact
         uses: actions/download-artifact@v4
         with:
-          name: release-macos-app
+          name: release-macos-installer
           path: release-assets
 
       - name: Build release notes
@@ -149,8 +148,8 @@ jobs:
             echo "Commit: \`${SHORT_SHA}\`"
             echo
             echo "### Release assets"
-            echo "- AlarmViewer.exe (Windows)"
-            echo "- AlarmViewer-macOS-app.zip (macOS app bundle)"
+            echo "- AlarmViewer-Setup.exe (Windows installer)"
+            echo "- AlarmViewer-macOS.dmg (macOS installer)"
             echo
             echo "### Included commits"
             echo
@@ -165,7 +164,44 @@ jobs:
           name: ${{ steps.meta.outputs.name }}
           body_path: RELEASE_NOTES.md
           files: |
-            release-assets/AlarmViewer.exe
-            release-assets/AlarmViewer-macOS-app.zip
+            release-assets/AlarmViewer-Setup.exe
+            release-assets/AlarmViewer-macOS.dmg
           fail_on_unmatched_files: true
           make_latest: true
+
+  bump-next-version:
+    runs-on: ubuntu-latest
+    needs: [prepare-version, publish-release]
+    if: ${{ github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bump VERSION to next patch
+        id: bump
+        env:
+          CURRENT_VERSION: ${{ needs.prepare-version.outputs.version }}
+        run: |
+          NEXT_VERSION=$(python3 - <<'PY'
+          import os
+          import re
+
+          current = os.environ["CURRENT_VERSION"].strip()
+          match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", current)
+          if not match:
+              raise SystemExit(f"Invalid current version: {current}")
+          major, minor, patch = map(int, match.groups())
+          print(f"{major}.{minor}.{patch + 1}")
+          PY
+          )
+          printf '%s\n' "$NEXT_VERSION" > VERSION
+          echo "value=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit next development version
+        env:
+          NEXT_VERSION: ${{ steps.bump.outputs.value }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VERSION
+          git commit -m "chore: bump version to ${NEXT_VERSION} [skip ci]"
+          git push

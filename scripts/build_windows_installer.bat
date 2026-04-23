@@ -1,8 +1,8 @@
 @echo off
 setlocal
 
-:: Build Alarm Viewer executable and Windows installer (.exe).
-:: Requirements: Python 3.9+, Inno Setup (iscc), Windows.
+:: Build Alarm Viewer as an installed-product Windows bundle and installer.
+:: Requirements: Python 3.11+, Inno Setup (iscc), Windows.
 
 pushd %~dp0..
 
@@ -13,7 +13,7 @@ echo.
 
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: Python not found on PATH. Install Python 3.9+ and try again.
+    echo ERROR: Python not found on PATH. Install Python 3.11+ and try again.
     popd & exit /b 1
 )
 
@@ -24,50 +24,41 @@ if errorlevel 1 (
     popd & exit /b 1
 )
 
-echo [1/6] Creating virtual environment...
+echo [1/7] Creating virtual environment...
 python -m venv .venv_build
 call .venv_build\Scripts\activate.bat
 
 echo.
-echo [2/6] Installing dependencies...
-pip install --upgrade pip -q
-pip install -r requirements.txt -q
+echo [2/7] Installing dependencies...
+python -m pip install --upgrade pip -q
+python -m pip install -r requirements.txt -q
 
 echo.
-echo [3/6] Building standalone EXE with PyInstaller...
-pyinstaller ^
-    --noconfirm ^
-    --onefile ^
-    --windowed ^
-    --name "AlarmViewer" ^
-    --icon assets\app_icon.ico ^
-    --add-data "assets\app_icon.png;assets" ^
-    --paths .. ^
-    --collect-submodules alarm_app ^
-    --distpath dist ^
-    --workpath build ^
-    --specpath . ^
-    --hidden-import pandas ^
-    --hidden-import openpyxl ^
-    --hidden-import xlrd ^
-    --hidden-import pyarrow ^
-    --hidden-import python_calamine ^
-    scripts/pyinstaller_entry.py
+echo [3/7] Cleaning previous bundle output...
+rmdir /s /q dist\AlarmViewer 2>nul
+rmdir /s /q build 2>nul
 
 echo.
-echo [4/6] Building installer with Inno Setup...
+echo [4/7] Building installed app bundle with PyInstaller spec...
+pyinstaller --noconfirm AlarmViewer.spec
+
+echo.
+echo [5/7] Smoke testing bundled app...
+dist\AlarmViewer\AlarmViewer.exe --version
+dist\AlarmViewer\AlarmViewer.exe --smoke-test
+
+echo.
+echo [6/7] Building installer with Inno Setup...
 iscc installer\windows\AlarmViewer.iss
 
 echo.
-echo [5/6] Cleaning up build artefacts...
-rmdir /s /q build 2>nul
-del /q AlarmViewer.spec 2>nul
-
+echo [7/7] Done!
 echo.
-echo [6/6] Done!
-echo.
-echo   EXE:      dist\AlarmViewer.exe
+echo   Bundle:    dist\AlarmViewer\
 echo   Installer: dist\AlarmViewer-Setup.exe
+echo.
+echo The installed app bootstraps local SQLite, DuckDB, blobs, and logs
+echo under %%USERPROFILE%%\.alarm_viewer on first launch.
 echo.
 
 call deactivate

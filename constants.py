@@ -2,8 +2,16 @@
 Constants — schema maps, display columns, app metadata.
 """
 
+try:
+    from .versioning import get_app_version
+except ImportError:
+    try:
+        from alarm_app.versioning import get_app_version
+    except ImportError:
+        from versioning import get_app_version  # type: ignore[no-redef]
+
 APP_NAME    = "Alarm Viewer"
-APP_VERSION = "0.1.7"
+APP_VERSION = get_app_version()
 
 # ── Huawei schema ────────────────────────────────────────────────
 SCHEMA_1_MAP = {

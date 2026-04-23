@@ -1,5 +1,7 @@
 #define MyAppName "Alarm Viewer"
-#define MyAppVersion "0.1.6"
+#ifndef MyAppVersion
+  #define MyAppVersion "0.1.7"
+#endif
 #define MyAppPublisher "Orange"
 #define MyAppExeName "AlarmViewer.exe"
 
@@ -29,7 +31,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 [Files]
-Source: "..\..\dist\AlarmViewer.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\dist\AlarmViewer\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Alarm Viewer"; Filename: "{app}\{#MyAppExeName}"

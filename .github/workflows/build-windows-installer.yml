@@ -19,32 +19,29 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Extract app version
+        id: ver
+        shell: pwsh
+        run: |
+          $version = python scripts/print_version.py
+          "value=$version" >> $env:GITHUB_OUTPUT
+
       - name: Install build dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build executable
+      - name: Build Windows app bundle
         shell: pwsh
         run: |
-          pyinstaller `
-            --noconfirm `
-            --onefile `
-            --windowed `
-            --name AlarmViewer `
-            --icon assets/app_icon.ico `
-            --add-data "assets/app_icon.png;assets" `
-            --paths . `
-            --distpath dist `
-            --workpath build `
-            --specpath . `
-            --hidden-import pandas `
-            --hidden-import openpyxl `
-            --hidden-import xlrd `
-            --hidden-import pyarrow `
-            --hidden-import python_calamine `
-            scripts/pyinstaller_entry.py
+          pyinstaller --noconfirm AlarmViewer.spec
+
+      - name: Smoke test bundled app
+        shell: pwsh
+        run: |
+          dist\AlarmViewer\AlarmViewer.exe --version
+          dist\AlarmViewer\AlarmViewer.exe --smoke-test
 
       - name: Install Inno Setup
         shell: pwsh
@@ -52,18 +49,11 @@ jobs:
 
       - name: Build installer
         shell: pwsh
-        run: iscc installer/windows/AlarmViewer.iss
+        run: iscc /DMyAppVersion=${{ steps.ver.outputs.value }} installer/windows/AlarmViewer.iss
 
       - name: Upload Windows installer artifact
         uses: actions/upload-artifact@v4
         with:
           name: AlarmViewer-windows-installer
           path: dist/AlarmViewer-Setup.exe
-          if-no-files-found: error
-
-      - name: Upload Windows executable artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: AlarmViewer-windows-exe
-          path: dist/AlarmViewer.exe
           if-no-files-found: error

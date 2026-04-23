@@ -6,6 +6,7 @@ Starts the FastAPI backend in a child process and shuts it down on exit.
 """
 
 import atexit
+import argparse
 import logging
 import multiprocessing
 import os
@@ -33,16 +34,19 @@ _ensure_alarm_app_alias()
 
 try:
     from .constants import APP_NAME, APP_VERSION
+    from .runtime.bootstrap import bootstrap_local_runtime
     from .ui.viewer import AlarmViewer
     from .logging_config import setup_logging
 except ImportError:
     try:
         from alarm_app.constants import APP_NAME, APP_VERSION
+        from alarm_app.runtime.bootstrap import bootstrap_local_runtime
         from alarm_app.ui.viewer import AlarmViewer
         from alarm_app.logging_config import setup_logging
     except ImportError:
         # PyInstaller flat-bundle: package root is on sys.path directly
         from constants import APP_NAME, APP_VERSION  # type: ignore[no-redef]
+        from runtime.bootstrap import bootstrap_local_runtime  # type: ignore[no-redef]
         from ui.viewer import AlarmViewer  # type: ignore[no-redef]
         from logging_config import setup_logging  # type: ignore[no-redef]
 
@@ -58,6 +62,7 @@ except (ValueError, TypeError):
 
 def _run_backend():
     """Target for the backend child process."""
+    bootstrap_local_runtime()
     # Child processes don't inherit logging config — set it up here too
     try:
         from alarm_app.logging_config import setup_logging
@@ -106,9 +111,31 @@ def _stop_backend():
     _backend_process = None
 
 
-def main():
+def _parse_args(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(prog="AlarmViewer")
+    parser.add_argument("--version", action="store_true", help="print app version and exit")
+    parser.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="bootstrap local runtime storage and exit",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None):
+    args = _parse_args(argv)
+    runtime_info = bootstrap_local_runtime()
     setup_logging()
     _log.info("Alarm Viewer %s starting", APP_VERSION)
+    _log.info("Runtime bootstrap ready: %s", runtime_info)
+
+    if args.version:
+        print(APP_VERSION)
+        return
+
+    if args.smoke_test:
+        print("bootstrap-ok")
+        return
 
     # Windows / macOS High-DPI support
     if hasattr(Qt, "AA_EnableHighDpiScaling"):

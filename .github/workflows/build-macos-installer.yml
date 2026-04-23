@@ -36,12 +36,10 @@ jobs:
       - name: Build app bundle and DMG
         run: ./scripts/build_macos_installer.sh
 
-      - name: Upload macOS app artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: AlarmViewer-macos-app
-          path: dist/AlarmViewer.app
-          if-no-files-found: error
+      - name: Smoke test app bundle
+        run: |
+          dist/AlarmViewer.app/Contents/MacOS/AlarmViewer --version
+          dist/AlarmViewer.app/Contents/MacOS/AlarmViewer --smoke-test
 
       - name: Upload macOS DMG artifact
         uses: actions/upload-artifact@v4

@@ -1,9 +1,9 @@
 @echo off
 setlocal
 :: ─────────────────────────────────────────────────────────────
-:: Build Alarm Viewer as a standalone Windows .exe
-:: Requirements: Python 3.9+ installed and on PATH.
-:: The output EXE will be at alarm_app\dist\AlarmViewer.exe
+:: Build Alarm Viewer as an installed-product Windows bundle.
+:: Requirements: Python 3.11+ installed and on PATH.
+:: The output bundle will be at alarm_app\dist\AlarmViewer\
 :: Run from anywhere — script navigates to project root.
 :: ─────────────────────────────────────────────────────────────
 
@@ -32,35 +32,23 @@ pip install --upgrade pip -q
 pip install -r alarm_app\requirements.txt -q
 
 echo.
-echo [3/5] Building standalone EXE with PyInstaller...
-pyinstaller ^
-    --noconfirm ^
-    --onefile ^
-    --windowed ^
-    --name "AlarmViewer" ^
-    --icon alarm_app\assets\app_icon.ico ^
-    --add-data "alarm_app\assets\app_icon.png;assets" ^
-    --paths . ^
-    --distpath alarm_app\dist ^
-    --workpath alarm_app\build ^
-    --specpath alarm_app ^
-    --hidden-import pandas ^
-    --hidden-import openpyxl ^
-    --hidden-import xlrd ^
-    --hidden-import pyarrow ^
-    --hidden-import python_calamine ^
-    alarm_app\scripts\pyinstaller_entry.py
+echo [3/5] Building installed bundle with PyInstaller spec...
+rmdir /s /q alarm_app\dist\AlarmViewer 2>nul
+rmdir /s /q alarm_app\build 2>nul
+pushd alarm_app
+pyinstaller --noconfirm AlarmViewer.spec
+popd
 
 echo.
 echo [4/5] Cleaning up build artefacts...
 rmdir /s /q alarm_app\build 2>nul
-del /q alarm_app\AlarmViewer.spec 2>nul
 
 echo.
 echo [5/5] Done!
 echo.
-echo   Executable ready at:  alarm_app\dist\AlarmViewer.exe
-echo   Copy that single file to any Windows PC - no Python needed!
+echo   Bundle ready at:  alarm_app\dist\AlarmViewer\
+echo   Launch with:      alarm_app\dist\AlarmViewer\AlarmViewer.exe
+echo   First launch bootstraps %%USERPROFILE%%\.alarm_viewer storage.
 echo.
 call deactivate
 popd

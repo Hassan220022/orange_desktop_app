@@ -335,7 +335,7 @@ History comparison is shown in the **TEST HISTORY COMPARISON** panel in the deta
 
 ## Building executable apps (GUI)
 
-### Windows
+### Windows bundle (internal/dev)
 
 Run the included build script from any directory:
 
@@ -344,11 +344,11 @@ cd alarm_app/scripts
 build_windows.bat
 ```
 
-This creates a standalone `alarm_app/dist/AlarmViewer.exe` that runs on any Windows PC without Python installed. The script:
+This creates an installed-product style bundle at `alarm_app/dist/AlarmViewer/`. The script:
 
 1. Creates a temporary virtual environment
 2. Installs all dependencies
-3. Builds a single-file `.exe` with PyInstaller
+3. Builds the app bundle with `AlarmViewer.spec`
 4. Cleans up build artifacts
 
 ### Windows installer (.exe setup)
@@ -362,8 +362,16 @@ build_windows_installer.bat
 
 This produces:
 
-- `alarm_app/dist/AlarmViewer.exe` (portable app)
+- `alarm_app/dist/AlarmViewer/` (installer staging bundle)
 - `alarm_app/dist/AlarmViewer-Setup.exe` (installer wizard)
+
+The installer is the intended end-user distribution. On first launch the app
+bootstraps its local runtime under `~/.alarm_viewer/`, including:
+
+- SQLite app database
+- DuckDB alarm store
+- blob/image storage
+- rotating log files
 
 Installer requirements:
 
@@ -378,7 +386,7 @@ cd alarm_app/scripts
 ./build_macos.sh
 ```
 
-This creates a standalone `dist/AlarmViewer.app` bundle.
+This creates the macOS app bundle at `dist/AlarmViewer.app`.
 
 ### macOS installer (.dmg)
 
@@ -423,21 +431,23 @@ If you want installable artifacts without running local packaging commands:
         - **Build macOS Installer**
 3. Click **Run workflow**.
 4. Download artifacts:
-        - `AlarmViewer-windows-exe`
+        - `AlarmViewer-windows-bundle-internal`
         - `AlarmViewer-windows-installer`
-        - `AlarmViewer-macos-app`
         - `AlarmViewer-macos-installer`
 
 Windows users should install via `AlarmViewer-Setup.exe`. macOS users should install from `AlarmViewer-macOS.dmg`.
 
 ## Session Persistence
 
-The app saves state to `~/.alarm_viewer/`:
+The installed app bootstraps and saves state under `~/.alarm_viewer/`:
 
 | File                 | Contents                                        |
 | -------------------- | ----------------------------------------------- |
 | `state.json`         | UI settings, filter values, window geometry     |
-| `data_cache.parquet` | Full DataFrame for instant restore              |
+| `alarm_viewer.db`    | SQLite app metadata/state DB                    |
+| `alarms.duckdb`      | Local DuckDB alarm store                        |
+| `blobs/`             | Blob-backed stored images                       |
+| `logs/`              | Rotating app/backend/database logs              |
 | `alarm_ids.json`     | Custom Power/Down alarm ID classification lists |
 
 ## Contributing

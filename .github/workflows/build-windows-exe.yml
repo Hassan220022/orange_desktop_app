@@ -1,4 +1,4 @@
-name: Build Windows EXE
+name: Build Windows Bundle (Internal)
 
 on:
   workflow_dispatch:
@@ -31,30 +31,24 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build executable
+      - name: Build app bundle
         shell: pwsh
         run: |
-          pyinstaller `
-            --noconfirm `
-            --onefile `
-            --windowed `
-            --name AlarmViewer `
-            --icon assets/app_icon.ico `
-            --add-data "assets/app_icon.png;assets" `
-            --paths . `
-            --distpath dist `
-            --workpath build `
-            --specpath . `
-            --hidden-import pandas `
-            --hidden-import openpyxl `
-            --hidden-import xlrd `
-            --hidden-import pyarrow `
-            --hidden-import python_calamine `
-            scripts/pyinstaller_entry.py
+          pyinstaller --noconfirm AlarmViewer.spec
 
-      - name: Upload EXE artifact
+      - name: Smoke test bundled app
+        shell: pwsh
+        run: |
+          dist\AlarmViewer\AlarmViewer.exe --version
+          dist\AlarmViewer\AlarmViewer.exe --smoke-test
+
+      - name: Zip internal bundle
+        shell: pwsh
+        run: Compress-Archive -Path dist\AlarmViewer\* -DestinationPath dist\AlarmViewer-windows-bundle.zip -Force
+
+      - name: Upload internal bundle artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AlarmViewer-windows-exe
-          path: dist/AlarmViewer.exe
+          name: AlarmViewer-windows-bundle-internal
+          path: dist/AlarmViewer-windows-bundle.zip
           if-no-files-found: error
