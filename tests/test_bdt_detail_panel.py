@@ -115,3 +115,109 @@ def test_setup_photo_comparison_aggregates_all_previous_tests():
     label, data = panel._cmb_compare_year.items[0]
     assert label == "2 previous test(s)"
     assert data == [older1, older2]
+
+
+def test_build_discharge_detail_rows_includes_bus_sum_and_delta():
+    bdt = SimpleNamespace(
+        start_voltage=53.42,
+        start_ampere=69.0,
+        after_reconnect_voltage=52.28,
+        after_reconnect_ampere=70.1,
+        discharge_readings=[
+            ("10 Mins", 48.90, 64.90),
+            ("30 Mins", 48.80, 66.00),
+        ],
+        string_discharge_readings=[
+            [(53.42, 0.17), (53.42, 0.59), (53.42, 0.90)],
+            [(48.90, 21.40), (48.90, 23.40), (48.90, 20.00)],
+            [(48.80, 21.70), (48.80, 23.70), (48.80, 20.50)],
+        ],
+    )
+
+    rows = BdtDetailPanel._build_discharge_detail_rows(bdt)
+
+    assert [row["label"] for row in rows] == [
+        "Before disconnecting Rectifier",
+        "10 Mins",
+        "30 Mins",
+        "After Connecting power",
+    ]
+    assert rows[0]["sum_string_a"] is None
+    assert rows[0]["delta_sum_minus_bus"] is None
+    assert rows[1]["sum_string_a"] == 64.8
+    assert round(rows[1]["delta_sum_minus_bus"], 2) == -0.10
+    assert rows[1]["strings"][:3] == [
+        (48.90, 21.40),
+        (48.90, 23.40),
+        (48.90, 20.00),
+    ]
+    assert len(rows[1]["strings"]) == 3
+    assert rows[-1]["sum_string_a"] is None
+    assert rows[-1]["delta_sum_minus_bus"] is None
+
+
+def test_detect_active_discharge_strings_ignores_empty_trailing_strings():
+    string_rows = [
+        [(53.42, 0.17), (53.42, 0.59), (None, None), (None, None)],
+        [(48.90, 21.40), (48.90, 23.40), (None, None), (None, None)],
+    ]
+
+    assert BdtDetailPanel._detect_active_discharge_strings(string_rows) == 2
+
+
+class _FakeTable:
+    def __init__(self):
+        self.hidden = {}
+
+    def setColumnHidden(self, idx, hidden):
+        self.hidden[idx] = hidden
+
+
+class _FakeButton:
+    def __init__(self):
+        self.text = None
+        self.visible = None
+
+    def setText(self, text):
+        self.text = text
+
+    def setVisible(self, visible):
+        self.visible = visible
+
+
+def test_apply_discharge_column_visibility_collapses_and_expands_string_columns():
+    panel = SimpleNamespace(
+        _bdt_discharge_expanded=False,
+        _bdt_active_discharge_strings=2,
+        _bdt_discharge_table=_FakeTable(),
+        _btn_discharge_expand=_FakeButton(),
+        _DISCHARGE_FIXED_HEADERS=BdtDetailPanel._DISCHARGE_FIXED_HEADERS,
+        _DISCHARGE_MAX_STRINGS=BdtDetailPanel._DISCHARGE_MAX_STRINGS,
+    )
+
+    panel._bdt_discharge_table.columnCount = lambda: len(BdtDetailPanel._DISCHARGE_FIXED_HEADERS) + 4
+    BdtDetailPanel._apply_discharge_column_visibility(panel)
+    first_string_col = len(BdtDetailPanel._DISCHARGE_FIXED_HEADERS)
+    assert panel._bdt_discharge_table.hidden[first_string_col] is True
+    assert panel._btn_discharge_expand.text == "EXPAND STRINGS ⇲"
+    assert panel._btn_discharge_expand.visible is True
+
+    panel._bdt_discharge_expanded = True
+    BdtDetailPanel._apply_discharge_column_visibility(panel)
+    assert panel._bdt_discharge_table.hidden[first_string_col] is False
+    assert panel._btn_discharge_expand.text == "COLLAPSE ⇱"
+
+
+def test_apply_discharge_column_visibility_hides_button_when_no_strings():
+    panel = SimpleNamespace(
+        _bdt_discharge_expanded=False,
+        _bdt_active_discharge_strings=0,
+        _bdt_discharge_table=_FakeTable(),
+        _btn_discharge_expand=_FakeButton(),
+        _DISCHARGE_FIXED_HEADERS=BdtDetailPanel._DISCHARGE_FIXED_HEADERS,
+        _DISCHARGE_MAX_STRINGS=BdtDetailPanel._DISCHARGE_MAX_STRINGS,
+    )
+
+    panel._bdt_discharge_table.columnCount = lambda: len(BdtDetailPanel._DISCHARGE_FIXED_HEADERS)
+    BdtDetailPanel._apply_discharge_column_visibility(panel)
+    assert panel._btn_discharge_expand.visible is False

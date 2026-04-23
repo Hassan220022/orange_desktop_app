@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
     QFrame, QSplitter, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QSizePolicy,
     QDialog, QScrollArea, QGridLayout, QComboBox,
+    QStylePainter, QStyleOptionButton, QStyle,
 )
 from PyQt5.QtCore import Qt, QTimer, QUrl
 from PyQt5.QtGui import QColor, QPixmap, QDesktopServices
@@ -39,6 +40,27 @@ except ImportError:
         from data.alarm_store import load_alarm_slice_for_bdt
         from data import state
         from constants import format_bdt_rule_label
+
+
+class _VerticalExpandButton(QPushButton):
+    """Vertical expand/collapse button that fills the table height."""
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        return size.transposed()
+
+    def minimumSizeHint(self):
+        size = super().minimumSizeHint()
+        return size.transposed()
+
+    def paintEvent(self, event):
+        painter = QStylePainter(self)
+        painter.rotate(-90)
+        painter.translate(-self.height(), 0)
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        option.rect = self.rect().transposed()
+        painter.drawControl(QStyle.CE_PushButton, option)
 
 
 class BdtDetailPanel(QWidget):
@@ -69,6 +91,14 @@ class BdtDetailPanel(QWidget):
     _PHOTO_THUMB_MAX = 260
 
     _COMPARE_KEY_CATEGORIES = {"rectifier", "batteries", "modules"}
+    _DISCHARGE_FIXED_HEADERS = [
+        "Time: min (h)",
+        "Rec Bus V",
+        "Rec Bus A",
+        "Σ String A",
+        "Δ Σ-Bus",
+    ]
+    _DISCHARGE_MAX_STRINGS = 8
 
     def __init__(self, viewer, parent=None):
         super().__init__(parent)
@@ -76,6 +106,8 @@ class BdtDetailPanel(QWidget):
         self._current_bdt = None
         self._current_bdt_photos = None
         self._bdt_photo_last_viewport_w = 0
+        self._bdt_discharge_expanded = False
+        self._bdt_active_discharge_strings = 0
         self._build()
 
     @staticmethod
@@ -115,9 +147,18 @@ class BdtDetailPanel(QWidget):
         left_lay.setContentsMargins(0, 0, 0, 0)
         left_lay.setSpacing(6)
 
+        left_splitter = QSplitter(Qt.Vertical)
+        left_splitter.setHandleWidth(3)
+        left_lay.addWidget(left_splitter, 1)
+
+        info_section = QWidget()
+        info_section_lay = QVBoxLayout(info_section)
+        info_section_lay.setContentsMargins(0, 0, 0, 0)
+        info_section_lay.setSpacing(6)
+
         lbl_info = QLabel("FILE INFO")
         lbl_info.setObjectName("bdt_section_title")
-        left_lay.addWidget(lbl_info)
+        info_section_lay.addWidget(lbl_info)
 
         # Info grid
         info_frame = QFrame()
@@ -169,7 +210,7 @@ class BdtDetailPanel(QWidget):
         info_scroll.setFrameShape(QFrame.NoFrame)
         info_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         info_scroll.setMinimumHeight(140)
-        left_lay.addWidget(info_scroll, 1)
+        info_section_lay.addWidget(info_scroll, 1)
 
         btn_open_bdt = QPushButton("Open BDT File")
         btn_open_bdt.setObjectName("btn_search")
@@ -177,18 +218,27 @@ class BdtDetailPanel(QWidget):
         btn_open_bdt.setMinimumWidth(0)
         btn_open_bdt.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         btn_open_bdt.clicked.connect(self._open_current_bdt_file)
-        left_lay.addWidget(btn_open_bdt)
+        info_section_lay.addWidget(btn_open_bdt)
         self._btn_open_bdt = btn_open_bdt
+
+        left_splitter.addWidget(info_section)
+
+        discharge_section = QWidget()
+        discharge_section_lay = QVBoxLayout(discharge_section)
+        discharge_section_lay.setContentsMargins(0, 0, 0, 0)
+        discharge_section_lay.setSpacing(6)
 
         lbl_dis = QLabel("DISCHARGE READINGS")
         lbl_dis.setObjectName("bdt_section_title")
-        left_lay.addWidget(lbl_dis)
+        discharge_section_lay.addWidget(lbl_dis)
 
-        # Discharge table — shares vertical space equally with the
-        # File Info scroll area (both added with stretch=1 above/below).
-        self._bdt_discharge_table = QTableWidget(0, 3)
-        self._bdt_discharge_table.setHorizontalHeaderLabels(
-            ["Time", "Voltage (V)", "Ampere (A)"])
+        discharge_wrap = QWidget()
+        discharge_wrap_lay = QHBoxLayout(discharge_wrap)
+        discharge_wrap_lay.setContentsMargins(0, 0, 0, 0)
+        discharge_wrap_lay.setSpacing(8)
+
+        self._bdt_discharge_table = QTableWidget(0, len(self._discharge_headers(0)))
+        self._bdt_discharge_table.setHorizontalHeaderLabels(self._discharge_headers(0))
         self._bdt_discharge_table.setEditTriggers(
             QAbstractItemView.NoEditTriggers)
         self._bdt_discharge_table.setSelectionBehavior(
@@ -197,11 +247,37 @@ class BdtDetailPanel(QWidget):
         self._bdt_discharge_table.verticalHeader().setVisible(False)
         self._bdt_discharge_table.verticalHeader().setDefaultSectionSize(24)
         self._bdt_discharge_table.setMinimumHeight(140)
+        self._bdt_discharge_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         dis_hdr = self._bdt_discharge_table.horizontalHeader()
-        dis_hdr.resizeSection(0, 110)
-        dis_hdr.resizeSection(1, 100)
+        dis_hdr.resizeSection(0, 190)
+        dis_hdr.resizeSection(1, 90)
+        dis_hdr.resizeSection(2, 90)
+        dis_hdr.resizeSection(3, 100)
+        dis_hdr.resizeSection(4, 100)
         dis_hdr.setStretchLastSection(True)
-        left_lay.addWidget(self._bdt_discharge_table, 1)
+        discharge_wrap_lay.addWidget(self._bdt_discharge_table, 1)
+
+        self._btn_discharge_expand = _VerticalExpandButton("EXPAND STRINGS ⇲")
+        self._btn_discharge_expand.setObjectName("btn_discharge_expand")
+        self._btn_discharge_expand.setMinimumWidth(54)
+        self._btn_discharge_expand.setMaximumWidth(54)
+        self._btn_discharge_expand.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self._btn_discharge_expand.setCursor(Qt.PointingHandCursor)
+        self._btn_discharge_expand.setToolTip("Show or hide per-string discharge columns")
+        self._btn_discharge_expand.setStyleSheet(
+            "QPushButton#btn_discharge_expand {"
+            "background-color: #274060; color: #ffffff; border: 1px solid #36557e; "
+            "border-radius: 14px; padding: 12px 8px; font-weight: 800; font-size: 11px; "
+            "letter-spacing: 1px; }"
+            "QPushButton#btn_discharge_expand:hover {"
+            "background-color: #36557e; border-color: #4a6fa5; }"
+        )
+        self._btn_discharge_expand.clicked.connect(self._toggle_discharge_table_expanded)
+        discharge_wrap_lay.addWidget(self._btn_discharge_expand)
+        discharge_section_lay.addWidget(discharge_wrap, 1)
+        left_splitter.addWidget(discharge_section)
+        left_splitter.setSizes([280, 320])
+        self._apply_discharge_column_visibility()
 
         self._bdt_detail_splitter.addWidget(left)
 
@@ -212,9 +288,18 @@ class BdtDetailPanel(QWidget):
         center_lay.setContentsMargins(0, 0, 0, 0)
         center_lay.setSpacing(6)
 
+        center_splitter = QSplitter(Qt.Vertical)
+        center_splitter.setHandleWidth(3)
+        center_lay.addWidget(center_splitter, 1)
+
+        rules_section = QWidget()
+        rules_section_lay = QVBoxLayout(rules_section)
+        rules_section_lay.setContentsMargins(0, 0, 0, 0)
+        rules_section_lay.setSpacing(6)
+
         lbl_rules = QLabel("VALIDATION RULES")
         lbl_rules.setObjectName("bdt_section_title")
-        center_lay.addWidget(lbl_rules)
+        rules_section_lay.addWidget(lbl_rules)
 
         # Rules table — THE primary content of the detail panel, so it
         # always claims the leftover vertical space (stretch=1) and has a
@@ -235,7 +320,7 @@ class BdtDetailPanel(QWidget):
         rules_hdr.resizeSection(1, 140)
         rules_hdr.resizeSection(2, 80)
         rules_hdr.setStretchLastSection(True)
-        center_lay.addWidget(self._bdt_rules_table, 1)
+        rules_section_lay.addWidget(self._bdt_rules_table, 1)
 
         # Parse errors label (hidden by default)
         self._bdt_parse_errors_lbl = QLabel("")
@@ -243,7 +328,13 @@ class BdtDetailPanel(QWidget):
             "color:#f38ba8; font-size:11px; background:transparent; padding:4px;")
         self._bdt_parse_errors_lbl.setWordWrap(True)
         self._bdt_parse_errors_lbl.setVisible(False)
-        center_lay.addWidget(self._bdt_parse_errors_lbl)
+        rules_section_lay.addWidget(self._bdt_parse_errors_lbl)
+        center_splitter.addWidget(rules_section)
+
+        history_section = QWidget()
+        history_section_lay = QVBoxLayout(history_section)
+        history_section_lay.setContentsMargins(0, 0, 0, 0)
+        history_section_lay.setSpacing(6)
 
         # ── Door Alarm History ─────────────────────────────────────
         # Kept visually minimal when empty — section cap + single-line
@@ -253,7 +344,7 @@ class BdtDetailPanel(QWidget):
         self._bdt_door_section_label = QLabel("DOOR ALARM HISTORY")
         self._bdt_door_section_label.setObjectName("bdt_section_title")
         self._bdt_door_section_label.setVisible(False)
-        center_lay.addWidget(self._bdt_door_section_label)
+        history_section_lay.addWidget(self._bdt_door_section_label)
 
         self._bdt_door_table = QTableWidget(0, 4)
         self._bdt_door_table.setHorizontalHeaderLabels(
@@ -269,18 +360,18 @@ class BdtDetailPanel(QWidget):
         self._bdt_door_table.horizontalHeader().setStretchLastSection(True)
         self._bdt_door_table.setMaximumHeight(160)
         self._bdt_door_table.setVisible(False)
-        center_lay.addWidget(self._bdt_door_table)
+        history_section_lay.addWidget(self._bdt_door_table)
 
         self._bdt_door_empty = QLabel("—  no door alarms for this test date")
         self._bdt_door_empty.setObjectName("bdt_empty_hint")
         self._bdt_door_empty.setVisible(False)
-        center_lay.addWidget(self._bdt_door_empty)
+        history_section_lay.addWidget(self._bdt_door_empty)
 
         # ── Test History Comparison ────────────────────────────────
         self._bdt_hist_section_label = QLabel("TEST HISTORY COMPARISON")
         self._bdt_hist_section_label.setObjectName("bdt_section_title")
         self._bdt_hist_section_label.setVisible(False)
-        center_lay.addWidget(self._bdt_hist_section_label)
+        history_section_lay.addWidget(self._bdt_hist_section_label)
 
         self._bdt_history_table = QTableWidget(0, 3)
         self._bdt_history_table.setHorizontalHeaderLabels(
@@ -295,14 +386,16 @@ class BdtDetailPanel(QWidget):
         self._bdt_history_table.horizontalHeader().setStretchLastSection(True)
         self._bdt_history_table.setMaximumHeight(200)
         self._bdt_history_table.setVisible(False)
-        center_lay.addWidget(self._bdt_history_table)
+        history_section_lay.addWidget(self._bdt_history_table)
 
         self._bdt_history_label = QLabel(
             "—  no previous test history found")
         self._bdt_history_label.setObjectName("bdt_empty_hint")
         self._bdt_history_label.setWordWrap(True)
         self._bdt_history_label.setVisible(False)
-        center_lay.addWidget(self._bdt_history_label)
+        history_section_lay.addWidget(self._bdt_history_label)
+        center_splitter.addWidget(history_section)
+        center_splitter.setSizes([420, 220])
 
         self._bdt_detail_splitter.addWidget(center)
 
@@ -451,38 +544,66 @@ class BdtDetailPanel(QWidget):
 
         # ── Discharge table ──
         self._bdt_discharge_table.setRowCount(0)
+        self._bdt_active_discharge_strings = 0
+        self._bdt_discharge_table.setColumnCount(len(self._discharge_headers(0)))
+        self._bdt_discharge_table.setHorizontalHeaderLabels(self._discharge_headers(0))
+        self._apply_discharge_column_visibility()
         if bdt:
-            readings = []
-            if bdt.start_voltage is not None or bdt.start_ampere is not None:
-                readings.append(("Before disconnect",
-                                 bdt.start_voltage, bdt.start_ampere))
-            readings.extend(bdt.discharge_readings)
-            if (bdt.after_reconnect_voltage is not None
-                    or bdt.after_reconnect_ampere is not None):
-                readings.append(("After reconnect",
-                                 bdt.after_reconnect_voltage,
-                                 bdt.after_reconnect_ampere))
-
-            self._bdt_discharge_table.setRowCount(len(readings))
+            rows = self._build_discharge_detail_rows(bdt)
+            self._bdt_active_discharge_strings = max(
+                (len(row["strings"]) for row in rows),
+                default=0,
+            )
+            self._bdt_discharge_table.setRowCount(len(rows))
             start_bg = QColor("#1a2744")
             end_bg = QColor("#2e1a22")
+            string_headers = self._discharge_headers(self._bdt_active_discharge_strings)
+            if self._bdt_discharge_table.columnCount() != len(string_headers):
+                self._bdt_discharge_table.setColumnCount(len(string_headers))
+            self._bdt_discharge_table.setHorizontalHeaderLabels(string_headers)
+            dis_hdr = self._bdt_discharge_table.horizontalHeader()
+            dis_hdr.setStretchLastSection(False)
+            for col in range(self._bdt_discharge_table.columnCount()):
+                if col == 0:
+                    dis_hdr.resizeSection(col, 260)
+                elif col < len(self._DISCHARGE_FIXED_HEADERS):
+                    dis_hdr.resizeSection(col, 135)
+                else:
+                    dis_hdr.resizeSection(col, 108)
 
-            for r, (time_lbl, voltage, ampere) in enumerate(readings):
-                items = [
-                    QTableWidgetItem(str(time_lbl)),
-                    QTableWidgetItem(f"{voltage:.2f}"
-                                     if voltage is not None else "--"),
-                    QTableWidgetItem(f"{ampere:.2f}"
-                                     if ampere is not None else "--"),
+            for r, row in enumerate(rows):
+                values = [
+                    row["label"],
+                    self._format_discharge_value(row["bus_v"]),
+                    self._format_discharge_value(row["bus_a"]),
+                    self._format_discharge_value(row["sum_string_a"]),
+                    self._format_discharge_value(row["delta_sum_minus_bus"]),
                 ]
-                for c, item in enumerate(items):
-                    item.setTextAlignment(Qt.AlignCenter)
-                    if r == 0 and readings[0][0] == "Before disconnect":
+                for string_v, string_a in row["strings"]:
+                    values.extend([
+                        self._format_discharge_value(string_v),
+                        self._format_discharge_value(string_a),
+                    ])
+
+                for c, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    if c == 0:
+                        item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    else:
+                        item.setTextAlignment(Qt.AlignCenter)
+                    if row["row_kind"] == "before":
                         item.setBackground(start_bg)
-                    elif (r == len(readings) - 1
-                          and readings[-1][0] == "After reconnect"):
+                    elif row["row_kind"] == "after":
                         item.setBackground(end_bg)
+                    if c == 4 and row["delta_sum_minus_bus"] is not None:
+                        delta = float(row["delta_sum_minus_bus"])
+                        if -3.0 <= delta <= 0.0:
+                            item.setForeground(QColor("#a6e3a1"))
+                        else:
+                            item.setForeground(QColor("#f38ba8"))
                     self._bdt_discharge_table.setItem(r, c, item)
+
+            self._apply_discharge_column_visibility()
 
         # ── Rules table ──
         verdict_colors = {
@@ -635,6 +756,139 @@ class BdtDetailPanel(QWidget):
         # ── Photo comparison setup ──
         self._current_bdt = bdt
         self._setup_photo_comparison(bdt)
+
+    @classmethod
+    def _discharge_headers(cls, active_strings: int | None = None) -> list[str]:
+        headers = list(cls._DISCHARGE_FIXED_HEADERS)
+        limit = cls._DISCHARGE_MAX_STRINGS if active_strings is None else max(0, min(cls._DISCHARGE_MAX_STRINGS, int(active_strings)))
+        for idx in range(1, limit + 1):
+            headers.extend([f"S{idx} V", f"S{idx} A"])
+        return headers
+
+    @staticmethod
+    def _format_discharge_value(value) -> str:
+        if value is None:
+            return "--"
+        try:
+            return f"{float(value):.2f}"
+        except (TypeError, ValueError):
+            text = str(value).strip()
+            return text or "--"
+
+    @classmethod
+    def _detect_active_discharge_strings(cls, string_rows) -> int:
+        active = 0
+        for row in list(string_rows or []):
+            for idx, pair in enumerate(list(row or [])[: cls._DISCHARGE_MAX_STRINGS]):
+                try:
+                    string_v, string_a = pair
+                except (TypeError, ValueError):
+                    continue
+                if string_v is not None or string_a is not None:
+                    active = max(active, idx + 1)
+        return active
+
+    @classmethod
+    def _build_discharge_detail_rows(cls, bdt: BDTData) -> list[dict]:
+        rows: list[dict] = []
+        string_rows = list(getattr(bdt, "string_discharge_readings", []) or [])
+        active_strings = cls._detect_active_discharge_strings(string_rows)
+
+        before_strings = string_rows[0] if string_rows else []
+        if (
+            bdt.start_voltage is not None
+            or bdt.start_ampere is not None
+            or before_strings
+        ):
+            rows.append(
+                cls._make_discharge_row(
+                    "Before disconnecting Rectifier",
+                    bdt.start_voltage,
+                    bdt.start_ampere,
+                    before_strings,
+                    row_kind="before",
+                    active_strings=active_strings,
+                )
+            )
+
+        timed_string_rows = string_rows[1:] if len(string_rows) > 1 else []
+        for idx, (label, bus_v, bus_a) in enumerate(getattr(bdt, "discharge_readings", []) or []):
+            rows.append(
+                cls._make_discharge_row(
+                    str(label),
+                    bus_v,
+                    bus_a,
+                    timed_string_rows[idx] if idx < len(timed_string_rows) else [],
+                    row_kind="timed",
+                    active_strings=active_strings,
+                )
+            )
+
+        if (
+            bdt.after_reconnect_voltage is not None
+            or bdt.after_reconnect_ampere is not None
+        ):
+            rows.append(
+                cls._make_discharge_row(
+                    "After Connecting power",
+                    bdt.after_reconnect_voltage,
+                    bdt.after_reconnect_ampere,
+                    [],
+                    row_kind="after",
+                    active_strings=active_strings,
+                )
+            )
+        return rows
+
+    @classmethod
+    def _make_discharge_row(
+        cls,
+        label: str,
+        bus_v: float | None,
+        bus_a: float | None,
+        strings: list[tuple[float | None, float | None]] | None,
+        *,
+        row_kind: str,
+        active_strings: int | None = None,
+    ) -> dict:
+        pairs = list(strings or [])
+        limit = cls._DISCHARGE_MAX_STRINGS if active_strings is None else max(0, min(cls._DISCHARGE_MAX_STRINGS, int(active_strings)))
+        if len(pairs) < limit:
+            pairs.extend([(None, None)] * (limit - len(pairs)))
+        else:
+            pairs = pairs[:limit]
+
+        sum_string_a = None
+        delta_sum_minus_bus = None
+        if row_kind != "before":
+            amps = [amp for _, amp in pairs if amp is not None]
+            sum_string_a = sum(amps) if amps else None
+            if sum_string_a is not None and bus_a is not None:
+                delta_sum_minus_bus = float(sum_string_a) - float(bus_a)
+
+        return {
+            "label": label,
+            "bus_v": bus_v,
+            "bus_a": bus_a,
+            "sum_string_a": sum_string_a,
+            "delta_sum_minus_bus": delta_sum_minus_bus,
+            "strings": pairs,
+            "row_kind": row_kind,
+        }
+
+    def _toggle_discharge_table_expanded(self):
+        self._bdt_discharge_expanded = not getattr(self, "_bdt_discharge_expanded", False)
+        self._apply_discharge_column_visibility()
+
+    def _apply_discharge_column_visibility(self):
+        expanded = getattr(self, "_bdt_discharge_expanded", False)
+        first_string_col = len(self._DISCHARGE_FIXED_HEADERS)
+        active_strings = max(0, min(self._DISCHARGE_MAX_STRINGS, int(getattr(self, "_bdt_active_discharge_strings", 0) or 0)))
+        total_string_cols = max(0, self._bdt_discharge_table.columnCount() - first_string_col)
+        for idx in range(total_string_cols):
+            self._bdt_discharge_table.setColumnHidden(first_string_col + idx, not expanded)
+        self._btn_discharge_expand.setText("COLLAPSE ⇱" if expanded else "EXPAND STRINGS ⇲")
+        self._btn_discharge_expand.setVisible(active_strings > 0)
 
     def _sync_optional_sections(self, *, has_doors: bool, has_history: bool):
         self._bdt_door_section_label.setVisible(has_doors)
