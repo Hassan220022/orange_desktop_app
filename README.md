@@ -450,6 +450,90 @@ The installed app bootstraps and saves state under `~/.alarm_viewer/`:
 | `logs/`              | Rotating app/backend/database logs              |
 | `alarm_ids.json`     | Custom Power/Down alarm ID classification lists |
 
+## Local LLM Data Agent
+
+The app includes a local read-only data tool layer for LLM use. It can read:
+
+- `~/.alarm_viewer/alarms.duckdb`
+- `~/.alarm_viewer/alarms.local.duckdb`
+- `~/.alarm_viewer/alarm_viewer.db`
+- `~/.alarm_viewer/blobs/`
+
+It can also create CSV/XLSX exports under `~/.alarm_viewer/exports/`. It does not update operational alarm, BDT, rule, or blob records.
+
+Run the MCP server over stdio:
+
+```bash
+python -m alarm_app.llm_tools
+```
+
+The normal app entrypoint can also run it without launching the GUI:
+
+```bash
+python -m alarm_app.main --mcp-server
+```
+
+The installed/package executable uses the same mode:
+
+```bash
+AlarmViewer --mcp-server
+```
+
+For MCP clients, configure the command as:
+
+```json
+{
+  "command": "python",
+  "args": ["-m", "alarm_app.main", "--mcp-server"],
+  "cwd": "/path/to/orange"
+}
+```
+
+For the installed app, point the MCP client at the packaged `AlarmViewer` executable and use:
+
+```json
+{
+  "command": "/path/to/AlarmViewer",
+  "args": ["--mcp-server"]
+}
+```
+
+Available tools include:
+
+- `list_data_sources`
+- `query_alarms`
+- `alarm_stats`
+- `query_bdt_results`
+- `get_bdt_detail`
+- `get_photo_metadata`
+- `read_photo_blob`
+- `export_report`
+
+Use the OpenRouter-backed local agent:
+
+```bash
+export OPENROUTER_API_KEY="..."
+python -m alarm_app.llm_tools.openrouter_agent "How many rejected BDT validations do we have?"
+```
+
+Or through the normal app entrypoint:
+
+```bash
+OPENROUTER_API_KEY="..." python -m alarm_app.main --ask "How many rejected BDT validations do we have?"
+```
+
+The installed/package executable supports the same agent mode:
+
+```bash
+OPENROUTER_API_KEY="..." AlarmViewer --ask "How many rejected BDT validations do we have?"
+```
+
+Optional model override:
+
+```bash
+OPENROUTER_MODEL="openai/gpt-4.1-mini" python -m alarm_app.llm_tools.openrouter_agent "Export rejected R3 BDT rows to CSV"
+```
+
 ## Contributing
 
 1. Fork the repository

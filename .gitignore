@@ -53,3 +53,4 @@ web/frontend/.env.production
 .github/*
 !.github/workflows/
 !.github/workflows/*.yml
+.env

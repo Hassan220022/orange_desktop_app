@@ -119,19 +119,57 @@ def _parse_args(argv: list[str] | None = None):
         action="store_true",
         help="bootstrap local runtime storage and exit",
     )
+    parser.add_argument(
+        "--mcp-server",
+        action="store_true",
+        help="run the local read-only MCP server over stdio and exit",
+    )
+    parser.add_argument(
+        "--ask",
+        nargs="+",
+        help="ask the OpenRouter-backed local data agent and exit",
+    )
+    parser.add_argument(
+        "--openrouter-model",
+        default=os.environ.get("OPENROUTER_MODEL", ""),
+        help="OpenRouter model id for --ask",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None):
     args = _parse_args(argv)
-    runtime_info = bootstrap_local_runtime()
-    setup_logging()
-    _log.info("Alarm Viewer %s starting", APP_VERSION)
-    _log.info("Runtime bootstrap ready: %s", runtime_info)
 
     if args.version:
         print(APP_VERSION)
         return
+
+    if args.mcp_server:
+        try:
+            from alarm_app.llm_tools.mcp_server import main as _mcp_main
+        except ImportError:
+            from llm_tools.mcp_server import main as _mcp_main  # type: ignore[no-redef]
+        _mcp_main()
+        return
+
+    if args.ask:
+        api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if not api_key:
+            print("OPENROUTER_API_KEY is required", file=sys.stderr)
+            return 2
+        try:
+            from alarm_app.llm_tools.openrouter_agent import OpenRouterAgent, DEFAULT_MODEL
+        except ImportError:
+            from llm_tools.openrouter_agent import OpenRouterAgent, DEFAULT_MODEL  # type: ignore[no-redef]
+        model = args.openrouter_model or DEFAULT_MODEL
+        prompt = " ".join(args.ask).strip()
+        print(OpenRouterAgent(api_key=api_key, model=model).ask(prompt))
+        return
+
+    runtime_info = bootstrap_local_runtime()
+    setup_logging()
+    _log.info("Alarm Viewer %s starting", APP_VERSION)
+    _log.info("Runtime bootstrap ready: %s", runtime_info)
 
     if args.smoke_test:
         print("bootstrap-ok")
@@ -180,4 +218,4 @@ def main(argv: list[str] | None = None):
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()  # required for PyInstaller on Windows
-    main()
+    raise SystemExit(main())

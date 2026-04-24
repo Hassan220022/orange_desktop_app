@@ -41,6 +41,7 @@ hiddenimports = [
 ]
 hiddenimports += collect_submodules("alarm_app.db.repos")
 hiddenimports += collect_submodules("alarm_app.web")
+hiddenimports += collect_submodules("alarm_app.llm_tools")
 hiddenimports += collect_submodules("alarm_app.bdt.vendor_synthid")
 
 
