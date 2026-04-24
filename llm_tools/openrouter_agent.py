@@ -10,6 +10,11 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+try:
+    from alarm_app.runtime.env import load_local_env
+except ImportError:
+    from runtime.env import load_local_env  # type: ignore[no-redef]
+
 from .service import LocalDataService
 from .tools import dispatch_tool, tool_definitions_for_openrouter
 
@@ -98,6 +103,7 @@ def _parse_args(argv: list[str] | None = None):
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_local_env()
     args = _parse_args(argv)
     api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not api_key:

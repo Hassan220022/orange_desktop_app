@@ -516,6 +516,13 @@ export OPENROUTER_API_KEY="..."
 python -m alarm_app.llm_tools.openrouter_agent "How many rejected BDT validations do we have?"
 ```
 
+The agent and `--ask` mode also auto-load `.env` from the current working directory (or package root), so this works too:
+
+```bash
+echo 'OPENROUTER_API_KEY="..."' > .env
+python -m alarm_app.llm_tools.openrouter_agent "How many rejected BDT validations do we have?"
+```
+
 Or through the normal app entrypoint:
 
 ```bash

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+import alarm_app.llm_tools.openrouter_agent as openrouter_agent_mod
 from alarm_app.llm_tools.mcp_server import AlarmViewerMcpServer
 from alarm_app.llm_tools.openrouter_agent import OpenRouterAgent
 from alarm_app.llm_tools.service import LocalDataService, _jsonable, _limit, _safe_export_path
@@ -189,3 +190,37 @@ def test_openrouter_agent_executes_tool_call_then_returns_final_answer():
     agent._complete = lambda messages, tools: responses.pop(0)
 
     assert agent.ask("what data exists?") == "SQLite exists."
+
+
+def test_openrouter_agent_main_loads_api_key_and_model_from_dotenv(tmp_path, monkeypatch, capsys):
+    (tmp_path / ".env").write_text(
+        "OPENROUTER_API_KEY=dotenv-key\nOPENROUTER_MODEL=dotenv-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+
+    captured: dict[str, str] = {}
+
+    class _Agent:
+        def __init__(self, *, api_key: str, model: str):
+            captured["api_key"] = api_key
+            captured["model"] = model
+
+        def ask(self, prompt: str) -> str:
+            captured["prompt"] = prompt
+            return "answer-from-dotenv"
+
+    monkeypatch.setattr(openrouter_agent_mod, "OpenRouterAgent", _Agent)
+
+    rc = openrouter_agent_mod.main(["How", "many", "alarms?"])
+    output = capsys.readouterr().out.strip()
+
+    assert rc == 0
+    assert output == "answer-from-dotenv"
+    assert captured == {
+        "api_key": "dotenv-key",
+        "model": "dotenv-model",
+        "prompt": "How many alarms?",
+    }
