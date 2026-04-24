@@ -42,6 +42,8 @@ try:
     from .panels.bdt_workspace_panel import BdtWorkspacePanel
     from .panels.bdt_validation_panel import BdtValidationPanel
     from .panels.bdt_detail_panel import BdtDetailPanel
+    from .panels.chat_panel import ChatPanel
+    from .panels.chat_workspace_panel import ChatWorkspacePanel
     from ..core.filters import compute_date_mask, parse_manual_days
     from ..core.classify import classify_by_alarm_id, compute_site_down_flag
     from ..data.loaders import discover_alarm_files
@@ -73,6 +75,8 @@ except ImportError:
         from alarm_app.ui.panels.bdt_workspace_panel import BdtWorkspacePanel
         from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
         from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
+        from alarm_app.ui.panels.chat_panel import ChatPanel
+        from alarm_app.ui.panels.chat_workspace_panel import ChatWorkspacePanel
         from alarm_app.core.filters import compute_date_mask, parse_manual_days
         from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
         from alarm_app.data.loaders import discover_alarm_files
@@ -103,6 +107,8 @@ except ImportError:
         from ui.panels.bdt_workspace_panel import BdtWorkspacePanel
         from ui.panels.bdt_validation_panel import BdtValidationPanel
         from ui.panels.bdt_detail_panel import BdtDetailPanel
+        from ui.panels.chat_panel import ChatPanel
+        from ui.panels.chat_workspace_panel import ChatWorkspacePanel
         from core.filters import compute_date_mask, parse_manual_days
         from core.classify import classify_by_alarm_id, compute_site_down_flag
         from data.loaders import discover_alarm_files
@@ -188,6 +194,7 @@ class AlarmViewer(QMainWindow):
         self._workspace_defs = (
             {"label": "Alarms", "nav": "Alarms"},
             {"label": "Battery Discharge Tests", "nav": "BDT"},
+            {"label": "Local Data Chat", "nav": "Chat"},
         )
 
         self._activity_bar = self._make_activity_bar()
@@ -303,6 +310,12 @@ class AlarmViewer(QMainWindow):
         self._edit_bdt_dir = self._bdt_sidebar.edit_dir
         self._lbl_bdt_file_count = self._bdt_sidebar.lbl_file_count
         self._bdt_file_list = self._bdt_sidebar.file_list
+
+        # Tab 3: Local Data Chat
+        self._chat_panel = ChatPanel(self)
+        self._tabs.addTab(self._chat_panel, "Chat")
+        self._chat_sidebar = ChatWorkspacePanel(self, self._chat_panel)
+        self._sidebar_stack.addWidget(self._chat_sidebar)
 
         rl.addWidget(self._tabs, 1)
 
@@ -423,17 +436,18 @@ class AlarmViewer(QMainWindow):
 
     def _apply_workspace_state(self, index: int):
         is_bdt = index == 1
+        is_chat = index == 2
         if hasattr(self, "_sidebar_stack"):
             self._sidebar_stack.setCurrentIndex(index)
         if hasattr(self, "_lbl_workspace"):
             self._lbl_workspace.setText(self._workspace_defs[index]["label"])
             self._lbl_workspace.setVisible(True)
         if hasattr(self, "_btn_daily_report"):
-            self._btn_daily_report.setVisible(not is_bdt)
+            self._btn_daily_report.setVisible(not is_bdt and not is_chat)
         if hasattr(self, "_chk_skip_photos"):
-            self._chk_skip_photos.setVisible(not is_bdt)
+            self._chk_skip_photos.setVisible(not is_bdt and not is_chat)
         if hasattr(self, "_lbl_count"):
-            self._lbl_count.setVisible(not is_bdt)
+            self._lbl_count.setVisible(not is_bdt and not is_chat)
         for btn_index, btn in enumerate(getattr(self, "_workspace_buttons", [])):
             btn.setChecked(btn_index == index)
         if is_bdt and hasattr(self, "_bdt_sidebar"):
@@ -591,6 +605,7 @@ class AlarmViewer(QMainWindow):
             "window_geometry": [geo.x(), geo.y(), geo.width(), geo.height()],
             "ui_zoom_pct": self._app_zoom_pct,
             "theme_mode": self._theme_mode,
+            "chat_model": self._chat_panel.model() if hasattr(self, "_chat_panel") else "",
         }
         state.save_state(d)
 
@@ -612,6 +627,10 @@ class AlarmViewer(QMainWindow):
         if "theme_mode" in s:
             self._theme_mode = s["theme_mode"]
             self._update_theme_button_label()
+        if "chat_model" in s and hasattr(self, "_chat_panel"):
+            self._chat_panel.set_model(str(s.get("chat_model") or ""))
+            if hasattr(self, "_chat_sidebar"):
+                self._chat_sidebar.edit_model.setText(self._chat_panel.model())
 
         workspace_view = int(s.get("workspace_view", 0) or 0)
         self._set_workspace_view(workspace_view, persist=False)

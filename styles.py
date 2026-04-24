@@ -227,6 +227,26 @@ QLineEdit:focus, QComboBox:focus, QDateEdit:focus {
 QLineEdit:hover, QComboBox:hover, QDateEdit:hover {
     border-color: #3a3a52;
 }
+QTextEdit, QTextBrowser {
+    background: #0f0f1a;
+    color: #cdd6f4;
+    border: 1px solid #2a2a3e;
+    border-radius: 8px;
+    padding: 8px;
+    selection-background-color: #313150;
+    selection-color: #cdd6f4;
+}
+QTextEdit:focus, QTextBrowser:focus {
+    border-color: #454560;
+    background: #11111f;
+}
+QTextBrowser#chat_transcript {
+    font-size: 13px;
+    line-height: 1.35;
+}
+QTextEdit#chat_input {
+    font-size: 13px;
+}
 QComboBox::drop-down {
     border: none;
     width: 24px;
@@ -1250,6 +1270,26 @@ QLineEdit:focus, QComboBox:focus, QDateEdit:focus {
 }
 QLineEdit:hover, QComboBox:hover, QDateEdit:hover {
     border-color: #acb0be;
+}
+QTextEdit, QTextBrowser {
+    background: #eff1f5;
+    color: #4c4f69;
+    border: 1px solid #bcc0cc;
+    border-radius: 8px;
+    padding: 8px;
+    selection-background-color: #acb0be;
+    selection-color: #4c4f69;
+}
+QTextEdit:focus, QTextBrowser:focus {
+    border-color: #8c8fa1;
+    background: #e6e9ef;
+}
+QTextBrowser#chat_transcript {
+    font-size: 13px;
+    line-height: 1.35;
+}
+QTextEdit#chat_input {
+    font-size: 13px;
 }
 QComboBox::drop-down {
     border: none;
