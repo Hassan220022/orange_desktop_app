@@ -22,6 +22,18 @@ class _Splitter:
         self._sizes = list(sizes)
 
 
+class _Button:
+    def __init__(self):
+        self.checked = None
+        self.text = None
+
+    def setChecked(self, value):
+        self.checked = bool(value)
+
+    def setText(self, value):
+        self.text = value
+
+
 def test_min_sidebar_width_uses_current_sidebar_recommendation():
     viewer = SimpleNamespace(
         _sidebar_stack=_Stack(SimpleNamespace(_recommended_min_width=320))
@@ -44,3 +56,44 @@ def test_apply_sidebar_constraints_enforces_open_minimum_width():
 
     assert splitter.sizes() == [320, 680]
     assert viewer._sidebar_width == 320
+
+
+def test_apply_assistant_constraints_enforces_open_minimum_width():
+    splitter = _Splitter([900, 120])
+    btn = _Button()
+    viewer = SimpleNamespace(
+        _content_splitter=splitter,
+        _assistant_width=120,
+        _assistant_open=True,
+        _btn_assistant=btn,
+        _assistant_min_width=lambda: 320,
+        _assistant_max_width=lambda: 540,
+    )
+
+    AlarmViewer._apply_assistant_constraints(viewer)
+
+    assert splitter.sizes() == [700, 320]
+    assert viewer._assistant_width == 320
+    assert viewer._assistant_open is True
+    assert btn.checked is True
+    assert btn.text == "Assistant On"
+
+
+def test_set_assistant_panel_open_closes_drawer_and_remembers_width():
+    splitter = _Splitter([860, 340])
+    btn = _Button()
+    viewer = SimpleNamespace(
+        _content_splitter=splitter,
+        _assistant_width=340,
+        _assistant_open=True,
+        _btn_assistant=btn,
+        _assistant_min_width=lambda: 320,
+        _assistant_max_width=lambda: 540,
+        _apply_assistant_constraints=lambda: None,
+    )
+
+    AlarmViewer._set_assistant_panel_open(viewer, False, persist=False)
+
+    assert splitter.sizes() == [1200, 0]
+    assert viewer._assistant_width == 340
+    assert viewer._assistant_open is False

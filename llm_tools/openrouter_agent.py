@@ -8,7 +8,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 try:
     from alarm_app.runtime.env import load_local_env
@@ -33,7 +33,13 @@ class OpenRouterAgent:
         self.model = model
         self.service = service or LocalDataService()
 
-    def ask(self, prompt: str, *, max_tool_rounds: int = 6) -> str:
+    def ask(
+        self,
+        prompt: str,
+        *,
+        max_tool_rounds: int = 6,
+        on_tool_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> str:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
@@ -54,7 +60,22 @@ class OpenRouterAgent:
                     args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
                 except (TypeError, json.JSONDecodeError):
                     args = {}
+                if on_tool_event is not None:
+                    on_tool_event({
+                        "status": "running",
+                        "tool_call_id": call.get("id"),
+                        "name": name,
+                        "args": args,
+                    })
                 result = dispatch_tool(self.service, name, args)
+                if on_tool_event is not None:
+                    on_tool_event({
+                        "status": "error" if isinstance(result, dict) and "error" in result else "complete",
+                        "tool_call_id": call.get("id"),
+                        "name": name,
+                        "args": args,
+                        "result": result,
+                    })
                 messages.append({
                     "role": "tool",
                     "tool_call_id": call.get("id"),

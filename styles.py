@@ -24,6 +24,10 @@ QWidget#sidebar {
     background: #0f0f1a;
     border-right: 1px solid #2a2a3e;
 }
+QWidget#assistant_panel {
+    background: #0f0f1a;
+    border-left: 1px solid #2a2a3e;
+}
 
 /* ── Top header ─────────────────────────────────────────────── */
 QWidget#header {
@@ -185,6 +189,20 @@ QPushButton#btn_dir:hover {
     background: #1a2744;
     border-color: #89b4fa;
 }
+QPushButton#btn_assistant {
+    background: #1f2438;
+    color: #89b4fa;
+    border: 1px solid #31415d;
+}
+QPushButton#btn_assistant:hover {
+    background: #26314a;
+    border-color: #89b4fa;
+}
+QPushButton#btn_assistant:checked {
+    background: #1a2744;
+    color: #89b4fa;
+    border: 1px solid #3a5c96;
+}
 QPushButton#activity_btn {
     background: transparent;
     color: #6c7086;
@@ -246,6 +264,191 @@ QTextBrowser#chat_transcript {
 }
 QTextEdit#chat_input {
     font-size: 13px;
+    min-height: 74px;
+    background: #0d1020;
+    border: 1px solid #27314c;
+    border-radius: 10px;
+}
+QFrame#assistant_toolbar, QFrame#assistant_composer {
+    background: #0f1426;
+    border: 1px solid #232d45;
+    border-radius: 10px;
+}
+QLabel#assistant_title {
+    color: #e4e9ff;
+    font-size: 18px;
+    font-weight: 700;
+}
+QLabel#assistant_status {
+    color: #8f9dc4;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLineEdit#chat_model {
+    min-height: 30px;
+    background: #0c1122;
+    border: 1px solid #2a3754;
+    border-radius: 8px;
+    color: #d7def8;
+}
+QPushButton#assistant_chip {
+    background: #141d35;
+    color: #a8bce9;
+    border: 1px solid #2b4067;
+    border-radius: 8px;
+    padding: 6px 10px;
+    min-height: 30px;
+}
+QPushButton#assistant_chip:hover {
+    background: #1a2849;
+    border-color: #4c75be;
+    color: #c8dbff;
+}
+QPushButton#assistant_send {
+    background: #224177;
+    color: #cfe1ff;
+    border: 1px solid #355996;
+    border-radius: 10px;
+    min-height: 34px;
+    font-size: 13px;
+    font-weight: 700;
+}
+QPushButton#assistant_send:hover {
+    background: #2a4f8f;
+    border-color: #6f9de6;
+}
+QScrollArea#assistant_history_scroll {
+    background: #090d1c;
+    border: 1px solid #222e48;
+    border-radius: 10px;
+}
+QWidget#assistant_history_host {
+    background: #090d1c;
+}
+QWidget#chat_row {
+    background: transparent;
+    border: none;
+}
+QFrame#chat_bubble_user {
+    background: #173666;
+    border: 1px solid #315b99;
+    border-radius: 10px;
+}
+QFrame#chat_bubble_assistant {
+    background: #111a30;
+    border: 1px solid #293657;
+    border-radius: 10px;
+}
+QFrame#chat_bubble_system {
+    background: #31230f;
+    border: 1px solid #5a3f1c;
+    border-radius: 10px;
+}
+QFrame#chat_bubble_error {
+    background: #3a1f2a;
+    border: 1px solid #6f2f44;
+    border-radius: 10px;
+}
+QLabel#chat_meta_user {
+    color: #bdd8ff;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#chat_meta_assistant {
+    color: #9cb0d8;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#chat_meta_system {
+    color: #f3c488;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#chat_meta_error {
+    color: #f0a8bc;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#chat_text {
+    color: #d8e1ff;
+    font-size: 13px;
+    line-height: 1.4;
+}
+QLabel#chat_code {
+    color: #c6d6ff;
+    font-family: 'Consolas', 'Cascadia Code', monospace;
+    font-size: 12px;
+    background: #0a1228;
+    border: 1px solid #2a406f;
+    border-radius: 8px;
+    padding: 6px;
+}
+QFrame#tool_card {
+    background: #0e172b;
+    border: 1px solid #2b3c62;
+    border-radius: 10px;
+}
+QFrame#tool_card_error {
+    background: #2f1723;
+    border: 1px solid #6f2f44;
+    border-radius: 10px;
+}
+QLabel#tool_title {
+    color: #dbe7ff;
+    font-size: 13px;
+    font-weight: 800;
+}
+QLabel#tool_status {
+    color: #a6e3a1;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#tool_status_error, QLabel#tool_error {
+    color: #f0a8bc;
+    font-size: 12px;
+    font-weight: 700;
+}
+QLabel#tool_section {
+    color: #8f9dc4;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+QLabel#tool_body, QLabel#tool_kv_value {
+    color: #cbd8f7;
+    font-size: 12px;
+}
+QLabel#tool_kv_key, QLabel#tool_metric_label {
+    color: #8f9dc4;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#tool_metric_value {
+    color: #e5edff;
+    font-size: 14px;
+    font-weight: 800;
+}
+QFrame#tool_metric {
+    background: #121f38;
+    border: 1px solid #2b4067;
+    border-radius: 8px;
+}
+QTableWidget#tool_table {
+    background: #0b1224;
+    alternate-background-color: #101a30;
+    border: 1px solid #273958;
+    border-radius: 8px;
+    gridline-color: #1d2a42;
+    color: #d7e2ff;
+}
+QTableWidget#tool_table QHeaderView::section {
+    background: #101a30;
+    color: #9fb4e0;
+    border-right: 1px solid #273958;
+    border-bottom: 1px solid #273958;
+    font-size: 10px;
+    font-weight: 800;
 }
 QComboBox::drop-down {
     border: none;
@@ -1068,6 +1271,10 @@ QWidget#sidebar {
     background: #e6e9ef;
     border-right: 1px solid #bcc0cc;
 }
+QWidget#assistant_panel {
+    background: #eff1f5;
+    border-left: 1px solid #bcc0cc;
+}
 
 /* ── Top header ─────────────────────────────────────────────── */
 QWidget#header {
@@ -1229,6 +1436,20 @@ QPushButton#btn_dir:hover {
     background: #d5e0fc;
     border-color: #1e66f5;
 }
+QPushButton#btn_assistant {
+    background: #dce0e8;
+    color: #1e66f5;
+    border: 1px solid #a8c2f8;
+}
+QPushButton#btn_assistant:hover {
+    background: #d5e0fc;
+    border-color: #1e66f5;
+}
+QPushButton#btn_assistant:checked {
+    background: #ccd9f8;
+    color: #1e66f5;
+    border: 1px solid #86a7ef;
+}
 QPushButton#activity_btn {
     background: transparent;
     color: #8c8fa1;
@@ -1290,6 +1511,191 @@ QTextBrowser#chat_transcript {
 }
 QTextEdit#chat_input {
     font-size: 13px;
+    min-height: 74px;
+    background: #f5f7ff;
+    border: 1px solid #b7c8e9;
+    border-radius: 10px;
+}
+QFrame#assistant_toolbar, QFrame#assistant_composer {
+    background: #f4f7ff;
+    border: 1px solid #c3d0e8;
+    border-radius: 10px;
+}
+QLabel#assistant_title {
+    color: #1d2f57;
+    font-size: 18px;
+    font-weight: 700;
+}
+QLabel#assistant_status {
+    color: #61739a;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLineEdit#chat_model {
+    min-height: 30px;
+    background: #ffffff;
+    border: 1px solid #b7c8e9;
+    border-radius: 8px;
+    color: #223662;
+}
+QPushButton#assistant_chip {
+    background: #e8eefc;
+    color: #355a9e;
+    border: 1px solid #b7c8e9;
+    border-radius: 8px;
+    padding: 6px 10px;
+    min-height: 30px;
+}
+QPushButton#assistant_chip:hover {
+    background: #d9e4fb;
+    border-color: #7698d6;
+    color: #274882;
+}
+QPushButton#assistant_send {
+    background: #2f5fad;
+    color: #edf3ff;
+    border: 1px solid #4b76c0;
+    border-radius: 10px;
+    min-height: 34px;
+    font-size: 13px;
+    font-weight: 700;
+}
+QPushButton#assistant_send:hover {
+    background: #386cbe;
+    border-color: #6f96d2;
+}
+QScrollArea#assistant_history_scroll {
+    background: #f8faff;
+    border: 1px solid #c3d0e8;
+    border-radius: 10px;
+}
+QWidget#assistant_history_host {
+    background: #f8faff;
+}
+QWidget#chat_row {
+    background: transparent;
+    border: none;
+}
+QFrame#chat_bubble_user {
+    background: #dbe8ff;
+    border: 1px solid #9cb8ea;
+    border-radius: 10px;
+}
+QFrame#chat_bubble_assistant {
+    background: #eef3ff;
+    border: 1px solid #c6d3eb;
+    border-radius: 10px;
+}
+QFrame#chat_bubble_system {
+    background: #fbeed8;
+    border: 1px solid #e2be82;
+    border-radius: 10px;
+}
+QFrame#chat_bubble_error {
+    background: #ffe8ec;
+    border: 1px solid #e6a6b3;
+    border-radius: 10px;
+}
+QLabel#chat_meta_user {
+    color: #2e4f8f;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#chat_meta_assistant {
+    color: #4a5f8d;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#chat_meta_system {
+    color: #aa6206;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#chat_meta_error {
+    color: #b44258;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#chat_text {
+    color: #243a67;
+    font-size: 13px;
+    line-height: 1.4;
+}
+QLabel#chat_code {
+    color: #26457e;
+    font-family: 'Consolas', 'Cascadia Code', monospace;
+    font-size: 12px;
+    background: #edf2ff;
+    border: 1px solid #b9caeb;
+    border-radius: 8px;
+    padding: 6px;
+}
+QFrame#tool_card {
+    background: #eef3ff;
+    border: 1px solid #c2d1ed;
+    border-radius: 10px;
+}
+QFrame#tool_card_error {
+    background: #ffe8ec;
+    border: 1px solid #e6a6b3;
+    border-radius: 10px;
+}
+QLabel#tool_title {
+    color: #263f73;
+    font-size: 13px;
+    font-weight: 800;
+}
+QLabel#tool_status {
+    color: #2f8a3a;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#tool_status_error, QLabel#tool_error {
+    color: #b44258;
+    font-size: 12px;
+    font-weight: 700;
+}
+QLabel#tool_section {
+    color: #64759e;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+QLabel#tool_body, QLabel#tool_kv_value {
+    color: #243a67;
+    font-size: 12px;
+}
+QLabel#tool_kv_key, QLabel#tool_metric_label {
+    color: #64759e;
+    font-size: 11px;
+    font-weight: 700;
+}
+QLabel#tool_metric_value {
+    color: #233c72;
+    font-size: 14px;
+    font-weight: 800;
+}
+QFrame#tool_metric {
+    background: #f8faff;
+    border: 1px solid #c8d6ef;
+    border-radius: 8px;
+}
+QTableWidget#tool_table {
+    background: #f8faff;
+    alternate-background-color: #eef3ff;
+    border: 1px solid #c8d6ef;
+    border-radius: 8px;
+    gridline-color: #d7e2f4;
+    color: #243a67;
+}
+QTableWidget#tool_table QHeaderView::section {
+    background: #e4ecfb;
+    color: #3f5683;
+    border-right: 1px solid #c8d6ef;
+    border-bottom: 1px solid #c8d6ef;
+    font-size: 10px;
+    font-weight: 800;
 }
 QComboBox::drop-down {
     border: none;

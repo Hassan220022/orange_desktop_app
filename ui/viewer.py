@@ -43,7 +43,6 @@ try:
     from .panels.bdt_validation_panel import BdtValidationPanel
     from .panels.bdt_detail_panel import BdtDetailPanel
     from .panels.chat_panel import ChatPanel
-    from .panels.chat_workspace_panel import ChatWorkspacePanel
     from ..core.filters import compute_date_mask, parse_manual_days
     from ..core.classify import classify_by_alarm_id, compute_site_down_flag
     from ..data.loaders import discover_alarm_files
@@ -76,7 +75,6 @@ except ImportError:
         from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
         from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
         from alarm_app.ui.panels.chat_panel import ChatPanel
-        from alarm_app.ui.panels.chat_workspace_panel import ChatWorkspacePanel
         from alarm_app.core.filters import compute_date_mask, parse_manual_days
         from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
         from alarm_app.data.loaders import discover_alarm_files
@@ -108,7 +106,6 @@ except ImportError:
         from ui.panels.bdt_validation_panel import BdtValidationPanel
         from ui.panels.bdt_detail_panel import BdtDetailPanel
         from ui.panels.chat_panel import ChatPanel
-        from ui.panels.chat_workspace_panel import ChatWorkspacePanel
         from core.filters import compute_date_mask, parse_manual_days
         from core.classify import classify_by_alarm_id, compute_site_down_flag
         from data.loaders import discover_alarm_files
@@ -194,7 +191,6 @@ class AlarmViewer(QMainWindow):
         self._workspace_defs = (
             {"label": "Alarms", "nav": "Alarms"},
             {"label": "Battery Discharge Tests", "nav": "BDT"},
-            {"label": "Local Data Chat", "nav": "Chat"},
         )
 
         self._activity_bar = self._make_activity_bar()
@@ -311,13 +307,22 @@ class AlarmViewer(QMainWindow):
         self._lbl_bdt_file_count = self._bdt_sidebar.lbl_file_count
         self._bdt_file_list = self._bdt_sidebar.file_list
 
-        # Tab 3: Local Data Chat
+        # Embedded assistant panel (Copilot-like, not a separate workspace tab)
         self._chat_panel = ChatPanel(self)
-        self._tabs.addTab(self._chat_panel, "Chat")
-        self._chat_sidebar = ChatWorkspacePanel(self, self._chat_panel)
-        self._sidebar_stack.addWidget(self._chat_sidebar)
+        self._assistant_width = 390
+        self._assistant_open = True
+        self._content_splitter = QSplitter(Qt.Horizontal)
+        self._content_splitter.setHandleWidth(6)
+        self._content_splitter.addWidget(self._tabs)
+        self._content_splitter.addWidget(self._chat_panel)
+        self._content_splitter.setStretchFactor(0, 1)
+        self._content_splitter.setStretchFactor(1, 0)
+        self._content_splitter.setCollapsible(0, False)
+        self._content_splitter.setCollapsible(1, True)
+        self._content_splitter.setSizes([1160, self._assistant_width])
+        self._content_splitter.splitterMoved.connect(self._on_content_splitter_moved)
 
-        rl.addWidget(self._tabs, 1)
+        rl.addWidget(self._content_splitter, 1)
 
         self._main_splitter.addWidget(right_wrap)
         self._main_splitter.setSizes([260, 1420])
@@ -327,6 +332,7 @@ class AlarmViewer(QMainWindow):
         self._main_splitter.setCollapsible(1, True)
         self._main_splitter.splitterMoved.connect(self._on_main_splitter_moved)
         self._apply_sidebar_constraints()
+        self._apply_assistant_constraints()
 
         main.addWidget(self._main_splitter, 1)
         self._set_workspace_view(0, persist=False)
@@ -377,6 +383,13 @@ class AlarmViewer(QMainWindow):
         btn_flags.setObjectName("btn_dir")
         btn_flags.clicked.connect(self._show_feature_flags)
         l.addWidget(btn_flags)
+
+        self._btn_assistant = QPushButton("Assistant On")
+        self._btn_assistant.setObjectName("btn_assistant")
+        self._btn_assistant.setCheckable(True)
+        self._btn_assistant.setChecked(True)
+        self._btn_assistant.clicked.connect(self._toggle_assistant_panel)
+        l.addWidget(self._btn_assistant)
 
         self._btn_theme = QPushButton("Theme: Auto")
         self._btn_theme.setObjectName("btn_theme")
@@ -436,18 +449,17 @@ class AlarmViewer(QMainWindow):
 
     def _apply_workspace_state(self, index: int):
         is_bdt = index == 1
-        is_chat = index == 2
         if hasattr(self, "_sidebar_stack"):
             self._sidebar_stack.setCurrentIndex(index)
         if hasattr(self, "_lbl_workspace"):
             self._lbl_workspace.setText(self._workspace_defs[index]["label"])
             self._lbl_workspace.setVisible(True)
         if hasattr(self, "_btn_daily_report"):
-            self._btn_daily_report.setVisible(not is_bdt and not is_chat)
+            self._btn_daily_report.setVisible(not is_bdt)
         if hasattr(self, "_chk_skip_photos"):
-            self._chk_skip_photos.setVisible(not is_bdt and not is_chat)
+            self._chk_skip_photos.setVisible(not is_bdt)
         if hasattr(self, "_lbl_count"):
-            self._lbl_count.setVisible(not is_bdt and not is_chat)
+            self._lbl_count.setVisible(not is_bdt)
         for btn_index, btn in enumerate(getattr(self, "_workspace_buttons", [])):
             btn.setChecked(btn_index == index)
         if is_bdt and hasattr(self, "_bdt_sidebar"):
@@ -606,6 +618,8 @@ class AlarmViewer(QMainWindow):
             "ui_zoom_pct": self._app_zoom_pct,
             "theme_mode": self._theme_mode,
             "chat_model": self._chat_panel.model() if hasattr(self, "_chat_panel") else "",
+            "assistant_open": bool(getattr(self, "_assistant_open", True)),
+            "assistant_width": int(getattr(self, "_assistant_width", 420) or 420),
         }
         state.save_state(d)
 
@@ -629,11 +643,14 @@ class AlarmViewer(QMainWindow):
             self._update_theme_button_label()
         if "chat_model" in s and hasattr(self, "_chat_panel"):
             self._chat_panel.set_model(str(s.get("chat_model") or ""))
-            if hasattr(self, "_chat_sidebar"):
-                self._chat_sidebar.edit_model.setText(self._chat_panel.model())
+        if "assistant_width" in s:
+            self._assistant_width = max(120, int(s.get("assistant_width") or self._assistant_width))
+        if "assistant_open" in s:
+            self._assistant_open = bool(s.get("assistant_open"))
 
         workspace_view = int(s.get("workspace_view", 0) or 0)
         self._set_workspace_view(workspace_view, persist=False)
+        self._set_assistant_panel_open(self._assistant_open, persist=False)
 
         # Directory & site filter
         restored_directory = str(s.get("directory") or "")
@@ -1103,6 +1120,9 @@ class AlarmViewer(QMainWindow):
         if has_primary and not has_alt and event.key() == Qt.Key_B:
             self._toggle_sidebar()
             return
+        if has_primary and not has_alt and bool(mods & Qt.ShiftModifier) and event.key() == Qt.Key_L:
+            self._toggle_assistant_panel()
+            return
         if has_primary and not has_alt and event.key() == Qt.Key_C:
             indexes = self._table.selectionModel().selectedIndexes()
             if indexes:
@@ -1529,6 +1549,80 @@ class AlarmViewer(QMainWindow):
             target = min(target, total - 1)
             self._main_splitter.setSizes([target, total - target])
 
+    def _toggle_assistant_panel(self):
+        if not hasattr(self, "_content_splitter"):
+            return
+        sizes = self._content_splitter.sizes()
+        is_open = len(sizes) == 2 and sizes[1] > 0
+        self._set_assistant_panel_open(not is_open)
+
+    def _assistant_min_width(self) -> int:
+        recommended = int(getattr(self._chat_panel, "_recommended_min_width", 0) or 0)
+        return max(280, recommended)
+
+    def _assistant_max_width(self) -> int:
+        if not hasattr(self, "_content_splitter"):
+            return 560
+        total = self._content_splitter.width() or self.width() or 1
+        hard_cap = max(1, total - 1)
+        return max(1, min(560, hard_cap))
+
+    def _set_assistant_panel_open(self, is_open: bool, persist: bool = True):
+        if not hasattr(self, "_content_splitter"):
+            return
+        sizes = self._content_splitter.sizes()
+        if len(sizes) != 2:
+            return
+        total = max(1, sizes[0] + sizes[1])
+        if not is_open:
+            if sizes[1] > 0:
+                self._assistant_width = sizes[1]
+            self._assistant_open = False
+            self._content_splitter.setSizes([total, 0])
+        else:
+            max_open = self._assistant_max_width()
+            min_open = min(self._assistant_min_width(), max_open)
+            target = max(min_open, min(self._assistant_width or 420, max_open))
+            target = min(target, total - 1)
+            self._assistant_open = True
+            self._assistant_width = target
+            self._content_splitter.setSizes([total - target, target])
+        self._apply_assistant_constraints()
+        if persist:
+            self._save_ui_state()
+
+    def _apply_assistant_constraints(self):
+        if not hasattr(self, "_content_splitter"):
+            return
+        sizes = self._content_splitter.sizes()
+        if len(sizes) != 2:
+            return
+        left, right = sizes
+        total = max(1, left + right)
+        if right <= 0:
+            self._assistant_open = False
+        else:
+            max_open = self._assistant_max_width()
+            max_open = min(max_open, total - 1)
+            min_open = min(self._assistant_min_width(), max_open)
+            if right > max_open:
+                self._content_splitter.setSizes([total - max_open, max_open])
+                self._assistant_width = max_open
+                self._assistant_open = True
+            elif right < min_open:
+                self._content_splitter.setSizes([total - min_open, min_open])
+                self._assistant_width = min_open
+                self._assistant_open = True
+            else:
+                self._assistant_width = right
+                self._assistant_open = True
+        if hasattr(self, "_btn_assistant"):
+            self._btn_assistant.setChecked(self._assistant_open)
+            self._btn_assistant.setText("Assistant On" if self._assistant_open else "Assistant Off")
+
+    def _on_content_splitter_moved(self, _pos: int, _index: int):
+        self._apply_assistant_constraints()
+
     def _min_sidebar_width(self) -> int:
         current_sidebar = None
         if hasattr(self, "_sidebar_stack"):
@@ -1573,11 +1667,14 @@ class AlarmViewer(QMainWindow):
 
     def _on_main_splitter_moved(self, _pos: int, _index: int):
         self._apply_sidebar_constraints()
+        self._apply_assistant_constraints()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, "_main_splitter"):
             self._apply_sidebar_constraints()
+        if hasattr(self, "_content_splitter"):
+            self._apply_assistant_constraints()
 
     def _setup_zoom_shortcuts(self):
         # Deduplicate: QKeySequence.ZoomIn resolves to Ctrl++ on most

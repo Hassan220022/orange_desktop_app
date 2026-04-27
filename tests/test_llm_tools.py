@@ -192,6 +192,47 @@ def test_openrouter_agent_executes_tool_call_then_returns_final_answer():
     assert agent.ask("what data exists?") == "SQLite exists."
 
 
+def test_openrouter_agent_emits_tool_events_for_ui_rendering():
+    service = SimpleNamespace(alarm_stats=lambda: {"total": 5, "power": 2})
+    agent = OpenRouterAgent(api_key="test", service=service)
+    events = []
+    responses = [
+        {
+            "tool_calls": [
+                {
+                    "id": "call_stats",
+                    "function": {
+                        "name": "alarm_stats",
+                        "arguments": "{}",
+                    },
+                }
+            ],
+            "content": None,
+        },
+        {"content": "There are 5 alarms."},
+    ]
+    agent._complete = lambda messages, tools: responses.pop(0)
+
+    answer = agent.ask("stats?", on_tool_event=events.append)
+
+    assert answer == "There are 5 alarms."
+    assert events == [
+        {
+            "status": "running",
+            "tool_call_id": "call_stats",
+            "name": "alarm_stats",
+            "args": {},
+        },
+        {
+            "status": "complete",
+            "tool_call_id": "call_stats",
+            "name": "alarm_stats",
+            "args": {},
+            "result": {"total": 5, "power": 2},
+        },
+    ]
+
+
 def test_openrouter_agent_main_loads_api_key_and_model_from_dotenv(tmp_path, monkeypatch, capsys):
     (tmp_path / ".env").write_text(
         "OPENROUTER_API_KEY=dotenv-key\nOPENROUTER_MODEL=dotenv-model\n",
