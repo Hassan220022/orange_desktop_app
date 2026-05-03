@@ -66,8 +66,10 @@ class TestOutsideWindow:
             },
         ])
         result, err = compute_backup_times(df)
-        assert result.empty
-        assert "No Down alarms found inside" in err
+        assert err == ""
+        assert len(result) == 1
+        assert result.iloc[0]["backup_time"] == "04:00:00"
+        assert result.iloc[0]["end_event_type"] == "Power→Cleared"
 
     def test_down_after_power_cleared_no_match(self):
         """Down alarm after Power cleared_on yields no match."""
@@ -84,8 +86,10 @@ class TestOutsideWindow:
             },
         ])
         result, err = compute_backup_times(df)
-        assert result.empty
-        assert "No Down alarms found inside" in err
+        assert err == ""
+        assert len(result) == 1
+        assert result.iloc[0]["backup_time"] == "04:00:00"
+        assert result.iloc[0]["end_event_type"] == "Power→Cleared"
 
 
 # ── Multiple Down alarms in same window → keep longest ─────────
@@ -138,8 +142,10 @@ class TestEdgeCases:
             },
         ])
         result, err = compute_backup_times(df)
-        assert result.empty
-        assert "No Down alarms" in err
+        assert err == ""
+        assert len(result) == 1
+        assert result.iloc[0]["backup_time"] == "04:00:00"
+        assert result.iloc[0]["end_event_type"] == "Power→Cleared"
 
     def test_empty_dataframe(self):
         df = pd.DataFrame()
@@ -155,6 +161,30 @@ class TestEdgeCases:
         result, err = compute_backup_times(df)
         assert result.empty
         assert "No data loaded" in err
+
+    def test_power_without_cleared_uses_same_day_down(self):
+        df = _make_df([
+            {
+                "alarm_category": "Power",
+                "occurred_on": "2025-01-01 10:00:00",
+                "cleared_on": None,
+            },
+            {
+                "alarm_category": "Down",
+                "occurred_on": "2025-01-01 12:30:00",
+                "cleared_on": "2025-01-01 13:00:00",
+            },
+            {
+                "alarm_category": "Down",
+                "occurred_on": "2025-01-02 12:30:00",
+                "cleared_on": "2025-01-02 13:00:00",
+            },
+        ])
+        result, err = compute_backup_times(df)
+        assert err == ""
+        assert len(result) == 1
+        assert result.iloc[0]["backup_time"] == "02:30:00"
+        assert result.iloc[0]["end_event_type"] == "Power→Down"
 
 
 # ── Multiple sites ─────────────────────────────────────────────
@@ -218,14 +248,17 @@ class TestMultipleSites:
             },
         ])
         result, err = compute_backup_times(df)
-        assert result.empty
-        assert "No Down alarms found inside" in err
+        assert err == ""
+        assert len(result) == 1
+        assert result.iloc[0]["site_id"] == "SITE_A"
+        assert result.iloc[0]["backup_time"] == "08:00:00"
+        assert result.iloc[0]["end_event_type"] == "Power→Cleared"
 
 
-# ── Power alarm with no cleared_on → dropped ──────────────────
+# ── Power alarm without cleared_on ────────────────────────────
 class TestNoClearedOn:
     def test_power_without_cleared_is_dropped(self):
-        """Power alarm with NaT cleared_on has no window and should be dropped."""
+        """Power alarm without cleared_on can still match a same-day Down alarm."""
         df = _make_df([
             {
                 "alarm_category": "Power",
@@ -239,5 +272,7 @@ class TestNoClearedOn:
             },
         ])
         result, err = compute_backup_times(df)
-        assert result.empty
-        assert err != ""
+        assert err == ""
+        assert len(result) == 1
+        assert result.iloc[0]["backup_time"] == "00:30:00"
+        assert result.iloc[0]["end_event_type"] == "Power→Down"

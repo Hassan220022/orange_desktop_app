@@ -13,12 +13,16 @@ except ImportError:
 
 def compute_backup_times(df: pd.DataFrame):
     """
-    For each site, find Down alarms that fall **inside** a Power alarm's
-    time window (power_occurred_on -> power_cleared_on).  The backup time
-    is how long the battery held: down_occurred_on - power_occurred_on.
+    For each site, find Power alarms and measure the incident duration as:
 
-    When multiple techs (2G/3G/4G/5G) go down within the same power
-    outage, only the **longest** backup time is kept (last tech to die).
+        backup_time = end_event_time - power_occurred_on
+
+    where ``end_event_time`` is the matching Down alarm time when one exists
+    inside the same power window, otherwise the Power alarm's cleared time.
+
+    When multiple Down alarms fall inside the same power outage, only the
+    **latest** Down alarm is kept (last tech to die). If no Down alarm exists,
+    the Power→Cleared path is used as a fallback.
 
     Returns ``(result_df, error_msg)``.  *error_msg* is ``''`` on success.
     """
@@ -36,53 +40,93 @@ def compute_backup_times(df: pd.DataFrame):
 
     if pwr.empty:
         return pd.DataFrame(), "No Power alarms found in loaded data."
-    if dwn.empty:
-        return pd.DataFrame(), "No Down alarms found in loaded data."
+    pwr = pwr.copy()
+    if "cleared_on" not in pwr.columns:
+        pwr["cleared_on"] = pd.NaT
 
-    # Build power-event table with the outage window
-    p_cols = ["site_id", "occurred_on"]
-    if "cleared_on" in pwr.columns:
-        p_cols.append("cleared_on")
+    p_cols = ["site_id", "occurred_on", "cleared_on"]
     p_extra = [c for c in ("network_type", "vendor") if c in pwr.columns]
     p_cols += p_extra
-    pwr = pwr[p_cols].rename(columns={
-        "occurred_on": "power_time",
-        "cleared_on":  "power_cleared",
-    })
-    # Drop power alarms with no cleared time (still active -- no window)
-    pwr = pwr.dropna(subset=["power_cleared"])
+    pwr = pwr[p_cols].copy()
+    pwr["occurred_on"] = pd.to_datetime(pwr["occurred_on"], errors="coerce", format="mixed")
+    pwr["cleared_on"] = pd.to_datetime(pwr["cleared_on"], errors="coerce", format="mixed")
+    pwr = pwr.dropna(subset=["occurred_on"])
 
-    dwn = (dwn[["site_id", "occurred_on"]]
-           .rename(columns={"occurred_on": "down_time"}))
+    dwn = dwn[["site_id", "occurred_on"]].copy()
+    dwn["occurred_on"] = pd.to_datetime(dwn["occurred_on"], errors="coerce", format="mixed")
+    dwn = dwn.dropna(subset=["occurred_on"])
 
-    # Inner-join on site_id, then filter: down_time inside [power_time, power_cleared]
-    merged = pwr.merge(dwn, on="site_id", how="inner")
-    merged = merged[
-        (merged["down_time"] >= merged["power_time"])
-        & (merged["down_time"] <= merged["power_cleared"])
-    ].copy()
+    rows: list[dict[str, object]] = []
+    down_by_site: dict[str, pd.DataFrame] = {
+        str(site_id): group.sort_values("occurred_on").reset_index(drop=True)
+        for site_id, group in dwn.groupby("site_id", sort=False)
+    }
 
-    if merged.empty:
-        return pd.DataFrame(), (
-            "No Down alarms found inside any Power alarm window.")
+    for _, power in pwr.sort_values("occurred_on").iterrows():
+        site_id = str(power.get("site_id") or "").strip()
+        if not site_id:
+            continue
+        power_time = power.get("occurred_on")
+        if pd.isna(power_time):
+            continue
+        power_cleared = power.get("cleared_on")
+        site_down = down_by_site.get(site_id)
 
-    merged["backup_td"] = merged["down_time"] - merged["power_time"]
+        chosen_end = None
+        chosen_type = ""
+        chosen_down = None
+        if site_down is not None and not site_down.empty:
+            if pd.notna(power_cleared):
+                in_window = site_down[
+                    (site_down["occurred_on"] >= power_time)
+                    & (site_down["occurred_on"] <= power_cleared)
+                ]
+            else:
+                in_window = site_down[
+                    (site_down["occurred_on"] >= power_time)
+                    & (site_down["occurred_on"].dt.normalize() == pd.Timestamp(power_time).normalize())
+                ]
+            if not in_window.empty:
+                chosen_down = in_window.iloc[-1]["occurred_on"]
+                chosen_end = chosen_down
+                chosen_type = "Power→Down"
 
-    # Per incident (site + power_time), keep only the LONGEST backup
-    # (= the last technology to go down).
-    idx = merged.groupby(["site_id", "power_time"])["backup_td"].idxmax()
-    merged = merged.loc[idx].copy()
+        if chosen_end is None and pd.notna(power_cleared) and power_cleared >= power_time:
+            chosen_end = power_cleared
+            chosen_type = "Power→Cleared"
 
-    merged["backup_time"]    = merged["backup_td"].apply(fmt_td)
-    merged["power_time"]     = merged["power_time"].dt.strftime("%Y-%m-%d  %H:%M:%S")
-    merged["power_cleared"]  = merged["power_cleared"].dt.strftime("%Y-%m-%d  %H:%M:%S")
-    merged["down_time"]      = merged["down_time"].dt.strftime("%Y-%m-%d  %H:%M:%S")
-    merged = merged.sort_values("backup_td", ascending=False).reset_index(drop=True)
+        if chosen_end is None:
+            continue
 
-    out = [c for c in ["site_id", "network_type", "vendor",
-                        "power_time", "power_cleared",
-                        "down_time", "backup_time"]
-           if c in merged.columns]
+        backup_td = chosen_end - power_time
+        rows.append({
+            "site_id": site_id,
+            "network_type": power.get("network_type"),
+            "vendor": power.get("vendor"),
+            "power_time": power_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "power_cleared": power_cleared.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(power_cleared) else "",
+            "down_time": chosen_down.strftime("%Y-%m-%d %H:%M:%S") if chosen_down is not None else "",
+            "end_event_type": chosen_type,
+            "backup_time": fmt_td(backup_td),
+            "_backup_td": backup_td,
+        })
+
+    if not rows:
+        return pd.DataFrame(), "No matching Power alarms found."
+
+    merged = pd.DataFrame(rows).sort_values("_backup_td", ascending=False).reset_index(drop=True)
+    merged = merged.drop(columns=["_backup_td"])
+
+    out = [c for c in [
+        "site_id",
+        "network_type",
+        "vendor",
+        "power_time",
+        "power_cleared",
+        "down_time",
+        "end_event_type",
+        "backup_time",
+    ] if c in merged.columns]
     return merged[out], ""
 
 

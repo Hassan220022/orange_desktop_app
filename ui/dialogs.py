@@ -916,8 +916,9 @@ class BackupTimeDialog(QDialog):
         # ── note ─────��───────────────────────────────────────────
         note = QLabel(
             "Backup Time = time between the Power alarm (mains failure) "
-            "and the Down alarm (site offline) for the same site.  "
-            "Only pairs within a 72-hour window are shown.")
+            "and the matched end event for the same site/date. The end event "
+            "is the latest Down alarm inside the power window, or Power Cleared "
+            "if no Down alarm matches. Only pairs within a 72-hour window are shown.")
         note.setStyleSheet("color:#6c7086; font-size:11px;")
         note.setWordWrap(True)
         lay.addWidget(note)

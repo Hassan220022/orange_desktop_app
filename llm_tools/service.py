@@ -330,6 +330,7 @@ class LocalDataService:
                     "power_time": top.get("power_time"),
                     "power_cleared": top.get("power_cleared"),
                     "down_time": top.get("down_time"),
+                    "end_event_type": top.get("end_event_type"),
                 })
 
             total_count = len(grouped_rows)

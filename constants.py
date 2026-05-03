@@ -84,13 +84,14 @@ BT_HEADERS = {
     "power_time":     "Power Alarm (mains failed)",
     "power_cleared":  "Power Cleared (mains restored)",
     "down_time":      "Down Alarm (site down)",
+    "end_event_type": "Matched End Path",
     "backup_time":    "Backup Duration  (HH:MM:SS)",
 }
 
 BT_WIDTHS = {
     "site_id": 90, "network_type": 70, "vendor": 80,
     "power_time": 185, "power_cleared": 185,
-    "down_time": 185, "backup_time": 160,
+    "down_time": 185, "end_event_type": 130, "backup_time": 160,
 }
 
 # ── BDT validation constants ──────────────────────────────
