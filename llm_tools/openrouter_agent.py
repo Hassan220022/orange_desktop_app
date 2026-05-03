@@ -17,20 +17,26 @@ except ImportError:
 
 from .service import LocalDataService
 from .tools import dispatch_tool, tool_definitions_for_openrouter
+from .openrouter_models import FREE_MODELS_ROUTER, normalize_free_model_id
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = "openai/gpt-4.1-mini"
+DEFAULT_MODEL = FREE_MODELS_ROUTER
+TOOL_CAPABLE_FALLBACK_MODEL = FREE_MODELS_ROUTER
 SYSTEM_PROMPT = """You are the Alarm Viewer local data assistant.
 Use tools to answer questions about local alarms, BDT validations, photos, and exports.
 The tools are read-only except export_report, which may create files only in the controlled exports directory.
 Prefer aggregate answers before requesting large row sets. Never claim that missing data proves a condition; say when the local store has no matching records."""
 
 
+class OpenRouterToolSupportError(RuntimeError):
+    """Raised when OpenRouter cannot route tool calls for the selected model."""
+
+
 class OpenRouterAgent:
     def __init__(self, *, api_key: str, model: str = DEFAULT_MODEL, service: LocalDataService | None = None):
         self.api_key = api_key
-        self.model = model
+        self.model = normalize_free_model_id(model)
         self.service = service or LocalDataService()
 
     def ask(
@@ -46,8 +52,22 @@ class OpenRouterAgent:
         ]
         tools = tool_definitions_for_openrouter()
 
+        active_model = self.model
+        retried_tool_model = False
+
         for _ in range(max_tool_rounds):
-            message = self._complete(messages, tools=tools)
+            try:
+                message = self._complete(messages, tools=tools, model=active_model)
+            except OpenRouterToolSupportError:
+                if retried_tool_model or active_model == TOOL_CAPABLE_FALLBACK_MODEL:
+                    raise RuntimeError(
+                        "The selected OpenRouter model/provider does not support tool use. "
+                        f"Set OPENROUTER_MODEL={TOOL_CAPABLE_FALLBACK_MODEL} or choose a model from "
+                        "OpenRouter's tool-calling collection."
+                    ) from None
+                active_model = TOOL_CAPABLE_FALLBACK_MODEL
+                retried_tool_model = True
+                continue
             messages.append(message)
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
@@ -84,9 +104,15 @@ class OpenRouterAgent:
                 })
         return "The agent reached the tool-call limit before producing a final answer."
 
-    def _complete(self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]]) -> dict[str, Any]:
+    def _complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]],
+        model: str | None = None,
+    ) -> dict[str, Any]:
         payload = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
@@ -107,6 +133,8 @@ class OpenRouterAgent:
                 data = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 404 and "support tool use" in body:
+                raise OpenRouterToolSupportError(body) from exc
             raise RuntimeError(f"OpenRouter request failed: {exc.code} {body}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"OpenRouter request failed: {exc}") from exc

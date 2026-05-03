@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import base64
 import json
 from pathlib import Path
@@ -11,10 +11,20 @@ import re
 from typing import Any
 
 import pandas as pd
+from PIL import Image, ImageDraw, ImageFont
 from sqlalchemy import inspect as sa_inspect
 
 try:
+    from ..bdt.export import build_bdt_export_sheets
     from ..data import alarm_store, state
+    from ..data.site_report import (
+        build_pm_accept_report,
+        build_site_alarm_report,
+        collect_site_sheet_keys,
+        infer_site_id_column,
+        normalize_site_key,
+        read_pm_accept_sheet,
+    )
     from ..db import engine as db_engine
     from ..db.models import (
         BDTPhoto,
@@ -26,8 +36,18 @@ try:
         PMValidationRun,
     )
     from ..db.repos import blob_repo
+    from ..db.repos.pm_repo import load_all_validation_results
 except ImportError:
+    from alarm_app.bdt.export import build_bdt_export_sheets
     from alarm_app.data import alarm_store, state
+    from alarm_app.data.site_report import (
+        build_pm_accept_report,
+        build_site_alarm_report,
+        collect_site_sheet_keys,
+        infer_site_id_column,
+        normalize_site_key,
+        read_pm_accept_sheet,
+    )
     from alarm_app.db import engine as db_engine
     from alarm_app.db.models import (
         BDTPhoto,
@@ -39,11 +59,13 @@ except ImportError:
         PMValidationRun,
     )
     from alarm_app.db.repos import blob_repo
+    from alarm_app.db.repos.pm_repo import load_all_validation_results
 
 
 MAX_QUERY_LIMIT = 500
 MAX_BLOB_BYTES = 5 * 1024 * 1024
 EXPORT_DIR = Path.home() / ".alarm_viewer" / "exports"
+ALLOWED_UPLOAD_SUFFIXES = {".csv", ".xls", ".xlsx"}
 
 
 def _jsonable(value: Any) -> Any:
@@ -103,6 +125,15 @@ def _safe_export_path(base_dir: Path, name: str, suffix: str) -> Path:
         stem = "export"
     suffix = suffix if suffix.startswith(".") else f".{suffix}"
     return base_dir / f"{stem[:80]}{suffix}"
+
+
+def _safe_source_file_path(path: str | Path) -> Path:
+    resolved = Path(path).expanduser()
+    if not resolved.is_file():
+        raise ValueError(f"source file not found: {resolved}")
+    if resolved.suffix.lower() not in ALLOWED_UPLOAD_SUFFIXES:
+        raise ValueError("source_file_path must be a CSV or Excel file")
+    return resolved
 
 
 def _df_records(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -405,10 +436,95 @@ class LocalDataService:
         finally:
             session.close()
 
+    def get_site_dossier(self, **kwargs) -> dict[str, Any]:
+        site_code = normalize_site_key(kwargs.get("site_code") or kwargs.get("site_text") or "")
+        if not site_code:
+            return {"error": "site_code is required"}
+        alarm_df = self._alarm_rows_for_sites(
+            {site_code},
+            date_from=_date_value(kwargs.get("date_from")),
+            date_to=_date_value(kwargs.get("date_to")),
+        )
+        bdt_payload = self.query_bdt_results(
+            site_code=site_code,
+            date_from=kwargs.get("date_from"),
+            date_to=kwargs.get("date_to"),
+            limit=MAX_QUERY_LIMIT,
+        )
+        bdt_rows = bdt_payload.get("rows", []) if isinstance(bdt_payload, dict) else []
+        bdt_details = []
+        for row in bdt_rows[:_limit(kwargs.get("bdt_detail_limit"), default=MAX_QUERY_LIMIT)]:
+            if isinstance(row, dict) and row.get("validation_run_id"):
+                bdt_details.append(self.get_bdt_detail(validation_run_id=row["validation_run_id"]))
+
+        export_path = self._export_site_dossier_workbook(
+            site_code=site_code,
+            alarm_df=alarm_df,
+            bdt_rows=[row for row in bdt_rows if isinstance(row, dict)],
+            bdt_details=[detail for detail in bdt_details if isinstance(detail, dict) and "error" not in detail],
+        )
+
+        return {
+            "site_code": site_code,
+            "alarm_total": len(alarm_df),
+            "alarm_stats": self._site_alarm_summary(alarm_df),
+            "alarm_rows": _df_records(alarm_df.head(_limit(kwargs.get("alarm_preview_limit"), default=50))),
+            "bdt_total": int(bdt_payload.get("total") or len(bdt_rows)) if isinstance(bdt_payload, dict) else len(bdt_rows),
+            "bdt_rows": _jsonable(bdt_rows[:_limit(kwargs.get("bdt_preview_limit"), default=50)]),
+            "bdt_details": _jsonable(bdt_details),
+            "export_path": str(export_path),
+        }
+
+    def generate_graph(self, **kwargs) -> dict[str, Any]:
+        graph_type = str(kwargs.get("graph_type") or "alarm_category_counts").strip()
+        site_code = normalize_site_key(kwargs.get("site_code") or kwargs.get("site_text") or "")
+        title = str(kwargs.get("title") or graph_type.replace("_", " ").title())
+        if graph_type.startswith("alarm_"):
+            alarm_df = self._alarm_rows_for_sites(
+                {site_code} if site_code else set(self._alarm_reference_df()["site_id"].map(normalize_site_key).dropna()),
+                date_from=_date_value(kwargs.get("date_from")),
+                date_to=_date_value(kwargs.get("date_to")),
+            ) if site_code else self._with_alarm_source(lambda: alarm_store.query_alarms(alarm_store.AlarmQuery(
+                date_from=_date_value(kwargs.get("date_from")),
+                date_to=_date_value(kwargs.get("date_to")),
+                limit=None,
+                offset=0,
+            )))
+            labels, values = self._alarm_graph_series(alarm_df, graph_type)
+        elif graph_type == "bdt_verdict_counts":
+            payload = self.query_bdt_results(site_code=site_code, limit=MAX_QUERY_LIMIT)
+            rows = payload.get("rows", []) if isinstance(payload, dict) else []
+            series = pd.Series([r.get("overall_verdict") for r in rows if isinstance(r, dict)]).fillna("Unknown")
+            counts = series.value_counts()
+            labels, values = counts.index.astype(str).tolist(), counts.astype(int).tolist()
+        elif graph_type == "bdt_duration_trend":
+            payload = self.query_bdt_results(site_code=site_code, limit=MAX_QUERY_LIMIT)
+            rows = [r for r in payload.get("rows", []) if isinstance(r, dict)] if isinstance(payload, dict) else []
+            rows = sorted(rows, key=lambda r: str(r.get("test_date") or ""))
+            labels = [str(r.get("test_date") or "")[:10] for r in rows if r.get("discharge_minutes") is not None]
+            values = [float(r.get("discharge_minutes") or 0) for r in rows if r.get("discharge_minutes") is not None]
+        else:
+            return {"error": f"unsupported graph_type: {graph_type}"}
+
+        path = _safe_export_path(self.export_dir / "charts", f"{title}_{site_code or 'all'}", "png")
+        self._draw_bar_chart(path, title, labels, values)
+        return {
+            "path": str(path),
+            "graph_type": graph_type,
+            "site_code": site_code,
+            "points": len(values),
+            "labels": labels,
+            "values": values,
+        }
+
     def export_report(self, **kwargs) -> dict[str, Any]:
         report_type = str(kwargs.get("report_type") or "bdt_results").strip()
         fmt = str(kwargs.get("format") or "xlsx").lower()
         name = str(kwargs.get("name") or report_type)
+        passthrough = {
+            key: value for key, value in kwargs.items()
+            if key not in {"report_type", "format", "name"}
+        }
         if fmt not in {"xlsx", "csv"}:
             return {"error": "format must be xlsx or csv"}
 
@@ -421,6 +537,12 @@ class LocalDataService:
         elif report_type == "photo_manifest":
             payload = self.get_photo_metadata(**kwargs)
             df = pd.DataFrame(payload["rows"])
+        elif report_type == "site_alarm_report":
+            return self._export_site_alarm_report(fmt=fmt, name=name, **passthrough)
+        elif report_type == "accepted_pm_report":
+            return self._export_accepted_pm_report(fmt=fmt, name=name, **passthrough)
+        elif report_type == "bdt_export":
+            return self._export_bdt_validation_report(fmt=fmt, name=name, **passthrough)
         else:
             return {"error": f"unsupported report_type: {report_type}"}
 
@@ -430,7 +552,302 @@ class LocalDataService:
         else:
             with pd.ExcelWriter(path, engine="openpyxl") as writer:
                 df.to_excel(writer, index=False, sheet_name=report_type[:31] or "Report")
-        return {"path": str(path), "rows": len(df), "format": fmt}
+        return {"path": str(path), "rows": len(df), "format": fmt, "report_type": report_type}
+
+    def _export_site_alarm_report(self, *, fmt: str, name: str, **kwargs) -> dict[str, Any]:
+        source_file_path = str(kwargs.get("source_file_path") or "").strip()
+        if not source_file_path:
+            return {"error": "source_file_path is required for site_alarm_report"}
+        source_path = _safe_source_file_path(source_file_path)
+        site_df, sheet_name, site_col = self._read_site_list(source_path)
+        site_keys = collect_site_sheet_keys(site_df, site_col)
+        alarm_df = self._alarm_rows_for_sites(
+            site_keys,
+            date_from=_date_value(kwargs.get("date_from")),
+            date_to=_date_value(kwargs.get("date_to")),
+        )
+        report_df = build_site_alarm_report(site_df, site_col, alarm_df)
+        path = _safe_export_path(self.export_dir, name, fmt)
+        self._write_dataframe(report_df, path, fmt, "Site Report")
+        return {
+            "path": str(path),
+            "rows": len(report_df),
+            "format": fmt,
+            "report_type": "site_alarm_report",
+            "source_file_path": str(source_path),
+            "sheet_name": sheet_name,
+            "site_column": site_col,
+            "site_count": len(site_keys),
+            "alarm_rows": len(alarm_df),
+        }
+
+    def _export_accepted_pm_report(self, *, fmt: str, name: str, **kwargs) -> dict[str, Any]:
+        source_file_path = str(kwargs.get("source_file_path") or "").strip()
+        if not source_file_path:
+            return {"error": "source_file_path is required for accepted_pm_report"}
+        source_path = _safe_source_file_path(source_file_path)
+        reference_df = self._alarm_reference_df()
+        pm_df, sheet_name, site_col, date_col, status_col = read_pm_accept_sheet(
+            str(source_path),
+            reference_df,
+        )
+        site_keys = collect_site_sheet_keys(pm_df, site_col)
+        alarm_df = self._alarm_rows_for_pm_sheet(pm_df, site_col, date_col)
+        bdt_results = self._load_validation_results(site_keys=site_keys)
+        report_df = build_pm_accept_report(
+            pm_df,
+            site_col,
+            date_col,
+            bdt_results,
+            alarm_df,
+            health_pct=float(kwargs.get("health_pct") or 80.0),
+            status_column=status_col,
+        )
+        path = _safe_export_path(self.export_dir, name, fmt)
+        self._write_dataframe(report_df, path, fmt, "Accepted PM")
+        return {
+            "path": str(path),
+            "rows": len(report_df),
+            "format": fmt,
+            "report_type": "accepted_pm_report",
+            "source_file_path": str(source_path),
+            "sheet_name": sheet_name,
+            "site_column": site_col,
+            "date_column": date_col,
+            "status_column": status_col,
+            "site_count": len(site_keys),
+            "alarm_rows": len(alarm_df),
+            "bdt_results": len(bdt_results),
+        }
+
+    def _export_bdt_validation_report(self, *, fmt: str, name: str, **kwargs) -> dict[str, Any]:
+        if fmt != "xlsx":
+            return {"error": "bdt_export supports xlsx only because it contains multiple sheets"}
+        site_keys: set[str] | None = None
+        source_file_path = str(kwargs.get("source_file_path") or "").strip()
+        source_path = None
+        if source_file_path:
+            source_path = _safe_source_file_path(source_file_path)
+            site_df, _sheet_name, site_col = self._read_site_list(source_path)
+            site_keys = collect_site_sheet_keys(site_df, site_col)
+        bdt_results = self._load_validation_results(site_keys=site_keys)
+        sheets = build_bdt_export_sheets(
+            bdt_results,
+            health_pct=float(kwargs.get("health_pct") or 80.0),
+        )
+        path = _safe_export_path(self.export_dir, name, "xlsx")
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            for sheet_name, df in sheets.items():
+                df.to_excel(writer, index=False, sheet_name=str(sheet_name)[:31] or "Sheet")
+        return {
+            "path": str(path),
+            "rows": sum(len(df) for df in sheets.values()),
+            "format": "xlsx",
+            "report_type": "bdt_export",
+            "source_file_path": str(source_path) if source_path else "",
+            "site_count": len(site_keys or set()),
+            "bdt_results": len(bdt_results),
+            "sheets": list(sheets.keys()),
+        }
+
+    def _read_site_list(self, source_path: Path) -> tuple[pd.DataFrame, str, str]:
+        if source_path.suffix.lower() == ".csv":
+            df = pd.read_csv(source_path, dtype=object)
+            site_col = infer_site_id_column(df, self._alarm_reference_df())
+            if not site_col:
+                raise ValueError("Could not identify a site ID column in the uploaded file.")
+            return df, "Sheet1", site_col
+
+        book = pd.ExcelFile(source_path)
+        reference_df = self._alarm_reference_df()
+        best: tuple[pd.DataFrame, str, str, int] | None = None
+        try:
+            for sheet_name in book.sheet_names:
+                df = pd.read_excel(book, sheet_name=sheet_name, dtype=object)
+                site_col = infer_site_id_column(df, reference_df)
+                if not site_col:
+                    continue
+                keys = {normalize_site_key(v) for v in df[site_col].dropna().tolist() if normalize_site_key(v)}
+                score = len(keys)
+                if best is None or score > best[3]:
+                    best = (df, sheet_name, site_col, score)
+        finally:
+            try:
+                book.close()
+            except Exception:
+                pass
+        if best is None:
+            raise ValueError("Could not identify a site ID column in the uploaded workbook.")
+        return best[0], best[1], best[2]
+
+    def _alarm_reference_df(self) -> pd.DataFrame:
+        try:
+            values = self._with_alarm_source(lambda: alarm_store.distinct_values("site_id")) or []
+        except Exception:
+            values = []
+        return pd.DataFrame({"site_id": values})
+
+    def _alarm_rows_for_sites(
+        self,
+        site_keys: set[str],
+        *,
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> pd.DataFrame:
+        if not site_keys:
+            return pd.DataFrame()
+        query = alarm_store.AlarmQuery(
+            site_scope_keys=site_keys,
+            date_from=date_from,
+            date_to=date_to,
+            sort_by="occurred_on",
+            limit=None,
+            offset=0,
+        )
+        return self._with_alarm_source(lambda: alarm_store.query_alarms(query))
+
+    def _alarm_rows_for_pm_sheet(self, pm_df: pd.DataFrame, site_col: str, date_col: str) -> pd.DataFrame:
+        site_keys = collect_site_sheet_keys(pm_df, site_col)
+        dates = pd.to_datetime(pm_df[date_col], errors="coerce", format="mixed")
+        valid_dates = [pd.Timestamp(v).date() for v in dates.dropna().tolist()]
+        date_from = min(valid_dates) - timedelta(days=1) if valid_dates else None
+        date_to = max(valid_dates) + timedelta(days=1) if valid_dates else None
+        return self._alarm_rows_for_sites(site_keys, date_from=date_from, date_to=date_to)
+
+    def _export_site_dossier_workbook(
+        self,
+        *,
+        site_code: str,
+        alarm_df: pd.DataFrame,
+        bdt_rows: list[dict[str, Any]],
+        bdt_details: list[dict[str, Any]],
+    ) -> Path:
+        path = _safe_export_path(self.export_dir, f"site_dossier_{site_code}", "xlsx")
+        rules: list[dict[str, Any]] = []
+        photos: list[dict[str, Any]] = []
+        discharge_rows: list[dict[str, Any]] = []
+        for detail in bdt_details:
+            bdt = detail.get("bdt") if isinstance(detail.get("bdt"), dict) else {}
+            run_id = detail.get("validation_run_id")
+            for rule in detail.get("rules", []) if isinstance(detail.get("rules"), list) else []:
+                if isinstance(rule, dict):
+                    rules.append({"validation_run_id": run_id, **rule})
+            for photo in detail.get("photos", []) if isinstance(detail.get("photos"), list) else []:
+                if isinstance(photo, dict):
+                    photos.append({"validation_run_id": run_id, **photo})
+            for reading in bdt.get("discharge_readings", []) if isinstance(bdt, dict) else []:
+                discharge_rows.append({
+                    "validation_run_id": run_id,
+                    "site_code": bdt.get("site_code"),
+                    "test_date": bdt.get("test_date"),
+                    "reading": reading,
+                })
+
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            alarm_df.to_excel(writer, index=False, sheet_name="Alarms")
+            pd.DataFrame(bdt_rows).to_excel(writer, index=False, sheet_name="BDT Results")
+            pd.DataFrame(rules).to_excel(writer, index=False, sheet_name="BDT Rules")
+            pd.DataFrame(photos).to_excel(writer, index=False, sheet_name="BDT Photos")
+            pd.DataFrame(discharge_rows).to_excel(writer, index=False, sheet_name="Discharge")
+        return path
+
+    @staticmethod
+    def _site_alarm_summary(alarm_df: pd.DataFrame) -> dict[str, Any]:
+        if alarm_df is None or alarm_df.empty:
+            return {"total": 0, "by_category": {}, "first_alarm": None, "last_alarm": None}
+        work = alarm_df.copy()
+        if "occurred_on" in work.columns:
+            work["occurred_on"] = pd.to_datetime(work["occurred_on"], errors="coerce", format="mixed")
+        category_col = "alarm_category" if "alarm_category" in work.columns else None
+        counts = work[category_col].fillna("Unknown").value_counts().to_dict() if category_col else {}
+        return {
+            "total": len(work),
+            "by_category": {str(k): int(v) for k, v in counts.items()},
+            "first_alarm": _jsonable(work["occurred_on"].min()) if "occurred_on" in work.columns else None,
+            "last_alarm": _jsonable(work["occurred_on"].max()) if "occurred_on" in work.columns else None,
+        }
+
+    @staticmethod
+    def _alarm_graph_series(alarm_df: pd.DataFrame, graph_type: str) -> tuple[list[str], list[float]]:
+        if alarm_df is None or alarm_df.empty:
+            return [], []
+        work = alarm_df.copy()
+        if graph_type == "alarm_category_counts":
+            col = "alarm_category" if "alarm_category" in work.columns else "alarm_name"
+            counts = work[col].fillna("Unknown").value_counts()
+            return counts.index.astype(str).tolist(), counts.astype(float).tolist()
+        if graph_type == "alarm_daily_counts":
+            if "occurred_on" not in work.columns:
+                return [], []
+            days = pd.to_datetime(work["occurred_on"], errors="coerce", format="mixed").dropna().dt.date
+            counts = days.value_counts().sort_index()
+            return [str(v) for v in counts.index.tolist()], counts.astype(float).tolist()
+        if graph_type == "alarm_duration_by_category":
+            if "_duration_secs" not in work.columns:
+                return [], []
+            col = "alarm_category" if "alarm_category" in work.columns else "alarm_name"
+            grouped = work.groupby(col, dropna=False)["_duration_secs"].mean().sort_values(ascending=False)
+            return grouped.index.astype(str).tolist(), (grouped / 60.0).astype(float).tolist()
+        return [], []
+
+    @staticmethod
+    def _draw_bar_chart(path: Path, title: str, labels: list[str], values: list[float]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        width, height = 1100, 620
+        margin_left, margin_right, margin_top, margin_bottom = 92, 42, 82, 122
+        image = Image.new("RGB", (width, height), "#10111a")
+        draw = ImageDraw.Draw(image)
+        font = ImageFont.load_default()
+        title_font = ImageFont.load_default()
+        draw.text((margin_left, 28), title, fill="#d8def8", font=title_font)
+        if not values:
+            draw.text((margin_left, height // 2), "No matching data", fill="#8f96ad", font=font)
+            image.save(path)
+            return
+        max_points = 24
+        labels = labels[:max_points]
+        values = values[:max_points]
+        max_value = max(max(values), 1.0)
+        chart_w = width - margin_left - margin_right
+        chart_h = height - margin_top - margin_bottom
+        axis_color = "#3a3d55"
+        draw.line((margin_left, margin_top, margin_left, margin_top + chart_h), fill=axis_color, width=2)
+        draw.line((margin_left, margin_top + chart_h, margin_left + chart_w, margin_top + chart_h), fill=axis_color, width=2)
+        bar_gap = 8
+        bar_w = max(14, int((chart_w - bar_gap * (len(values) - 1)) / max(len(values), 1)))
+        for idx, (label, value) in enumerate(zip(labels, values, strict=False)):
+            x0 = margin_left + idx * (bar_w + bar_gap)
+            bar_h = int((float(value) / max_value) * (chart_h - 24))
+            y0 = margin_top + chart_h - bar_h
+            x1 = x0 + bar_w
+            y1 = margin_top + chart_h
+            draw.rectangle((x0, y0, x1, y1), fill="#7aa2ff")
+            draw.text((x0, max(margin_top, y0 - 18)), f"{value:g}", fill="#d8def8", font=font)
+            short = str(label)[:14]
+            draw.text((x0, y1 + 10), short, fill="#b9c1dc", font=font)
+        image.save(path)
+
+    @staticmethod
+    def _write_dataframe(df: pd.DataFrame, path: Path, fmt: str, sheet_name: str) -> None:
+        if fmt == "csv":
+            df.to_csv(path, index=False)
+            return
+        with pd.ExcelWriter(path, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name=sheet_name[:31] or "Report")
+
+    @staticmethod
+    def _load_validation_results(*, site_keys: set[str] | None = None) -> list:
+        session = db_engine.get_session()
+        try:
+            results = load_all_validation_results(session)
+        finally:
+            session.close()
+        if not site_keys:
+            return results
+        return [
+            result for result in results
+            if normalize_site_key(getattr(result, "site_code", "")) in site_keys
+        ]
 
     @staticmethod
     def _filename_for_bdt(session, bdt: BDTTest) -> str:

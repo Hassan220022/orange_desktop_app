@@ -284,20 +284,23 @@ QLabel#assistant_status {
     font-size: 11px;
     font-weight: 600;
 }
-QLineEdit#chat_model {
-    min-height: 30px;
+QComboBox#chat_model {
+    min-height: 28px;
     background: #0c1122;
     border: 1px solid #2a3754;
     border-radius: 8px;
     color: #d7def8;
+    padding: 4px 8px;
 }
 QPushButton#assistant_chip {
     background: #141d35;
     color: #a8bce9;
     border: 1px solid #2b4067;
     border-radius: 8px;
-    padding: 6px 10px;
-    min-height: 30px;
+    padding: 5px 8px;
+    min-height: 26px;
+    font-size: 12px;
+    font-weight: 700;
 }
 QPushButton#assistant_chip:hover {
     background: #1a2849;
@@ -309,7 +312,7 @@ QPushButton#assistant_send {
     color: #cfe1ff;
     border: 1px solid #355996;
     border-radius: 10px;
-    min-height: 34px;
+    min-height: 32px;
     font-size: 13px;
     font-weight: 700;
 }
@@ -1531,20 +1534,23 @@ QLabel#assistant_status {
     font-size: 11px;
     font-weight: 600;
 }
-QLineEdit#chat_model {
-    min-height: 30px;
-    background: #ffffff;
+QComboBox#chat_model {
+    min-height: 28px;
+    background: #edf2fb;
     border: 1px solid #b7c8e9;
     border-radius: 8px;
     color: #223662;
+    padding: 4px 8px;
 }
 QPushButton#assistant_chip {
     background: #e8eefc;
     color: #355a9e;
     border: 1px solid #b7c8e9;
     border-radius: 8px;
-    padding: 6px 10px;
-    min-height: 30px;
+    padding: 5px 8px;
+    min-height: 26px;
+    font-size: 12px;
+    font-weight: 700;
 }
 QPushButton#assistant_chip:hover {
     background: #d9e4fb;
@@ -1556,7 +1562,7 @@ QPushButton#assistant_send {
     color: #edf3ff;
     border: 1px solid #4b76c0;
     border-radius: 10px;
-    min-height: 34px;
+    min-height: 32px;
     font-size: 13px;
     font-weight: 700;
 }

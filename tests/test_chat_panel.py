@@ -1,6 +1,9 @@
 from alarm_app.ui.panels.chat_panel import (
     ChatPanel,
+    _json_output_text,
     _normalize_message_text,
+    _output_paths,
+    _photo_group_summary,
     _parse_markdown_blocks,
 )
 
@@ -70,3 +73,44 @@ def test_format_tool_value_is_human_readable():
     assert ChatPanel._format_tool_value(2324839) == "2,324,839"
     assert ChatPanel._format_tool_value(12.345) == "12.35"
     assert ChatPanel._format_tool_value(None) == "--"
+
+
+def test_photo_group_summary_counts_categories():
+    summary = _photo_group_summary([
+        {"slot_category": "rectifier"},
+        {"slot_category": "batteries"},
+        {"slot_category": "batteries"},
+        {"slot_category": ""},
+    ])
+
+    assert summary == "batteries: 2, other: 1, rectifier: 1"
+
+
+def test_output_paths_extracts_shareable_files_without_duplicates():
+    paths = _output_paths({
+        "path": "/tmp/chart.png",
+        "export_path": "/tmp/report.xlsx",
+        "rows": [{"local_path": "/tmp/photo.jpg"}, {"local_path": "/tmp/photo.jpg"}],
+    })
+
+    assert paths == ["/tmp/chart.png", "/tmp/report.xlsx", "/tmp/photo.jpg"]
+
+
+def test_json_output_text_is_copyable_pretty_json():
+    text = _json_output_text({"path": "/tmp/report.xlsx", "rows": [{"site": "0600UP"}]})
+
+    assert '"path": "/tmp/report.xlsx"' in text
+    assert '"site": "0600UP"' in text
+
+
+def test_build_prompt_includes_uploaded_files_for_tools():
+    panel = ChatPanel.__new__(ChatPanel)
+    panel._messages = [("User", "Generate a VIP report")]
+    panel._uploaded_files = [{"name": "vip.csv", "path": "/tmp/vip.csv"}]
+
+    prompt = ChatPanel._build_prompt(panel)
+
+    assert "Uploaded local files available to tools:" in prompt
+    assert "vip.csv -> /tmp/vip.csv" in prompt
+    assert "source_file_path" in prompt
+    assert "site_alarm_report" in prompt

@@ -76,6 +76,43 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "limit": {"type": "integer", "minimum": 0, "maximum": 500},
         }),
     },
+    "get_site_dossier": {
+        "description": (
+            "Build a complete site dossier from local DuckDB alarms and BDT DB data. "
+            "Returns alarm previews, BDT summaries/details, and exports a full XLSX with alarms, BDT rules, photos, and discharge content."
+        ),
+        "inputSchema": _schema({
+            "site_code": {"type": "string", "description": "Required normalized or raw site code."},
+            "site_text": {"type": "string"},
+            "date_from": {"type": "string"},
+            "date_to": {"type": "string"},
+            "alarm_preview_limit": {"type": "integer", "minimum": 0, "maximum": 500},
+            "bdt_preview_limit": {"type": "integer", "minimum": 0, "maximum": 500},
+            "bdt_detail_limit": {"type": "integer", "minimum": 0, "maximum": 500},
+        }),
+    },
+    "generate_graph": {
+        "description": (
+            "Generate a PNG chart from local alarm or BDT data and return the image path plus chart data."
+        ),
+        "inputSchema": _schema({
+            "graph_type": {
+                "type": "string",
+                "enum": [
+                    "alarm_category_counts",
+                    "alarm_daily_counts",
+                    "alarm_duration_by_category",
+                    "bdt_verdict_counts",
+                    "bdt_duration_trend",
+                ],
+            },
+            "site_code": {"type": "string"},
+            "site_text": {"type": "string"},
+            "date_from": {"type": "string"},
+            "date_to": {"type": "string"},
+            "title": {"type": "string"},
+        }, required=["graph_type"]),
+    },
     "read_photo_blob": {
         "description": "Read one stored photo blob by SHA-256 as base64. Use only when the user explicitly asks to inspect an image.",
         "inputSchema": _schema({
@@ -83,11 +120,38 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         }, required=["sha256"]),
     },
     "export_report": {
-        "description": "Create a CSV/XLSX export under the controlled local exports directory.",
+        "description": (
+            "Create a CSV/XLSX export under the controlled local exports directory. "
+            "Use site_alarm_report with an uploaded VIP/site-list CSV/XLSX, "
+            "accepted_pm_report with an uploaded Accepted PM CSV/XLSX, and "
+            "bdt_export for full BDT validation exports."
+        ),
         "inputSchema": _schema({
-            "report_type": {"type": "string", "enum": ["alarms", "bdt_results", "photo_manifest"]},
+            "report_type": {
+                "type": "string",
+                "enum": [
+                    "alarms",
+                    "bdt_results",
+                    "photo_manifest",
+                    "site_alarm_report",
+                    "accepted_pm_report",
+                    "bdt_export",
+                ],
+            },
             "format": {"type": "string", "enum": ["csv", "xlsx"]},
             "name": {"type": "string"},
+            "source_file_path": {
+                "type": "string",
+                "description": (
+                    "Local path to a user-uploaded CSV/XLSX list. Required for "
+                    "site_alarm_report and accepted_pm_report; optional for bdt_export "
+                    "to restrict the export to uploaded site codes."
+                ),
+            },
+            "health_pct": {
+                "type": "number",
+                "description": "BDT health percentage threshold used by accepted PM and BDT exports.",
+            },
             "site_text": {"type": "string"},
             "site_code": {"type": "string"},
             "category": {"type": "string"},
