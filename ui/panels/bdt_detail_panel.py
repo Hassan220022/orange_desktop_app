@@ -19,6 +19,7 @@ from PyQt5.QtCore import Qt, QTimer, QUrl
 from PyQt5.QtGui import QColor, QPixmap, QDesktopServices
 
 try:
+    from ..flow_layout import FlowLayout
     from ...bdt.parser import BDTData, load_bdt_photos
     from ...bdt.photo_auth import verify_photo_slots
     from ...bdt.validator import ValidationResult
@@ -27,6 +28,7 @@ try:
     from ...constants import format_bdt_rule_label
 except ImportError:
     try:
+        from alarm_app.ui.flow_layout import FlowLayout
         from alarm_app.bdt.parser import BDTData, load_bdt_photos
         from alarm_app.bdt.photo_auth import verify_photo_slots
         from alarm_app.bdt.validator import ValidationResult
@@ -34,6 +36,7 @@ except ImportError:
         from alarm_app.data import state
         from alarm_app.constants import format_bdt_rule_label
     except ImportError:
+        from ui.flow_layout import FlowLayout
         from bdt.parser import BDTData, load_bdt_photos
         from bdt.photo_auth import verify_photo_slots
         from bdt.validator import ValidationResult
@@ -111,6 +114,14 @@ class BdtDetailPanel(QWidget):
         self._build()
 
     @staticmethod
+    def _mark_compact(button: QPushButton):
+        button.setProperty("compact", True)
+        button.setMinimumWidth(0)
+        button.setMinimumHeight(max(26, button.fontMetrics().height() + 8))
+        button.setMaximumHeight(16777215)
+        button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+
+    @staticmethod
     def _display_rule_verdict(rule) -> str:
         verdict = str(getattr(rule, "verdict", "") or "").strip()
         if verdict in {"Accepted", "Rejected", "Revise"}:
@@ -133,28 +144,32 @@ class BdtDetailPanel(QWidget):
         """Build BDT detail panel: info+discharge (left) | rules (center) | photos (right)."""
         self.setObjectName("bdt_detail_panel")
         outer = QHBoxLayout(self)
-        outer.setContentsMargins(0, 4, 0, 0)
+        outer.setContentsMargins(0, 2, 0, 0)
         outer.setSpacing(0)
 
         # Horizontal splitter for resizable sections
         self._bdt_detail_splitter = QSplitter(Qt.Horizontal)
         self._bdt_detail_splitter.setHandleWidth(3)
+        self._bdt_detail_splitter.setChildrenCollapsible(False)
 
         # ═══ LEFT — info grid + discharge table ═══
         left = QWidget()
-        left.setMinimumWidth(260)
+        left.setMinimumWidth(220)
+        left.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(0, 0, 0, 0)
-        left_lay.setSpacing(6)
+        left_lay.setSpacing(4)
 
         left_splitter = QSplitter(Qt.Vertical)
         left_splitter.setHandleWidth(3)
+        left_splitter.setChildrenCollapsible(False)
+        self._bdt_left_splitter = left_splitter
         left_lay.addWidget(left_splitter, 1)
 
         info_section = QWidget()
         info_section_lay = QVBoxLayout(info_section)
         info_section_lay.setContentsMargins(0, 0, 0, 0)
-        info_section_lay.setSpacing(6)
+        info_section_lay.setSpacing(4)
 
         lbl_info = QLabel("FILE INFO")
         lbl_info.setObjectName("bdt_section_title")
@@ -164,9 +179,9 @@ class BdtDetailPanel(QWidget):
         info_frame = QFrame()
         info_frame.setObjectName("bdt_info_frame")
         grid = QGridLayout(info_frame)
-        grid.setContentsMargins(10, 8, 10, 8)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(4)
+        grid.setContentsMargins(8, 6, 8, 6)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(2)
 
         self._bdt_info_labels = {}
         info_fields = [
@@ -190,9 +205,13 @@ class BdtDetailPanel(QWidget):
             k.setObjectName("bdt_info_key")
             v = QLabel("--")
             v.setObjectName("bdt_info_val")
+            v.setMinimumWidth(90)
+            v.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             grid.addWidget(k, row_idx, 0)
             grid.addWidget(v, row_idx, 1)
             self._bdt_info_labels[key] = v
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 1)
 
         # Push the grid rows to the top of the frame so a tall scroll
         # area doesn't leave a huge empty strip below the last field.
@@ -209,14 +228,12 @@ class BdtDetailPanel(QWidget):
         info_scroll.setWidgetResizable(True)
         info_scroll.setFrameShape(QFrame.NoFrame)
         info_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        info_scroll.setMinimumHeight(140)
+        info_scroll.setMinimumHeight(110)
         info_section_lay.addWidget(info_scroll, 1)
 
         btn_open_bdt = QPushButton("Open BDT File")
         btn_open_bdt.setObjectName("btn_search")
-        btn_open_bdt.setFixedHeight(28)
-        btn_open_bdt.setMinimumWidth(0)
-        btn_open_bdt.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self._mark_compact(btn_open_bdt)
         btn_open_bdt.clicked.connect(self._open_current_bdt_file)
         info_section_lay.addWidget(btn_open_bdt)
         self._btn_open_bdt = btn_open_bdt
@@ -226,7 +243,7 @@ class BdtDetailPanel(QWidget):
         discharge_section = QWidget()
         discharge_section_lay = QVBoxLayout(discharge_section)
         discharge_section_lay.setContentsMargins(0, 0, 0, 0)
-        discharge_section_lay.setSpacing(6)
+        discharge_section_lay.setSpacing(4)
 
         lbl_dis = QLabel("DISCHARGE READINGS")
         lbl_dis.setObjectName("bdt_section_title")
@@ -246,7 +263,7 @@ class BdtDetailPanel(QWidget):
         self._bdt_discharge_table.setAlternatingRowColors(True)
         self._bdt_discharge_table.verticalHeader().setVisible(False)
         self._bdt_discharge_table.verticalHeader().setDefaultSectionSize(24)
-        self._bdt_discharge_table.setMinimumHeight(140)
+        self._bdt_discharge_table.setMinimumHeight(120)
         self._bdt_discharge_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self._bdt_discharge_table.setStyleSheet(
             "QTableWidget { gridline-color: #c7cfdf; }"
@@ -290,19 +307,22 @@ class BdtDetailPanel(QWidget):
 
         # ═══ CENTER — validation rules ═══
         center = QWidget()
-        center.setMinimumWidth(320)
+        center.setMinimumWidth(220)
+        center.setSizePolicy(QSizePolicy.MinimumExpanding, QSizePolicy.Preferred)
         center_lay = QVBoxLayout(center)
         center_lay.setContentsMargins(0, 0, 0, 0)
-        center_lay.setSpacing(6)
+        center_lay.setSpacing(4)
 
         center_splitter = QSplitter(Qt.Vertical)
         center_splitter.setHandleWidth(3)
+        center_splitter.setChildrenCollapsible(False)
+        self._bdt_center_splitter = center_splitter
         center_lay.addWidget(center_splitter, 1)
 
         rules_section = QWidget()
         rules_section_lay = QVBoxLayout(rules_section)
         rules_section_lay.setContentsMargins(0, 0, 0, 0)
-        rules_section_lay.setSpacing(6)
+        rules_section_lay.setSpacing(4)
 
         lbl_rules = QLabel("VALIDATION RULES")
         lbl_rules.setObjectName("bdt_section_title")
@@ -321,7 +341,7 @@ class BdtDetailPanel(QWidget):
         self._bdt_rules_table.setAlternatingRowColors(True)
         self._bdt_rules_table.verticalHeader().setVisible(False)
         self._bdt_rules_table.verticalHeader().setDefaultSectionSize(24)
-        self._bdt_rules_table.setMinimumHeight(200)
+        self._bdt_rules_table.setMinimumHeight(170)
         rules_hdr = self._bdt_rules_table.horizontalHeader()
         rules_hdr.resizeSection(0, 50)
         rules_hdr.resizeSection(1, 140)
@@ -341,7 +361,7 @@ class BdtDetailPanel(QWidget):
         history_section = QWidget()
         history_section_lay = QVBoxLayout(history_section)
         history_section_lay.setContentsMargins(0, 0, 0, 0)
-        history_section_lay.setSpacing(6)
+        history_section_lay.setSpacing(4)
 
         # ── Door Alarm History ─────────────────────────────────────
         # Kept visually minimal when empty — section cap + single-line
@@ -408,10 +428,11 @@ class BdtDetailPanel(QWidget):
 
         # ═══ RIGHT — photo gallery ═══
         right = QWidget()
-        right.setMinimumWidth(560)
+        right.setMinimumWidth(260)
+        right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.setSpacing(6)
+        right_lay.setSpacing(4)
 
         lbl_photos = QLabel("PHOTOS")
         lbl_photos.setObjectName("bdt_section_title")
@@ -425,8 +446,8 @@ class BdtDetailPanel(QWidget):
         self._bdt_photo_container = QWidget()
         self._bdt_photo_container.setObjectName("bdt_photo_container")
         self._bdt_photo_grid = QGridLayout(self._bdt_photo_container)
-        self._bdt_photo_grid.setContentsMargins(4, 4, 4, 4)
-        self._bdt_photo_grid.setSpacing(8)
+        self._bdt_photo_grid.setContentsMargins(3, 3, 3, 3)
+        self._bdt_photo_grid.setSpacing(6)
         scroll.setWidget(self._bdt_photo_container)
 
         right_lay.addWidget(scroll, 1)
@@ -439,8 +460,9 @@ class BdtDetailPanel(QWidget):
         compare_outer.setSpacing(4)
 
         # Compare header with buttons and year selector
-        compare_hdr = QHBoxLayout()
-        compare_hdr.setSpacing(8)
+        compare_hdr_frame = QFrame()
+        compare_hdr_frame.setObjectName("filter_actions")
+        compare_hdr = FlowLayout(compare_hdr_frame, hspacing=8, vspacing=6)
 
         lbl_compare = QLabel("COMPARE PHOTOS")
         lbl_compare.setObjectName("bdt_section_title")
@@ -448,14 +470,14 @@ class BdtDetailPanel(QWidget):
 
         self._btn_compare_key = QPushButton("Key Slots")
         self._btn_compare_key.setObjectName("btn_search")
-        self._btn_compare_key.setFixedHeight(26)
+        self._mark_compact(self._btn_compare_key)
         self._btn_compare_key.clicked.connect(
             lambda: self._show_photo_comparison(all_slots=False))
         compare_hdr.addWidget(self._btn_compare_key)
 
         self._btn_compare_all = QPushButton("All Slots")
         self._btn_compare_all.setObjectName("btn_clear")
-        self._btn_compare_all.setFixedHeight(26)
+        self._mark_compact(self._btn_compare_all)
         self._btn_compare_all.clicked.connect(
             lambda: self._show_photo_comparison(all_slots=True))
         compare_hdr.addWidget(self._btn_compare_all)
@@ -466,8 +488,7 @@ class BdtDetailPanel(QWidget):
             self._on_compare_year_changed)
         compare_hdr.addWidget(self._cmb_compare_year)
 
-        compare_hdr.addStretch()
-        compare_outer.addLayout(compare_hdr)
+        compare_outer.addWidget(compare_hdr_frame)
 
         # Scrollable comparison grid
         compare_scroll = QScrollArea()
@@ -493,6 +514,9 @@ class BdtDetailPanel(QWidget):
         self._bdt_detail_splitter.setStretchFactor(0, 0)  # file info
         self._bdt_detail_splitter.setStretchFactor(1, 1)  # rules
         self._bdt_detail_splitter.setStretchFactor(2, 3)  # photos
+        self._bdt_detail_splitter.setCollapsible(0, False)
+        self._bdt_detail_splitter.setCollapsible(1, False)
+        self._bdt_detail_splitter.setCollapsible(2, False)
         # Hold a reference to the photo scroll so we can size thumbnails
         # against its viewport width when laying out.
         self._bdt_photo_scroll = scroll
@@ -508,10 +532,35 @@ class BdtDetailPanel(QWidget):
             lambda *_: self._bdt_photo_relayout_timer.start())
 
         outer.addWidget(self._bdt_detail_splitter)
+        self._apply_responsive_splitters()
 
     # ------------------------------------------------------------------
     # Data population
     # ------------------------------------------------------------------
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_responsive_splitters()
+        if hasattr(self, "_bdt_photo_relayout_timer"):
+            self._bdt_photo_relayout_timer.start()
+
+    def _apply_responsive_splitters(self):
+        if not hasattr(self, "_bdt_detail_splitter"):
+            return
+        total = max(1, self._bdt_detail_splitter.width())
+        left = int(total * 0.26)
+        center = int(total * 0.25)
+        right = max(1, total - left - center)
+        self._bdt_detail_splitter.setSizes([left, center, max(1, right)])
+
+        if hasattr(self, "_bdt_left_splitter"):
+            left_total = max(1, self._bdt_left_splitter.height())
+            info_h = max(90, int(left_total * 0.48))
+            self._bdt_left_splitter.setSizes([info_h, max(1, left_total - info_h)])
+        if hasattr(self, "_bdt_center_splitter"):
+            center_total = max(1, self._bdt_center_splitter.height())
+            rules_h = max(120, int(center_total * 0.68))
+            self._bdt_center_splitter.setSizes([rules_h, max(1, center_total - rules_h)])
+
     def populate(self, res: ValidationResult):
         """Fill the detail panel from the selected validation result."""
         bdt = res.bdt_data

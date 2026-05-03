@@ -21,6 +21,10 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "description": "List local Alarm Viewer storage sources, table row counts, DuckDB alarm stores, blob storage, and export path.",
         "inputSchema": _schema({}),
     },
+    "get_current_time": {
+        "description": "Return the current local machine time and timezone for date-aware answers.",
+        "inputSchema": _schema({}),
+    },
     "query_alarms": {
         "description": "Read alarm rows from the local DuckDB alarm store using safe filters and pagination.",
         "inputSchema": _schema({
@@ -32,7 +36,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "date_to": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
             "sort_by": {"type": "string"},
             "sort_desc": {"type": "boolean"},
-            "limit": {"type": "integer", "minimum": 0, "maximum": 500},
+            "limit": {"type": "integer", "minimum": 0, "maximum": 100},
             "offset": {"type": "integer", "minimum": 0},
         }),
     },

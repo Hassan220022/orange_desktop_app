@@ -1,10 +1,12 @@
 from alarm_app.ui.panels.chat_panel import (
     ChatPanel,
+    _alarm_row_columns,
     _json_output_text,
     _normalize_message_text,
     _output_paths,
     _photo_group_summary,
     _parse_markdown_blocks,
+    _rows_preview_limit,
 )
 
 
@@ -114,3 +116,44 @@ def test_build_prompt_includes_uploaded_files_for_tools():
     assert "vip.csv -> /tmp/vip.csv" in prompt
     assert "source_file_path" in prompt
     assert "site_alarm_report" in prompt
+    assert "Do not repeat full row tables" in prompt
+
+
+def test_rows_preview_limit_caps_alarm_rows_to_one_hundred():
+    assert _rows_preview_limit(250, 10) == 10
+    assert _rows_preview_limit(250, 120) == 100
+    assert _rows_preview_limit(7, 10) == 7
+
+
+def test_alarm_row_columns_match_alarm_tab_order():
+    rows = [{
+        "site_id": "AAA001",
+        "alarm_name": "Power Loss",
+        "alarm_id": "28003",
+        "network_type": "4G",
+        "vendor": "HUAWEI",
+        "occurred_on": "2026-05-03",
+        "cleared_on": "2026-05-03",
+        "duration": "00:10:00",
+        "clearance_status": "Cleared",
+        "alarm_source": "NMS",
+        "site_down_flag": "No",
+        "alarm_category": "Power",
+        "file_source": "alarms.csv",
+    }]
+
+    assert _alarm_row_columns(rows, "query_alarms") == [
+        "site_id",
+        "alarm_name",
+        "alarm_id",
+        "network_type",
+        "vendor",
+        "occurred_on",
+        "cleared_on",
+        "duration",
+        "clearance_status",
+        "alarm_source",
+        "site_down_flag",
+        "alarm_category",
+        "file_source",
+    ]

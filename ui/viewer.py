@@ -351,11 +351,20 @@ class AlarmViewer(QMainWindow):
         self._sbar.addPermanentWidget(self._prog)
 
     # ── top header strip ─────────────────────────────────────────
+    @staticmethod
+    def _mark_compact_button(button: QPushButton, *, min_h: int = 30):
+        button.setProperty("compact", True)
+        button.setMinimumWidth(0)
+        button.setMinimumHeight(max(min_h, button.fontMetrics().height() + 10))
+        button.setMaximumHeight(16777215)
+        button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+
     def _make_header_strip(self):
-        w = QWidget(); w.setFixedHeight(48)
+        w = QWidget()
+        w.setFixedHeight(50)
         l = QHBoxLayout(w)
-        l.setContentsMargins(20, 0, 20, 0)
-        l.setSpacing(8)
+        l.setContentsMargins(14, 0, 14, 0)
+        l.setSpacing(6)
 
         dot = QLabel("●")
         dot.setStyleSheet(
@@ -368,24 +377,40 @@ class AlarmViewer(QMainWindow):
 
         self._btn_daily_report = QPushButton("Daily Report")
         self._btn_daily_report.setObjectName("btn_dir")
+        self._mark_compact_button(self._btn_daily_report)
+        self._btn_daily_report.setProperty("full_text", "Daily Report")
+        self._btn_daily_report.setProperty("short_text", "Report")
         self._btn_daily_report.clicked.connect(
             lambda: DailyReviewReportDialog(self).exec_())
         l.addWidget(self._btn_daily_report)
 
-        l.addStretch()
+        l.addStretch(1)
 
         btn_config = QPushButton("Configure Alarm IDs")
         btn_config.setObjectName("btn_dir")
+        self._mark_compact_button(btn_config)
+        btn_config.setProperty("full_text", "Configure Alarm IDs")
+        btn_config.setProperty("short_text", "Alarm IDs")
         btn_config.clicked.connect(self._show_alarm_id_config)
+        self._btn_config_alarm_ids = btn_config
         l.addWidget(btn_config)
 
         btn_flags = QPushButton("Feature Flags")
         btn_flags.setObjectName("btn_dir")
+        self._mark_compact_button(btn_flags)
+        btn_flags.setProperty("full_text", "Feature Flags")
+        btn_flags.setProperty("short_text", "Flags")
         btn_flags.clicked.connect(self._show_feature_flags)
+        self._btn_feature_flags = btn_flags
         l.addWidget(btn_flags)
 
         self._btn_assistant = QPushButton("Assistant On")
         self._btn_assistant.setObjectName("btn_assistant")
+        self._mark_compact_button(self._btn_assistant)
+        self._btn_assistant.setProperty("full_text_on", "Assistant On")
+        self._btn_assistant.setProperty("full_text_off", "Assistant Off")
+        self._btn_assistant.setProperty("short_text_on", "Asst On")
+        self._btn_assistant.setProperty("short_text_off", "Asst Off")
         self._btn_assistant.setCheckable(True)
         self._btn_assistant.setChecked(True)
         self._btn_assistant.clicked.connect(self._toggle_assistant_panel)
@@ -393,6 +418,9 @@ class AlarmViewer(QMainWindow):
 
         self._btn_theme = QPushButton("Theme: Auto")
         self._btn_theme.setObjectName("btn_theme")
+        self._mark_compact_button(self._btn_theme)
+        self._btn_theme.setProperty("full_prefix", "Theme: ")
+        self._btn_theme.setProperty("short_prefix", "")
         self._btn_theme.clicked.connect(self._toggle_theme)
         l.addWidget(self._btn_theme)
 
@@ -405,8 +433,10 @@ class AlarmViewer(QMainWindow):
 
         self._lbl_count = QLabel("")
         self._lbl_count.setObjectName("lbl_green")
+        self._lbl_count.setMinimumWidth(0)
         l.addWidget(self._lbl_count)
 
+        self._refresh_header_button_texts()
         return w
 
     def _make_activity_bar(self):
@@ -469,6 +499,36 @@ class AlarmViewer(QMainWindow):
         if 0 <= index < len(self._workspace_defs):
             self._apply_workspace_state(index)
 
+    def _use_short_header_labels(self) -> bool:
+        return self.width() < 1760
+
+    def _refresh_header_button_texts(self):
+        short = self._use_short_header_labels()
+        for attr in ("_btn_daily_report", "_btn_config_alarm_ids", "_btn_feature_flags"):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.setText(str(btn.property("short_text" if short else "full_text") or btn.text()))
+
+        if hasattr(self, "_btn_assistant"):
+            key = "short" if short else "full"
+            state_key = "on" if getattr(self, "_assistant_open", True) else "off"
+            self._btn_assistant.setText(
+                str(self._btn_assistant.property(f"{key}_text_{state_key}") or self._btn_assistant.text())
+            )
+
+        if hasattr(self, "_btn_theme"):
+            mode_label = {"auto": "Auto", "dark": "Dark", "light": "Light"}.get(self._theme_mode, "Auto")
+            prefix = str(self._btn_theme.property("short_prefix" if short else "full_prefix") or "")
+            self._btn_theme.setText(f"{prefix}{mode_label}")
+
+    def _refresh_compact_buttons(self):
+        for button in self.findChildren(QPushButton):
+            if button.property("compact"):
+                button.setMinimumHeight(max(26, button.fontMetrics().height() + 10))
+                button.setMaximumHeight(16777215)
+                button.setMinimumWidth(0)
+                button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+
     # ── table ────────────────────────────────────────────────────
     def _make_table(self):
         w = QWidget(); vl = QVBoxLayout(w)
@@ -509,8 +569,10 @@ class AlarmViewer(QMainWindow):
         pl.setContentsMargins(8, 0, 8, 0)
         pl.setSpacing(8)
         self._btn_prev_page = QPushButton("Prev")
+        self._mark_compact_button(self._btn_prev_page, min_h=28)
         self._btn_prev_page.clicked.connect(self._load_previous_alarm_page)
         self._btn_next_page = QPushButton("Next")
+        self._mark_compact_button(self._btn_next_page, min_h=28)
         self._btn_next_page.clicked.connect(self._load_next_alarm_page)
         self._lbl_page = QLabel("Page 0/0")
         self._lbl_page.setObjectName("lbl_dim")
@@ -1618,7 +1680,10 @@ class AlarmViewer(QMainWindow):
                 self._assistant_open = True
         if hasattr(self, "_btn_assistant"):
             self._btn_assistant.setChecked(self._assistant_open)
-            self._btn_assistant.setText("Assistant On" if self._assistant_open else "Assistant Off")
+            if hasattr(self, "_refresh_header_button_texts"):
+                self._refresh_header_button_texts()
+            else:
+                self._btn_assistant.setText("Assistant On" if self._assistant_open else "Assistant Off")
 
     def _on_content_splitter_moved(self, _pos: int, _index: int):
         self._apply_assistant_constraints()
@@ -1671,6 +1736,8 @@ class AlarmViewer(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, "_btn_theme"):
+            self._refresh_header_button_texts()
         if hasattr(self, "_main_splitter"):
             self._apply_sidebar_constraints()
         if hasattr(self, "_content_splitter"):
@@ -1765,8 +1832,7 @@ class AlarmViewer(QMainWindow):
         self._skip_photos = checked
 
     def _update_theme_button_label(self):
-        labels = {"auto": "Theme: Auto", "dark": "Theme: Dark", "light": "Theme: Light"}
-        self._btn_theme.setText(labels.get(self._theme_mode, "Theme: Auto"))
+        self._refresh_header_button_texts()
 
     def _set_app_zoom(self, pct: int):
         pct = max(self._zoom_min_pct, min(self._zoom_max_pct, int(pct)))
@@ -1792,8 +1858,15 @@ class AlarmViewer(QMainWindow):
             self._table.verticalHeader().setDefaultSectionSize(row_h)
         if hasattr(self, "_bdt_table"):
             self._bdt_table.verticalHeader().setDefaultSectionSize(row_h)
+        if hasattr(self, "_btn_theme"):
+            self._refresh_compact_buttons()
+            self._refresh_header_button_texts()
         if hasattr(self, "_main_splitter"):
             self._apply_sidebar_constraints()
+        if hasattr(self, "_chat_panel") and hasattr(self._chat_panel, "_refresh_responsive_metrics"):
+            self._chat_panel._refresh_responsive_metrics()
+        if hasattr(self, "_content_splitter"):
+            self._apply_assistant_constraints()
         if hasattr(self, "_bdt_sidebar") and hasattr(self._bdt_sidebar, "_refresh_responsive_metrics"):
             self._bdt_sidebar._refresh_responsive_metrics()
         if hasattr(self, "_sbar"):

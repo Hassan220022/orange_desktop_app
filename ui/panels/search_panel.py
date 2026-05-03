@@ -9,6 +9,14 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QColor, QFont, QTextCharFormat
 
+try:
+    from ..flow_layout import FlowLayout
+except ImportError:
+    try:
+        from alarm_app.ui.flow_layout import FlowLayout
+    except ImportError:
+        from ui.flow_layout import FlowLayout
+
 
 class SearchPanel(QWidget):
     """Filter panel with site, classification, duration, date, action buttons
@@ -18,6 +26,14 @@ class SearchPanel(QWidget):
         super().__init__(parent)
         self._viewer = viewer
         self._build(viewer)
+
+    @staticmethod
+    def _mark_compact(button: QPushButton, *, min_h: int = 28):
+        button.setProperty("compact", True)
+        button.setMinimumWidth(0)
+        button.setMinimumHeight(max(min_h, button.fontMetrics().height() + 10))
+        button.setMaximumHeight(16777215)
+        button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -43,15 +59,15 @@ class SearchPanel(QWidget):
         grp = QFrame()
         grp.setObjectName("filter_panel")
         gl = QVBoxLayout(grp)
-        gl.setContentsMargins(14, 12, 14, 12)
-        gl.setSpacing(10)
+        gl.setContentsMargins(10, 8, 10, 8)
+        gl.setSpacing(8)
 
         def _make_group(title: str, object_name: str = "filter_group"):
             frame = QFrame()
             frame.setObjectName(object_name)
             v = QVBoxLayout(frame)
-            v.setContentsMargins(12, 8, 12, 10)
-            v.setSpacing(5)
+            v.setContentsMargins(10, 7, 10, 8)
+            v.setSpacing(4)
             cap = QLabel(title)
             cap.setObjectName("filter_section")
             v.addWidget(cap)
@@ -65,9 +81,10 @@ class SearchPanel(QWidget):
             lbl.setObjectName("filter_inline")
             return lbl
 
-        # ── Row 1: Site / Classification / Duration ────────────────
-        row1 = QHBoxLayout()
-        row1.setSpacing(10)
+        # ── Row 1: Site / Duration ────────────────────────────────
+        row1_frame = QFrame()
+        row1_frame.setObjectName("filter_actions")
+        row1 = FlowLayout(row1_frame, hspacing=10, vspacing=8)
 
         # — SITE group (flex)
         site_group, site_row = _make_group("SITE ID")
@@ -80,36 +97,26 @@ class SearchPanel(QWidget):
             QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.edit_site.returnPressed.connect(viewer._search)
         site_row.addWidget(self.edit_site)
-        row1.addWidget(site_group, 1)
+        site_group.setMinimumWidth(220)
+        row1.addWidget(site_group)
 
-        # — CLASSIFICATION group (fixed)
-        class_group, class_row = _make_group("CLASSIFICATION")
-
+        # Classification filters are kept off-screen at their default
+        # "All" values so existing search/state code can continue to
+        # reference them without rendering a large unused block.
         self.cb_cat = QComboBox()
         self.cb_cat.setObjectName("filter_combo")
         self.cb_cat.addItems(["All", "Power", "Down", "Door"])
-        self.cb_cat.setFixedWidth(100)
-        self.cb_cat.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        class_row.addWidget(_inline_label("Category"))
-        class_row.addWidget(self.cb_cat)
+        self.cb_cat.setVisible(False)
 
         self.cb_net = QComboBox()
         self.cb_net.setObjectName("filter_combo")
         self.cb_net.addItems(["All", "2G", "3G", "4G", "5G"])
-        self.cb_net.setFixedWidth(78)
-        self.cb_net.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        class_row.addWidget(_inline_label("Network"))
-        class_row.addWidget(self.cb_net)
+        self.cb_net.setVisible(False)
 
         self.cb_vnd = QComboBox()
         self.cb_vnd.setObjectName("filter_combo")
         self.cb_vnd.addItems(["All", "HUAWEI", "Nokia"])
-        self.cb_vnd.setFixedWidth(100)
-        self.cb_vnd.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        class_row.addWidget(_inline_label("Vendor"))
-        class_row.addWidget(self.cb_vnd)
-
-        row1.addWidget(class_group)
+        self.cb_vnd.setVisible(False)
 
         # — DURATION group (fixed)
         dur_group, dur_row = _make_group("MIN DURATION")
@@ -130,16 +137,17 @@ class SearchPanel(QWidget):
         self.spn_mindur.setFixedWidth(92)
         dur_row.addWidget(self.spn_mindur)
 
+        dur_group.setMinimumWidth(190)
         row1.addWidget(dur_group)
 
-        gl.addLayout(row1)
+        gl.addWidget(row1_frame)
 
         # ── Row 2: DATE FILTER group (spans full width) ────────────
         date_frame = QFrame()
         date_frame.setObjectName("filter_group_date")
         date_v = QVBoxLayout(date_frame)
-        date_v.setContentsMargins(12, 8, 12, 10)
-        date_v.setSpacing(7)
+        date_v.setContentsMargins(10, 7, 10, 8)
+        date_v.setSpacing(6)
 
         # Header row: cap label + master Date toggle
         date_head = QHBoxLayout()
@@ -158,8 +166,9 @@ class SearchPanel(QWidget):
         date_v.addLayout(date_head)
 
         # Range sub-row
-        range_row = QHBoxLayout()
-        range_row.setSpacing(8)
+        range_frame = QFrame()
+        range_frame.setObjectName("filter_actions")
+        range_row = FlowLayout(range_frame, hspacing=8, vspacing=8)
 
         self.chk_date_range = QCheckBox("Range")
         self.chk_date_range.setObjectName("filter_toggle")
@@ -189,8 +198,6 @@ class SearchPanel(QWidget):
         self._style_calendar(self.d_to)
         range_row.addWidget(self.d_to)
 
-        range_row.addStretch(1)
-
         # Quick-pick pills
         self.date_quick_widgets = []
         for label, days in (("TODAY", 0), ("7D", 7),
@@ -198,17 +205,18 @@ class SearchPanel(QWidget):
             btn = QPushButton(label)
             btn.setObjectName("btn_pill")
             btn.setCursor(Qt.PointingHandCursor)
-            btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            self._mark_compact(btn, min_h=26)
             btn.clicked.connect(
                 lambda _checked, d=days: viewer._quick_date(d))
             range_row.addWidget(btn)
             self.date_quick_widgets.append(btn)
 
-        date_v.addLayout(range_row)
+        date_v.addWidget(range_frame)
 
         # Specific days sub-row
-        days_row = QHBoxLayout()
-        days_row.setSpacing(8)
+        days_frame = QFrame()
+        days_frame.setObjectName("filter_actions")
+        days_row = FlowLayout(days_frame, hspacing=8, vspacing=8)
 
         self.chk_date_days = QCheckBox("Specific days")
         self.chk_date_days.setObjectName("filter_toggle")
@@ -231,7 +239,7 @@ class SearchPanel(QWidget):
         self.btn_add_day = QPushButton("+ Add")
         self.btn_add_day.setObjectName("btn_pill_accent")
         self.btn_add_day.setCursor(Qt.PointingHandCursor)
-        self.btn_add_day.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._mark_compact(self.btn_add_day, min_h=26)
         self.btn_add_day.clicked.connect(viewer._add_selected_day)
         days_row.addWidget(self.btn_add_day)
 
@@ -245,16 +253,16 @@ class SearchPanel(QWidget):
         self.edit_days.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.edit_days.returnPressed.connect(viewer._search)
-        days_row.addWidget(self.edit_days, 1)
+        days_row.addWidget(self.edit_days)
 
         self.btn_clear_days = QPushButton("\u00d7 Clear")
         self.btn_clear_days.setObjectName("btn_ghost")
         self.btn_clear_days.setCursor(Qt.PointingHandCursor)
-        self.btn_clear_days.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._mark_compact(self.btn_clear_days, min_h=26)
         self.btn_clear_days.clicked.connect(viewer._clear_selected_days)
         days_row.addWidget(self.btn_clear_days)
 
-        date_v.addLayout(days_row)
+        date_v.addWidget(days_frame)
 
         gl.addWidget(date_frame)
 
@@ -262,69 +270,62 @@ class SearchPanel(QWidget):
         # after bridge refs are assigned — do NOT call it here during construction.
 
         # ── Row 3: Action buttons ─────────────────────────────────
-        row3 = QHBoxLayout()
-        row3.setSpacing(8)
-        row3.addStretch(1)
+        action_frame = QFrame()
+        action_frame.setObjectName("filter_actions")
+        row3 = FlowLayout(action_frame, hspacing=6, vspacing=6)
 
         btn_search = QPushButton("Search")
         btn_search.setObjectName("btn_search")
         btn_search.setCursor(Qt.PointingHandCursor)
-        btn_search.setMinimumWidth(0)
-        btn_search.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self._mark_compact(btn_search)
         btn_search.clicked.connect(viewer._search)
         row3.addWidget(btn_search)
 
         btn_cl = QPushButton("Clear")
         btn_cl.setObjectName("btn_clear")
         btn_cl.setCursor(Qt.PointingHandCursor)
-        btn_cl.setMinimumWidth(0)
-        btn_cl.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self._mark_compact(btn_cl)
         btn_cl.clicked.connect(viewer._clear_filters)
         row3.addWidget(btn_cl)
 
         self.btn_export = QPushButton("Export XLSX")
         self.btn_export.setObjectName("btn_export")
         self.btn_export.setCursor(Qt.PointingHandCursor)
-        self.btn_export.setMinimumWidth(0)
-        self.btn_export.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self._mark_compact(self.btn_export)
         self.btn_export.clicked.connect(viewer._export)
         row3.addWidget(self.btn_export)
 
         self.btn_backup = QPushButton("Backup Time")
         self.btn_backup.setObjectName("btn_backup")
         self.btn_backup.setCursor(Qt.PointingHandCursor)
-        self.btn_backup.setMinimumWidth(0)
-        self.btn_backup.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self._mark_compact(self.btn_backup)
         self.btn_backup.clicked.connect(viewer._show_backup_times)
         row3.addWidget(self.btn_backup)
 
         self.btn_site_sheet = QPushButton("Upload Site Sheet")
         self.btn_site_sheet.setObjectName("btn_dir")
         self.btn_site_sheet.setCursor(Qt.PointingHandCursor)
-        self.btn_site_sheet.setMinimumWidth(0)
-        self.btn_site_sheet.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self._mark_compact(self.btn_site_sheet)
         self.btn_site_sheet.clicked.connect(viewer._upload_site_sheet)
         row3.addWidget(self.btn_site_sheet)
 
         self.btn_site_report = QPushButton("Generate Site Report")
         self.btn_site_report.setObjectName("btn_export")
         self.btn_site_report.setCursor(Qt.PointingHandCursor)
-        self.btn_site_report.setMinimumWidth(0)
-        self.btn_site_report.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self._mark_compact(self.btn_site_report)
         self.btn_site_report.clicked.connect(viewer._export_site_sheet_report)
         row3.addWidget(self.btn_site_report)
 
         self.btn_both = QPushButton("Both P+D")
         self.btn_both.setObjectName("btn_both")
         self.btn_both.setCursor(Qt.PointingHandCursor)
-        self.btn_both.setMinimumWidth(0)
-        self.btn_both.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        self._mark_compact(self.btn_both)
         self.btn_both.setToolTip(
             "Show only sites that have both Power and Down alarms")
         self.btn_both.clicked.connect(viewer._activate_both_pd)
         row3.addWidget(self.btn_both)
 
-        gl.addLayout(row3)
+        gl.addWidget(action_frame)
         outer.addWidget(grp, 1)
 
         # ── Stats panel (right of search) ─────────────────

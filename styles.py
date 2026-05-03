@@ -93,6 +93,13 @@ QPushButton#btn_search:hover {
     background: #1f3258;
     border-color: #89b4fa;
 }
+QPushButton#btn_search[compact="true"] {
+    min-width: 0px;
+    min-height: 26px;
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: 5px;
+}
 
 /* Clear — red */
 QPushButton#btn_clear {
@@ -114,6 +121,13 @@ QPushButton#btn_export {
 QPushButton#btn_export:hover {
     background: #1e3828;
     border-color: #a6e3a1;
+}
+QPushButton#btn_export[compact="true"] {
+    min-width: 0px;
+    min-height: 26px;
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: 5px;
 }
 
 /* Backup Time — purple */
@@ -156,6 +170,13 @@ QPushButton#btn_load:disabled {
     border-color: #2a2a3e;
     color: #45475a;
 }
+QPushButton#btn_load[compact="true"] {
+    min-width: 0px;
+    min-height: 26px;
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: 5px;
+}
 
 /* Small selection buttons */
 QPushButton#btn_small {
@@ -188,6 +209,19 @@ QPushButton#btn_dir {
 QPushButton#btn_dir:hover {
     background: #1a2744;
     border-color: #89b4fa;
+}
+QPushButton#btn_dir[compact="true"] {
+    min-width: 0px;
+    min-height: 26px;
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: 5px;
+}
+QPushButton[compact="true"] {
+    padding: 3px 8px;
+    font-size: 11px;
+    min-height: 26px;
+    border-radius: 5px;
 }
 QPushButton#btn_assistant {
     background: #1f2438;
@@ -293,19 +327,23 @@ QComboBox#chat_model {
     padding: 4px 8px;
 }
 QPushButton#assistant_chip {
-    background: #141d35;
-    color: #a8bce9;
-    border: 1px solid #2b4067;
-    border-radius: 8px;
-    padding: 5px 8px;
-    min-height: 26px;
-    font-size: 12px;
-    font-weight: 700;
+    background: #1a2744;
+    color: #89b4fa;
+    border: 1px solid #2a4070;
+    border-radius: 6px;
+    padding: 4px 10px;
+    min-height: 24px;
+    min-width: 0px;
+    font-size: 11px;
+    font-weight: 600;
 }
 QPushButton#assistant_chip:hover {
-    background: #1a2849;
-    border-color: #4c75be;
-    color: #c8dbff;
+    background: #1f3258;
+    border-color: #89b4fa;
+    color: #b4d4ff;
+}
+QPushButton#assistant_chip:pressed {
+    background: #162240;
 }
 QPushButton#assistant_send {
     background: #224177;
@@ -386,15 +424,39 @@ QLabel#chat_code {
     border-radius: 8px;
     padding: 6px;
 }
+QLabel#chat_table {
+    color: #d8e1ff;
+    font-size: 12px;
+    background: #0a1228;
+    border: 1px solid #2a4060;
+    border-radius: 6px;
+}
 QFrame#tool_card {
-    background: #0e172b;
-    border: 1px solid #2b3c62;
-    border-radius: 10px;
+    background: #0d1424;
+    border: 1px solid #1e3050;
+    border-radius: 8px;
+    margin: 2px 0px;
 }
 QFrame#tool_card_error {
-    background: #2f1723;
-    border: 1px solid #6f2f44;
-    border-radius: 10px;
+    background: #2a1520;
+    border: 1px solid #5a2535;
+    border-radius: 8px;
+    margin: 2px 0px;
+}
+QFrame#tool_detail {
+    background: transparent;
+    border: none;
+    margin-top: 4px;
+}
+QFrame#tool_kv {
+    background: #0a101c;
+    border: 1px solid #1a2840;
+    border-radius: 6px;
+    padding: 4px;
+}
+QFrame#tool_metrics {
+    background: transparent;
+    border: none;
 }
 QLabel#tool_title {
     color: #dbe7ff;
@@ -1439,6 +1501,12 @@ QPushButton#btn_dir:hover {
     background: #d5e0fc;
     border-color: #1e66f5;
 }
+QPushButton[compact="true"] {
+    padding: 3px 8px;
+    font-size: 11px;
+    min-height: 26px;
+    border-radius: 5px;
+}
 QPushButton#btn_assistant {
     background: #dce0e8;
     color: #1e66f5;
@@ -1543,19 +1611,23 @@ QComboBox#chat_model {
     padding: 4px 8px;
 }
 QPushButton#assistant_chip {
-    background: #e8eefc;
-    color: #355a9e;
-    border: 1px solid #b7c8e9;
-    border-radius: 8px;
-    padding: 5px 8px;
-    min-height: 26px;
-    font-size: 12px;
-    font-weight: 700;
+    background: #e0e8f8;
+    color: #2a5090;
+    border: 1px solid #a8b8d8;
+    border-radius: 6px;
+    padding: 4px 10px;
+    min-height: 24px;
+    min-width: 0px;
+    font-size: 11px;
+    font-weight: 600;
 }
 QPushButton#assistant_chip:hover {
-    background: #d9e4fb;
-    border-color: #7698d6;
-    color: #274882;
+    background: #d0dcf0;
+    border-color: #6080b0;
+    color: #1a4080;
+}
+QPushButton#assistant_chip:pressed {
+    background: #c8d4e8;
 }
 QPushButton#assistant_send {
     background: #2f5fad;
@@ -1636,15 +1708,39 @@ QLabel#chat_code {
     border-radius: 8px;
     padding: 6px;
 }
+QLabel#chat_table {
+    color: #243a67;
+    font-size: 12px;
+    background: #f0f4fa;
+    border: 1px solid #c0d0e8;
+    border-radius: 6px;
+}
 QFrame#tool_card {
-    background: #eef3ff;
-    border: 1px solid #c2d1ed;
-    border-radius: 10px;
+    background: #e8effa;
+    border: 1px solid #b0c4e0;
+    border-radius: 8px;
+    margin: 2px 0px;
 }
 QFrame#tool_card_error {
-    background: #ffe8ec;
-    border: 1px solid #e6a6b3;
-    border-radius: 10px;
+    background: #fae8ec;
+    border: 1px solid #d0a0b0;
+    border-radius: 8px;
+    margin: 2px 0px;
+}
+QFrame#tool_detail {
+    background: transparent;
+    border: none;
+    margin-top: 4px;
+}
+QFrame#tool_kv {
+    background: #f0f4fa;
+    border: 1px solid #c0cce0;
+    border-radius: 6px;
+    padding: 4px;
+}
+QFrame#tool_metrics {
+    background: transparent;
+    border: none;
 }
 QLabel#tool_title {
     color: #263f73;

@@ -12,11 +12,12 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QListWidget,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
-from PyQt5.QtCore import QEvent
+from PyQt5.QtCore import QEvent, Qt
 
 
 class BdtWorkspacePanel(QWidget):
@@ -27,10 +28,30 @@ class BdtWorkspacePanel(QWidget):
         self._viewer = viewer
         self._build()
 
+    @staticmethod
+    def _mark_compact(button: QPushButton):
+        button.setProperty("compact", True)
+        button.setMinimumWidth(0)
+        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
     def _build(self):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(12, 16, 12, 12)
-        lay.setSpacing(12)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        root.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(10, 12, 10, 10)
+        lay.setSpacing(8)
+        self._scroll = scroll
+        self._content = content
 
         brand = QLabel("Orange Workspace")
         brand.setObjectName("sidebar_brand")
@@ -62,13 +83,13 @@ class BdtWorkspacePanel(QWidget):
         dir_row.setSpacing(6)
         btn_browse = QPushButton("Browse")
         btn_browse.setObjectName("btn_dir")
-        btn_browse.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._mark_compact(btn_browse)
         btn_browse.clicked.connect(self._viewer._browse_bdt)
         dir_row.addWidget(btn_browse)
 
         btn_scan = QPushButton("Scan")
         btn_scan.setObjectName("btn_dir")
-        btn_scan.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._mark_compact(btn_scan)
         btn_scan.clicked.connect(self._viewer._scan_bdt)
         dir_row.addWidget(btn_scan)
         lay.addLayout(dir_row)
@@ -83,7 +104,7 @@ class BdtWorkspacePanel(QWidget):
 
         self.file_list = QListWidget()
         self.file_list.setSelectionMode(QAbstractItemView.MultiSelection)
-        self.file_list.setMinimumHeight(180)
+        self.file_list.setMinimumHeight(120)
         lay.addWidget(self.file_list, 1)
 
         file_actions = QHBoxLayout()
@@ -105,8 +126,8 @@ class BdtWorkspacePanel(QWidget):
         source_card = QFrame()
         source_card.setObjectName("workspace_card")
         source_lay = QVBoxLayout(source_card)
-        source_lay.setContentsMargins(12, 12, 12, 12)
-        source_lay.setSpacing(8)
+        source_lay.setContentsMargins(10, 8, 10, 10)
+        source_lay.setSpacing(6)
 
         source_label = QLabel("Validation Source")
         source_label.setObjectName("workspace_card_title")
@@ -122,23 +143,27 @@ class BdtWorkspacePanel(QWidget):
 
         actions_card = QFrame()
         actions_card.setObjectName("workspace_card")
+        actions_card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         actions_lay = QVBoxLayout(actions_card)
-        actions_lay.setContentsMargins(12, 12, 12, 12)
-        actions_lay.setSpacing(8)
+        actions_lay.setContentsMargins(10, 8, 10, 10)
+        actions_lay.setSpacing(5)
+        self._actions_card = actions_card
+        self._actions_layout = actions_lay
 
         actions_title = QLabel("Workflow")
         actions_title.setObjectName("workspace_card_title")
         actions_lay.addWidget(actions_title)
+        self._actions_title = actions_title
 
         btn_validate = QPushButton("Validate BDT Files")
         btn_validate.setObjectName("btn_search")
-        btn_validate.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._mark_compact(btn_validate)
         btn_validate.clicked.connect(self._viewer._bdt_validation_panel._run_validation)
         actions_lay.addWidget(btn_validate)
 
         btn_report = QPushButton("Accepted PM Report")
         btn_report.setObjectName("btn_export")
-        btn_report.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._mark_compact(btn_report)
         btn_report.clicked.connect(
             self._viewer._bdt_validation_panel._generate_pm_accept_report
         )
@@ -146,7 +171,7 @@ class BdtWorkspacePanel(QWidget):
 
         btn_daily = QPushButton("Daily Review")
         btn_daily.setObjectName("btn_dir")
-        btn_daily.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._mark_compact(btn_daily)
         btn_daily.clicked.connect(
             self._viewer._bdt_validation_panel._show_daily_review_report
         )
@@ -154,7 +179,7 @@ class BdtWorkspacePanel(QWidget):
 
         btn_export = QPushButton("Export Results")
         btn_export.setObjectName("btn_load")
-        btn_export.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._mark_compact(btn_export)
         btn_export.clicked.connect(self._viewer._bdt_validation_panel._export_bdt_results)
         actions_lay.addWidget(btn_export)
 
@@ -163,8 +188,8 @@ class BdtWorkspacePanel(QWidget):
         options_card = QFrame()
         options_card.setObjectName("workspace_card")
         options_lay = QVBoxLayout(options_card)
-        options_lay.setContentsMargins(12, 12, 12, 12)
-        options_lay.setSpacing(8)
+        options_lay.setContentsMargins(10, 8, 10, 10)
+        options_lay.setSpacing(6)
 
         options_title = QLabel("Options")
         options_title.setObjectName("workspace_card_title")
@@ -180,8 +205,8 @@ class BdtWorkspacePanel(QWidget):
         status_card = QFrame()
         status_card.setObjectName("workspace_card")
         status_lay = QVBoxLayout(status_card)
-        status_lay.setContentsMargins(12, 12, 12, 12)
-        status_lay.setSpacing(6)
+        status_lay.setContentsMargins(10, 8, 10, 10)
+        status_lay.setSpacing(5)
 
         status_title = QLabel("Context")
         status_title.setObjectName("workspace_card_title")
@@ -206,6 +231,12 @@ class BdtWorkspacePanel(QWidget):
             btn_export,
         ]
         self._adaptive_small_buttons = [btn_all, btn_none]
+        self._workflow_buttons = [
+            btn_validate,
+            btn_report,
+            btn_daily,
+            btn_export,
+        ]
 
         self._viewer._bdt_validation_panel.cmb_bdt_source.currentIndexChanged.connect(
             self._sync_from_main_panel
@@ -219,11 +250,13 @@ class BdtWorkspacePanel(QWidget):
         content_width = 0
         for btn in getattr(self, "_adaptive_primary_buttons", []):
             fm = btn.fontMetrics()
-            primary_height = max(primary_height, int(fm.height() * 2.25))
-            content_width = max(content_width, fm.horizontalAdvance(btn.text()) + 56)
-        primary_height = max(primary_height, 40)
+            primary_height = max(primary_height, fm.height() + 10)
+            content_width = max(content_width, fm.horizontalAdvance(btn.text()) + 34)
+        primary_height = max(primary_height, 30)
         for btn in getattr(self, "_adaptive_primary_buttons", []):
             btn.setMinimumHeight(primary_height)
+            btn.setMaximumHeight(16777215)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
         small_height = 0
         for btn in getattr(self, "_adaptive_small_buttons", []):
@@ -233,9 +266,25 @@ class BdtWorkspacePanel(QWidget):
             btn.setMinimumHeight(small_height)
 
         combo_width = self.cmb_bdt_source.fontMetrics().horizontalAdvance("Both (Verify)") + 72
-        sidebar_min = max(300, content_width + 24, combo_width + 40)
+        sidebar_min = max(280, content_width + 20, combo_width + 32)
         self._recommended_min_width = sidebar_min
         self.setMinimumWidth(sidebar_min)
+
+        actions_card = getattr(self, "_actions_card", None)
+        actions_title = getattr(self, "_actions_title", None)
+        workflow_buttons = list(getattr(self, "_workflow_buttons", []) or [])
+        if actions_card is not None and actions_title is not None and workflow_buttons:
+            margins = actions_card.layout().contentsMargins()
+            spacing = actions_card.layout().spacing()
+            title_h = actions_title.sizeHint().height()
+            card_h = (
+                margins.top()
+                + margins.bottom()
+                + title_h
+                + (primary_height * len(workflow_buttons))
+                + (spacing * len(workflow_buttons))
+            )
+            actions_card.setMinimumHeight(card_h)
 
     def changeEvent(self, event):
         super().changeEvent(event)

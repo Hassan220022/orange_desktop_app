@@ -95,11 +95,23 @@ def test_tool_definitions_are_available_for_mcp_and_openrouter():
     mcp_names = {tool["name"] for tool in tool_definitions_for_mcp()}
     openrouter_names = {tool["function"]["name"] for tool in tool_definitions_for_openrouter()}
 
+    assert "get_current_time" in mcp_names
+    assert "get_current_time" in openrouter_names
     assert "query_alarms" in mcp_names
     assert "get_site_dossier" in mcp_names
     assert "generate_graph" in mcp_names
     assert "export_report" in openrouter_names
     assert mcp_names == openrouter_names
+
+
+def test_get_current_time_tool_returns_host_clock_context():
+    service = LocalDataService()
+
+    result = service.get_current_time()
+
+    assert result["local_time"]
+    assert result["utc_time"]
+    assert result["timezone"]
 
 
 def test_export_report_schema_includes_chat_uploaded_report_types():
@@ -110,6 +122,12 @@ def test_export_report_schema_includes_chat_uploaded_report_types():
     assert "site_alarm_report" in schema["properties"]["report_type"]["enum"]
     assert "accepted_pm_report" in schema["properties"]["report_type"]["enum"]
     assert "bdt_export" in schema["properties"]["report_type"]["enum"]
+
+
+def test_query_alarms_schema_caps_rows_at_one_hundred():
+    tools = {tool["name"]: tool for tool in tool_definitions_for_mcp()}
+
+    assert tools["query_alarms"]["inputSchema"]["properties"]["limit"]["maximum"] == 100
 
 
 def test_mcp_server_lists_and_calls_tools():
@@ -429,6 +447,29 @@ def test_openrouter_agent_executes_tool_call_then_returns_final_answer():
     agent._complete = lambda messages, tools, model=None: responses.pop(0)
 
     assert agent.ask("what data exists?") == "SQLite exists."
+
+
+def test_openrouter_agent_injects_runtime_context_message(monkeypatch):
+    service = SimpleNamespace(list_data_sources=lambda: {"ok": True})
+    agent = OpenRouterAgent(api_key="test", service=service)
+    captured = {}
+    monkeypatch.setattr(
+        openrouter_agent_mod,
+        "_runtime_context_message",
+        lambda: "Current local machine time: 2026-05-03T12:34:56+03:00",
+    )
+
+    def _complete(messages, tools, model=None):
+        captured["messages"] = messages
+        return {"content": "done"}
+
+    agent._complete = _complete
+
+    assert agent.ask("hello") == "done"
+    assert captured["messages"][1] == {
+        "role": "system",
+        "content": "Current local machine time: 2026-05-03T12:34:56+03:00",
+    }
 
 
 def test_openrouter_agent_emits_tool_events_for_ui_rendering():

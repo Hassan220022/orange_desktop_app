@@ -105,36 +105,19 @@ class BdtValidationPanel(QWidget):
         self._bdt_distinct_cache: dict[str, list[str]] = {}
         self._build(viewer)
 
+    @staticmethod
+    def _mark_compact(button: QPushButton):
+        button.setProperty("compact", True)
+        button.setMinimumWidth(0)
+        button.setMinimumHeight(max(28, button.fontMetrics().height() + 10))
+        button.setMaximumHeight(16777215)
+        button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+
     # ------------------------------------------------------------------
     def _build(self, viewer):
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 10, 14, 10)
-        lay.setSpacing(10)
-
-        def _make_group(title: str, object_name: str = "filter_group"):
-            frame = QFrame()
-            frame.setObjectName(object_name)
-            v = QVBoxLayout(frame)
-            v.setContentsMargins(12, 8, 12, 10)
-            v.setSpacing(5)
-            cap = QLabel(title)
-            cap.setObjectName("filter_section")
-            v.addWidget(cap)
-            inner = QHBoxLayout()
-            inner.setSpacing(8)
-            v.addLayout(inner)
-            return frame, inner
-
-        def _inline_label(text: str) -> QLabel:
-            lbl = QLabel(text)
-            lbl.setObjectName("filter_inline")
-            return lbl
-
-        header_row = QHBoxLayout()
-        header_row.setSpacing(10)
-
-        # PARAMETERS group
-        params_group, params_row = _make_group("PARAMETERS")
+        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setSpacing(6)
 
         self.spn_health = QSpinBox()
         self.spn_health.setObjectName("filter_spin")
@@ -150,27 +133,57 @@ class BdtValidationPanel(QWidget):
         self.cmb_bdt_source.addItem("DB", "db")
         self.cmb_bdt_source.addItem("Both (Verify)", "both")
         self.cmb_bdt_source.setVisible(False)
+
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
+
+        # PARAMETERS group: compact toolbar instead of a tall card.
+        params_group = QFrame()
+        params_group.setObjectName("filter_group")
+        params_group.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        params_lay = QVBoxLayout(params_group)
+        params_lay.setContentsMargins(10, 6, 10, 7)
+        params_lay.setSpacing(4)
+
+        params_cap = QLabel("PARAMETERS")
+        params_cap.setObjectName("filter_section")
+        params_lay.addWidget(params_cap)
+
+        params_row = QHBoxLayout()
+        params_row.setSpacing(8)
         self.btn_parameters = QPushButton("Open Parameters")
         self.btn_parameters.setObjectName("btn_dir")
+        self._mark_compact(self.btn_parameters)
         self.btn_parameters.clicked.connect(self._show_parameters_dialog)
         params_row.addWidget(self.btn_parameters)
 
         self.btn_rule_guide = QPushButton("Explain Rules")
         self.btn_rule_guide.setObjectName("btn_dir")
+        self._mark_compact(self.btn_rule_guide)
         self.btn_rule_guide.clicked.connect(self._show_rules_reference_dialog)
-        params_group.layout().addWidget(self.btn_rule_guide)
+        params_row.addWidget(self.btn_rule_guide)
+        params_lay.addLayout(params_row)
 
         self._lbl_param_summary = QLabel("")
-        self._lbl_param_summary.setWordWrap(True)
+        self._lbl_param_summary.setWordWrap(False)
         self._lbl_param_summary.setObjectName("lbl_dim")
         self._lbl_param_summary.setStyleSheet("color:#6c7086; font-size:11px; background:transparent;")
-        params_group.layout().addWidget(self._lbl_param_summary)
+        self._lbl_param_summary.setMaximumHeight(18)
+        params_lay.addWidget(self._lbl_param_summary)
         self._refresh_parameter_summary()
 
         header_row.addWidget(params_group)
 
-        # SEARCH group
-        search_group, search_row_inner = _make_group("SEARCH")
+        # SEARCH group: label + field in one row to keep the table high.
+        search_group = QFrame()
+        search_group.setObjectName("filter_group")
+        search_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        search_row_inner = QHBoxLayout(search_group)
+        search_row_inner.setContentsMargins(10, 6, 10, 7)
+        search_row_inner.setSpacing(10)
+        search_cap = QLabel("SEARCH")
+        search_cap.setObjectName("filter_section")
+        search_row_inner.addWidget(search_cap)
         self.bdt_search = QLineEdit()
         self.bdt_search.setObjectName("filter_input")
         self.bdt_search.setPlaceholderText(
@@ -180,7 +193,7 @@ class BdtValidationPanel(QWidget):
         self.bdt_search.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.bdt_search.textChanged.connect(self._filter_bdt_table)
-        search_row_inner.addWidget(self.bdt_search)
+        search_row_inner.addWidget(self.bdt_search, 1)
         header_row.addWidget(search_group, 1)
 
         lay.addLayout(header_row)
@@ -188,6 +201,7 @@ class BdtValidationPanel(QWidget):
         # Vertical splitter: results table + detail panel placeholder
         self.bdt_splitter = QSplitter(Qt.Vertical)
         self.bdt_splitter.setHandleWidth(1)
+        self.bdt_splitter.setChildrenCollapsible(False)
 
         # Results table
         cols = BDT_RESULT_HEADERS
@@ -198,6 +212,7 @@ class BdtValidationPanel(QWidget):
         self.bdt_table.setAlternatingRowColors(True)
         self.bdt_table.verticalHeader().setVisible(False)
         self.bdt_table.verticalHeader().setDefaultSectionSize(28)
+        self.bdt_table.setMinimumHeight(112)
         hdr = self.bdt_table.horizontalHeader()
         rule_cols = {c for c in cols if c.startswith("R") and c[1:].isdigit()}
         for i, col in enumerate(cols):
@@ -218,11 +233,15 @@ class BdtValidationPanel(QWidget):
 
         # Bottom bar
         bot = QHBoxLayout()
+        bot.setContentsMargins(0, 0, 0, 0)
+        bot.setSpacing(6)
         self._btn_bdt_prev_page = QPushButton("Prev")
+        self._mark_compact(self._btn_bdt_prev_page)
         self._btn_bdt_prev_page.clicked.connect(self._load_previous_bdt_page)
         bot.addWidget(self._btn_bdt_prev_page)
 
         self._btn_bdt_next_page = QPushButton("Next")
+        self._mark_compact(self._btn_bdt_next_page)
         self._btn_bdt_next_page.clicked.connect(self._load_next_bdt_page)
         bot.addWidget(self._btn_bdt_next_page)
 
@@ -290,9 +309,28 @@ class BdtValidationPanel(QWidget):
         self._detail_panel_placeholder = panel
         panel.setVisible(False)
         self.bdt_splitter.addWidget(panel)
-        self.bdt_splitter.setSizes([250, 550])
         self.bdt_splitter.setStretchFactor(0, 0)
         self.bdt_splitter.setStretchFactor(1, 1)
+        self.bdt_splitter.setCollapsible(0, False)
+        self.bdt_splitter.setCollapsible(1, False)
+        self._apply_bdt_splitter_ratio()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_bdt_splitter_ratio()
+
+    def _apply_bdt_splitter_ratio(self):
+        if not hasattr(self, "bdt_splitter"):
+            return
+        sizes = self.bdt_splitter.sizes()
+        if len(sizes) != 2:
+            return
+        total = self.bdt_splitter.height() or sum(sizes) or 1
+        if self._detail_panel_placeholder and self._detail_panel_placeholder.isVisible():
+            table_h = max(96, int(total * 0.28))
+            self.bdt_splitter.setSizes([table_h, max(1, total - table_h)])
+        else:
+            self.bdt_splitter.setSizes([total, 0])
 
     @staticmethod
     def _validation_source_label(source_mode: str) -> str:
@@ -832,13 +870,7 @@ class BdtValidationPanel(QWidget):
 
         if self._detail_panel_placeholder and not self._detail_panel_placeholder.isVisible():
             self._detail_panel_placeholder.setVisible(True)
-            row_count = self.bdt_table.rowCount()
-            header_h = self.bdt_table.horizontalHeader().height()
-            row_h = self.bdt_table.verticalHeader().defaultSectionSize()
-            table_h = header_h + (row_count * row_h) + 6
-            table_h = min(table_h, 250)
-            total = self.bdt_splitter.height() or 800
-            self.bdt_splitter.setSizes([table_h, total - table_h])
+            self._apply_bdt_splitter_ratio()
 
         self.row_selected.emit(res)
 

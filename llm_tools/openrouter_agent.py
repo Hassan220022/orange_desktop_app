@@ -8,6 +8,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from datetime import datetime
 from typing import Any, Callable
 
 try:
@@ -26,7 +27,19 @@ TOOL_CAPABLE_FALLBACK_MODEL = FREE_MODELS_ROUTER
 SYSTEM_PROMPT = """You are the Alarm Viewer local data assistant.
 Use tools to answer questions about local alarms, BDT validations, photos, and exports.
 The tools are read-only except export_report, which may create files only in the controlled exports directory.
-Prefer aggregate answers before requesting large row sets. Never claim that missing data proves a condition; say when the local store has no matching records."""
+
+IMPORTANT RULES:
+1. ALWAYS call a tool to check the database before answering any question about data. Never answer from memory or assumptions.
+2. When the user asks to "show", "list", "display", or "get" items, keep the text answer brief and let the UI render the returned rows separately.
+3. Provide aggregate summaries only when the user explicitly asks for "stats", "summary", or "count".
+4. Never claim that missing data proves a condition; say when the local store has no matching records.
+5. The alarm rows card starts collapsed and can expand up to 100 rows.
+6. Use the host clock context for any time-sensitive answer."""
+
+
+def _runtime_context_message() -> str:
+    local_now = datetime.now().astimezone()
+    return f"Current local machine time: {local_now.isoformat(timespec='seconds')}"
 
 
 class OpenRouterToolSupportError(RuntimeError):
@@ -48,6 +61,7 @@ class OpenRouterAgent:
     ) -> str:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _runtime_context_message()},
             {"role": "user", "content": prompt},
         ]
         tools = tool_definitions_for_openrouter()

@@ -33,6 +33,8 @@ from PyQt5.QtWidgets import (
 )
 
 try:
+    from ...constants import DISPLAY_COLUMNS
+    from ..flow_layout import FlowLayout
     from ...llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent
     from ...llm_tools.openrouter_models import (
         FALLBACK_FREE_MODELS,
@@ -43,6 +45,8 @@ try:
     from ...runtime.env import load_local_env
 except ImportError:
     try:
+        from alarm_app.constants import DISPLAY_COLUMNS
+        from alarm_app.ui.flow_layout import FlowLayout
         from alarm_app.llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent
         from alarm_app.llm_tools.openrouter_models import (
             FALLBACK_FREE_MODELS,
@@ -52,6 +56,8 @@ except ImportError:
         )
         from alarm_app.runtime.env import load_local_env
     except ImportError:
+        from constants import DISPLAY_COLUMNS  # type: ignore[no-redef]
+        from ui.flow_layout import FlowLayout  # type: ignore[no-redef]
         from llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent  # type: ignore[no-redef]
         from llm_tools.openrouter_models import (  # type: ignore[no-redef]
             FALLBACK_FREE_MODELS,
@@ -67,6 +73,8 @@ _NUMBERED_RE = re.compile(r"^\s*\d+\.\s+(.*)$")
 _KEY_VALUE_RE = re.compile(r"^\s*([A-Za-z][A-Za-z0-9_ /()#%+-]{1,60})\s*:\s*(.+)$")
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+_TABLE_ROW_RE = re.compile(r"^\|(.+)\|\s*$")
+_TABLE_SEP_RE = re.compile(r"^\|\s*(:?-+:?\s*\|\s*)+$")
 
 
 def _format_inline_markdown(text: str) -> str:
@@ -74,6 +82,39 @@ def _format_inline_markdown(text: str) -> str:
     safe = _BOLD_RE.sub(r"<b>\1</b>", safe)
     safe = _INLINE_CODE_RE.sub(r"<code>\1</code>", safe)
     return safe
+
+
+def _parse_table_cells(row: str) -> list[str]:
+    """Parse a markdown table row into cell contents."""
+    # Remove leading/trailing | and split by |
+    inner = row.strip()
+    if inner.startswith("|"):
+        inner = inner[1:]
+    if inner.endswith("|"):
+        inner = inner[:-1]
+    return [cell.strip() for cell in inner.split("|")]
+
+
+def _strip_table_blocks(text: str) -> str:
+    blocks = _parse_markdown_blocks(text)
+    if not any(kind == "table" for kind, _payload in blocks):
+        return text
+    pieces: list[str] = []
+    for kind, payload in blocks:
+        if kind == "table":
+            continue
+        if kind == "p":
+            pieces.append(str(payload))
+        elif kind == "ul":
+            pieces.extend(f"- {item}" for item in payload)
+        elif kind == "ol":
+            pieces.extend(f"1. {item}" for item in payload)
+        elif kind == "code":
+            pieces.append(f"```\n{payload}\n```")
+        elif kind == "kv":
+            pieces.extend(f"{key}: {value}" for key, value in payload)
+    cleaned = "\n".join(pieces).strip()
+    return cleaned or "(rows shown below)"
 
 
 def _normalize_message_text(text: str) -> str:
@@ -148,6 +189,22 @@ def _parse_markdown_blocks(text: str) -> list[tuple[str, str | list[str] | list[
                 i = j
                 continue
 
+        # Table detection: lines starting and ending with |
+        if _TABLE_ROW_RE.match(line):
+            table_lines: list[str] = []
+            while i < len(lines):
+                tbl_line = lines[i]
+                if _TABLE_ROW_RE.match(tbl_line):
+                    table_lines.append(tbl_line)
+                    i += 1
+                else:
+                    break
+            # Filter out separator lines (|---|---|)
+            table_rows = [ln for ln in table_lines if not _TABLE_SEP_RE.match(ln)]
+            if table_rows:
+                blocks.append(("table", table_rows))
+            continue
+
         paragraph_lines = [stripped]
         i += 1
         while i < len(lines):
@@ -159,6 +216,7 @@ def _parse_markdown_blocks(text: str) -> list[tuple[str, str | list[str] | list[
                 or _BULLET_RE.match(nxt)
                 or _NUMBERED_RE.match(nxt)
                 or _KEY_VALUE_RE.match(nxt)
+                or _TABLE_ROW_RE.match(nxt)
             ):
                 break
             paragraph_lines.append(nxt_stripped)
@@ -212,6 +270,29 @@ def _make_assistant_button(text: str, *, minimum_width: int = 0) -> QPushButton:
     return button
 
 
+def _rows_preview_limit(total_rows: int, requested_rows: int, *, max_rows: int = 100) -> int:
+    if total_rows <= 0:
+        return 0
+    requested_rows = max(1, requested_rows)
+    return min(total_rows, max_rows, requested_rows)
+
+
+def _rows_summary_text(visible: int, total: int, max_visible: int) -> str:
+    if total <= visible:
+        return f"Showing all {total} rows."
+    if max_visible <= 100:
+        return f"Showing {visible} of {total} rows. Expand to 100 rows if needed."
+    return f"Showing {visible} of {total} rows."
+
+
+def _alarm_row_columns(rows: list[dict], source_name: str = "") -> list[str]:
+    if not rows:
+        return []
+    if source_name == "query_alarms" or any("alarm_id" in row or "alarm_name" in row for row in rows):
+        return [name for name, _label in DISPLAY_COLUMNS]
+    return list(rows[0].keys())
+
+
 class ChatRequestThread(QThread):
     """Run one OpenRouter chat request without blocking the Qt event loop."""
 
@@ -259,6 +340,9 @@ class ChatPanel(QWidget):
         self._thread: ChatRequestThread | None = None
         self._messages: list[tuple[str, str]] = []
         self._tool_cards: dict[str, tuple[QFrame, QVBoxLayout]] = {}
+        self._pending_tool_events: dict[str, dict] = {}
+        self._pending_tool_order: list[str] = []
+        self._pending_tool_seq = 0
         self._uploaded_files: list[dict[str, str]] = []
         self._models_thread: FreeModelsThread | None = None
         self._model = normalize_free_model_id(os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL))
@@ -378,8 +462,40 @@ class ChatPanel(QWidget):
         self._append_system(
             "Ready. Ask naturally — I can inspect local alarm data, BDT results, photos, and exports."
         )
+        self._adaptive_buttons = [
+            self.btn_sources,
+            self.btn_alarm_stats,
+            self.btn_upload,
+            self.btn_clear,
+            self.btn_send,
+        ]
+        self._refresh_responsive_metrics()
         self._refresh_send_state()
         self.refresh_free_models()
+
+    def _refresh_responsive_metrics(self):
+        content_width = 0
+        content_height = 0
+        for btn in getattr(self, "_adaptive_buttons", []):
+            fm = btn.fontMetrics()
+            content_width = max(content_width, fm.horizontalAdvance(btn.text()) + 42)
+            content_height = max(content_height, int(fm.height() * 2.2))
+        content_height = max(content_height, 30)
+        for btn in getattr(self, "_adaptive_buttons", []):
+            btn.setMinimumHeight(content_height)
+        two_column_tools = (content_width * 2) + 48
+        model_width = self.edit_model.fontMetrics().horizontalAdvance(self.edit_model.currentText() or self._model) + 96
+        status_width = self.lbl_status.fontMetrics().horizontalAdvance(self.lbl_status.text()) + 120
+        self._recommended_min_width = max(350, two_column_tools, min(520, model_width), min(520, status_width))
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in {QEvent.FontChange, QEvent.StyleChange, QEvent.PaletteChange}:
+            self._refresh_responsive_metrics()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_responsive_metrics()
 
     def eventFilter(self, obj, event):
         if obj is self.input and event.type() == QEvent.KeyPress:
@@ -407,6 +523,9 @@ class ChatPanel(QWidget):
             return
         self._messages.clear()
         self._tool_cards.clear()
+        self._pending_tool_events.clear()
+        self._pending_tool_order.clear()
+        self._pending_tool_seq = 0
         self._uploaded_files.clear()
         while self._history_layout.count() > 1:
             item = self._history_layout.takeAt(0)
@@ -502,6 +621,9 @@ class ChatPanel(QWidget):
         self.input.clear()
         self._messages.append(("User", text))
         self._append_message("You", text)
+        self._pending_tool_events.clear()
+        self._pending_tool_order.clear()
+        self._pending_tool_seq = 0
         self._set_busy(True)
 
         prompt = self._build_prompt()
@@ -517,7 +639,11 @@ class ChatPanel(QWidget):
         recent = self._messages[-10:]
         lines = [
             "You are answering inside the Alarm Viewer desktop app.",
-            "Use the local tools whenever data is needed. Keep answers concise and concrete.",
+            "ALWAYS call a tool to check the database before answering any question about data. Never answer from memory or assumptions.",
+            "When the user asks to \"show\", \"list\", \"display\", or \"get\" items, keep the text answer brief and let the UI render the returned rows separately.",
+            "Provide aggregate summaries only when the user explicitly asks for \"stats\", \"summary\", or \"count\".",
+            "Do not repeat full row tables in the text reply when the alarm rows card is shown.",
+            "The alarm rows card starts collapsed and can be expanded up to 100 rows.",
             "For generated files, call export_report instead of describing a manual process.",
             "Supported export_report report_type values include alarms, bdt_results, photo_manifest, site_alarm_report, accepted_pm_report, and bdt_export.",
             "Use site_alarm_report for uploaded VIP/site lists, accepted_pm_report for uploaded Accepted PM lists, and bdt_export for BDT validation workbook exports.",
@@ -536,17 +662,47 @@ class ChatPanel(QWidget):
 
     def _on_answer(self, answer: str):
         answer = answer.strip() or "(no answer)"
+        if any((self._pending_tool_events.get(call_id) or {}).get("name") in {"query_alarms", "query_bdt_results"} for call_id in self._pending_tool_order):
+            answer = _strip_table_blocks(answer)
         self._messages.append(("Assistant", answer))
         self._append_message("Assistant", answer)
+        self._flush_pending_tool_events()
         self._viewer._sbar.showMessage("Chat response received", 2500)
 
     def _on_error(self, error: str):
+        self._pending_tool_events.clear()
+        self._pending_tool_order.clear()
         self._append_message("Error", error)
         self._viewer._sbar.showMessage("Chat request failed", 3500)
 
     def _on_tool_event(self, event: object):
         if not isinstance(event, dict):
             return
+        call_id = str(event.get("tool_call_id") or "")
+        if not call_id:
+            call_id = f"{event.get('name', 'tool')}-{self._pending_tool_seq}"
+            self._pending_tool_seq += 1
+            event = dict(event)
+            event["tool_call_id"] = call_id
+        if call_id not in self._pending_tool_order:
+            self._pending_tool_order.append(call_id)
+        self._pending_tool_events[call_id] = dict(event)
+
+    def _flush_pending_tool_events(self):
+        if not self._pending_tool_order:
+            return
+        for call_id in self._pending_tool_order:
+            event = self._pending_tool_events.get(call_id)
+            if not event:
+                continue
+            if event.get("status") == "running":
+                continue
+            self._render_tool_event(event)
+        self._pending_tool_events.clear()
+        self._pending_tool_order.clear()
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    def _render_tool_event(self, event: dict):
         call_id = str(event.get("tool_call_id") or f"{event.get('name', 'tool')}-{len(self._tool_cards)}")
         card_data = self._tool_cards.get(call_id)
         if card_data is None:
@@ -564,7 +720,6 @@ class ChatPanel(QWidget):
             card.style().unpolish(card)
             card.style().polish(card)
         self._render_tool_card(card_layout, event)
-        QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _render_tool_card(self, layout: QVBoxLayout, event: dict):
         self._clear_layout(layout)
@@ -665,40 +820,25 @@ class ChatPanel(QWidget):
         result = event.get("result")
         frame = QFrame()
         frame.setObjectName("tool_detail")
-        row = QGridLayout(frame)
+        row = FlowLayout(frame, hspacing=4, vspacing=4)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setHorizontalSpacing(6)
-        row.setVerticalSpacing(6)
-        index = 0
 
-        btn_copy = _make_assistant_button("Copy Output")
+        # Primary action: Copy (always shown)
+        btn_copy = _make_assistant_button("Copy")
         btn_copy.clicked.connect(lambda _checked=False, payload=result: self._copy_text(_json_output_text(payload)))
-        row.addWidget(btn_copy, index // 3, index % 3)
-        index += 1
+        row.addWidget(btn_copy)
 
-        btn_save = _make_assistant_button("Export Output")
-        btn_save.clicked.connect(lambda _checked=False, payload=result: self._save_text_output(payload))
-        row.addWidget(btn_save, index // 3, index % 3)
-        index += 1
-
+        # Show file actions only if there are paths
         paths = [path for path in _output_paths(result) if Path(path).exists()]
         if paths:
             btn_open = _make_assistant_button("Open")
             btn_open.clicked.connect(lambda _checked=False, p=paths[0]: self._open_path(p))
-            row.addWidget(btn_open, index // 3, index % 3)
-            index += 1
+            row.addWidget(btn_open)
 
-            btn_folder = _make_assistant_button("Open Folder")
+            btn_folder = _make_assistant_button("Folder")
             btn_folder.clicked.connect(lambda _checked=False, p=paths[0]: self._open_folder(p))
-            row.addWidget(btn_folder, index // 3, index % 3)
-            index += 1
+            row.addWidget(btn_folder)
 
-            btn_path = _make_assistant_button("Copy Path")
-            btn_path.clicked.connect(lambda _checked=False, p="\n".join(paths): self._copy_text(p))
-            row.addWidget(btn_path, index // 3, index % 3)
-
-        for col in range(3):
-            row.setColumnStretch(col, 1)
         return frame
 
     def _stats_widget(self, result: dict) -> QWidget:
@@ -922,37 +1062,82 @@ class ChatPanel(QWidget):
             lay.addWidget(self._rows_table_widget(rules, max_rows=8))
         return frame
 
-    def _rows_table_widget(self, rows: list, *, max_rows: int = 8, source_name: str = "") -> QWidget:
+    def _rows_table_widget(self, rows: list, *, max_rows: int = 10, source_name: str = "") -> QWidget:
         clean_rows = [r for r in rows if isinstance(r, dict)]
         if not clean_rows:
             return self._make_rich_label("No rows returned.", object_name="tool_body")
-        columns = list(clean_rows[0].keys())[:6]
-        table = QTableWidget(min(len(clean_rows), max_rows), len(columns))
+        columns = _alarm_row_columns(clean_rows, source_name)
+        if not columns:
+            columns = list(clean_rows[0].keys())
+        wrapper = QFrame()
+        wrapper.setObjectName("tool_detail")
+        lay = QVBoxLayout(wrapper)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(5)
+
+        base_rows = _rows_preview_limit(len(clean_rows), max_rows)
+        visible_rows = base_rows
+        max_visible_rows = min(len(clean_rows), 100)
+
+        table = QTableWidget(visible_rows, len(columns))
         table.setObjectName("tool_table")
         table.setHorizontalHeaderLabels([str(c).replace("_", " ").title() for c in columns])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setSelectionBehavior(QTableWidget.SelectRows)
-        table.setMaximumHeight(220)
-        table.setProperty("assistant_rows", clean_rows[:max_rows])
+        table.setProperty("assistant_rows", clean_rows)
         table.setProperty("assistant_source", source_name)
         table.cellClicked.connect(lambda row, _col, tbl=table: self._activate_tool_table_row(tbl, row))
-        for row_idx, row in enumerate(clean_rows[:max_rows]):
-            for col_idx, col in enumerate(columns):
-                table.setItem(row_idx, col_idx, QTableWidgetItem(self._format_tool_value(row.get(col))))
         header = table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
         header.setStretchLastSection(True)
-        if len(clean_rows) > max_rows:
-            wrapper = QFrame()
-            wrapper.setObjectName("tool_detail")
-            lay = QVBoxLayout(wrapper)
-            lay.setContentsMargins(0, 0, 0, 0)
-            lay.setSpacing(5)
-            lay.addWidget(table)
-            lay.addWidget(self._make_rich_label(f"Showing {max_rows} of {len(clean_rows)} rows.", object_name="tool_body"))
-            return wrapper
-        return table
+
+        info = self._make_rich_label("", object_name="tool_body")
+        actions = QFrame()
+        actions.setObjectName("tool_detail")
+        actions_row = QHBoxLayout(actions)
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(4)
+        btn_expand = _make_assistant_button("Show more")
+        btn_collapse = _make_assistant_button("Collapse")
+        actions_row.addWidget(btn_expand)
+        actions_row.addWidget(btn_collapse)
+        actions_row.addStretch(1)
+
+        state = {"visible": visible_rows}
+
+        def refresh():
+            visible = state["visible"]
+            table.setRowCount(visible)
+            for row_idx, row in enumerate(clean_rows[:visible]):
+                for col_idx, col in enumerate(columns):
+                    table.setItem(row_idx, col_idx, QTableWidgetItem(self._format_tool_value(row.get(col))))
+            table.setMaximumHeight(min(420, 54 + visible * 28))
+            info.setText(_rows_summary_text(visible, len(clean_rows), max_visible_rows))
+            can_expand = visible < max_visible_rows
+            btn_expand.setEnabled(can_expand)
+            btn_collapse.setEnabled(visible > base_rows)
+            btn_expand.setText("Show 10 more" if can_expand else "Show more")
+
+        def expand_rows():
+            state["visible"] = _rows_preview_limit(len(clean_rows), state["visible"] + 10)
+            refresh()
+
+        def collapse_rows():
+            state["visible"] = base_rows
+            refresh()
+
+        btn_expand.clicked.connect(lambda _checked=False: expand_rows())
+        btn_collapse.clicked.connect(lambda _checked=False: collapse_rows())
+        refresh()
+
+        lay.addWidget(table)
+        lay.addWidget(info)
+        if max_visible_rows > _rows_preview_limit(len(clean_rows), max_rows):
+            lay.addWidget(actions)
+        elif len(clean_rows) > visible_rows:
+            lay.addWidget(actions)
+        return wrapper
 
     def _activate_tool_table_row(self, table: QTableWidget, row_index: int):
         rows = table.property("assistant_rows")
@@ -1130,6 +1315,31 @@ class ChatPanel(QWidget):
                         + "</table>"
                     )
                 )
+            elif kind == "table":
+                # Render markdown table as HTML table
+                table_rows = payload  # type: ignore[assignment]
+                if not table_rows:
+                    continue
+                html_rows = []
+                for row_idx, tbl_row in enumerate(table_rows):
+                    cells = _parse_table_cells(str(tbl_row))
+                    if not cells:
+                        continue
+                    cell_tag = "th" if row_idx == 0 else "td"
+                    cell_html = "".join(
+                        f"<{cell_tag} style='padding:4px 8px; border:1px solid #2a4060; text-align:left;'>{_format_inline_markdown(cell)}</{cell_tag}>"
+                        for cell in cells
+                    )
+                    html_rows.append(f"<tr>{cell_html}</tr>")
+                if html_rows:
+                    bubble_layout.addWidget(
+                        self._make_rich_label(
+                            "<table style='border-collapse:collapse; width:100%; margin:4px 0;'>"
+                            + "".join(html_rows)
+                            + "</table>",
+                            object_name="chat_table"
+                        )
+                    )
 
     def _append_message(self, role: str, text: str, *, store: bool = True):
         role_key = role.lower()
@@ -1186,21 +1396,13 @@ class ChatPanel(QWidget):
     def _message_actions_widget(self, role: str, text: str) -> QWidget:
         frame = QFrame()
         frame.setObjectName("tool_detail")
-        row = QGridLayout(frame)
+        row = FlowLayout(frame, hspacing=4, vspacing=4)
         row.setContentsMargins(0, 4, 0, 0)
-        row.setHorizontalSpacing(6)
-        row.setVerticalSpacing(6)
 
         btn_copy = _make_assistant_button("Copy")
         btn_copy.clicked.connect(lambda _checked=False, t=text: self._copy_text(t))
-        row.addWidget(btn_copy, 0, 0)
+        row.addWidget(btn_copy)
 
-        btn_save = _make_assistant_button("Export")
-        btn_save.clicked.connect(lambda _checked=False, r=role, t=text: self._save_message_output(r, t))
-        row.addWidget(btn_save, 0, 1)
-
-        row.setColumnStretch(0, 1)
-        row.setColumnStretch(1, 1)
         return frame
 
     def _save_message_output(self, role: str, text: str):

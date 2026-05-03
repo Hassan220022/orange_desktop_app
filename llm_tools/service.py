@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import base64
 import json
 from pathlib import Path
@@ -205,6 +205,15 @@ class LocalDataService:
                 "exists": Path(blob_repo.BLOB_DIR).exists(),
             },
             "exports": str(self.export_dir),
+        }
+
+    def get_current_time(self) -> dict[str, Any]:
+        local_now = datetime.now().astimezone()
+        utc_now = datetime.now(timezone.utc)
+        return {
+            "local_time": local_now.isoformat(timespec="seconds"),
+            "utc_time": utc_now.isoformat(timespec="seconds"),
+            "timezone": local_now.tzname() or "local",
         }
 
     def _with_alarm_source(self, fn):
