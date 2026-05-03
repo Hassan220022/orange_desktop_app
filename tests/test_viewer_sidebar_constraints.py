@@ -1,6 +1,8 @@
 from types import SimpleNamespace
+from datetime import date
 
 from alarm_app.ui.viewer import AlarmViewer
+from alarm_app.data.alarm_store import AlarmQuery
 
 
 class _Stack:
@@ -113,3 +115,26 @@ def test_set_assistant_panel_open_closes_drawer_and_remembers_width():
     assert splitter.sizes() == [1200, 0]
     assert viewer._assistant_width == 340
     assert viewer._assistant_open is False
+
+
+def test_expand_backup_time_query_extends_date_window():
+    query = AlarmQuery(
+        site_text="AAA001",
+        date_from=date(2026, 5, 3),
+        date_to=date(2026, 5, 3),
+        manual_days=[date(2026, 5, 3)],
+        limit=10,
+        offset=5,
+        sort_by="occurred_on",
+        sort_desc=True,
+    )
+
+    expanded = AlarmViewer._expand_backup_time_query(query)
+
+    assert expanded.limit is None
+    assert expanded.offset == 0
+    assert expanded.sort_by is None
+    assert expanded.sort_desc is False
+    assert expanded.date_from == date(2026, 5, 2)
+    assert expanded.date_to == date(2026, 5, 4)
+    assert expanded.manual_days == [date(2026, 5, 2), date(2026, 5, 3), date(2026, 5, 4)]

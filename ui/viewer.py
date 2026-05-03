@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -1332,6 +1332,34 @@ class AlarmViewer(QMainWindow):
                 query.sort_desc = self._table.horizontalHeader().sortIndicatorOrder() == Qt.DescendingOrder
         return query
 
+    @staticmethod
+    def _expand_backup_time_query(query: alarm_store.AlarmQuery) -> alarm_store.AlarmQuery:
+        """Widen the query window so cross-midnight alarm pairs are not dropped."""
+        expanded = replace(query, limit=None, offset=0, sort_by=None, sort_desc=False)
+
+        if expanded.date_from is not None:
+            expanded = replace(
+                expanded,
+                date_from=expanded.date_from - timedelta(days=1),
+            )
+        if expanded.date_to is not None:
+            expanded = replace(
+                expanded,
+                date_to=expanded.date_to + timedelta(days=1),
+            )
+
+        manual_days = list(expanded.manual_days or [])
+        if manual_days:
+            parsed_days = [pd.Timestamp(day).date() for day in manual_days if not pd.isna(pd.Timestamp(day))]
+            if parsed_days:
+                start_day = min(parsed_days) - timedelta(days=1)
+                end_day = max(parsed_days) + timedelta(days=1)
+                expanded = replace(
+                    expanded,
+                    manual_days=[start_day + timedelta(days=offset) for offset in range((end_day - start_day).days + 1)],
+                )
+        return expanded
+
     def _refresh_alarm_stats(self, query: alarm_store.AlarmQuery | None = None):
         summary = alarm_store.stats(query or self._build_alarm_query(limit=None, offset=0, ignore_sort=True))
         self._stats["total"].setText(f"{int(summary.get('total', 0)):,}")
@@ -2402,7 +2430,9 @@ class AlarmViewer(QMainWindow):
 
     def _show_backup_times(self):
         if self._has_query_backed_alarm_data():
-            query = self._build_alarm_query(limit=None, offset=0, ignore_sort=True)
+            query = self._expand_backup_time_query(
+                self._build_alarm_query(limit=None, offset=0, ignore_sort=True)
+            )
             if alarm_store.count_alarms(query) == 0:
                 QMessageBox.information(
                     self, "No Data",
