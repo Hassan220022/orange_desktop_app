@@ -9,7 +9,7 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from PyQt5.QtCore import QEvent, QThread, QTimer, Qt, QUrl, pyqtSignal
+from PyQt5.QtCore import QDate, QEvent, QThread, QTimer, Qt, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -291,6 +291,18 @@ def _alarm_row_columns(rows: list[dict], source_name: str = "") -> list[str]:
     if source_name == "query_alarms" or any("alarm_id" in row or "alarm_name" in row for row in rows):
         return [name for name, _label in DISPLAY_COLUMNS]
     return list(rows[0].keys())
+
+
+def _set_combo_text(combo: object, text: str):
+    if combo is None or not hasattr(combo, "findText") or not hasattr(combo, "setCurrentIndex"):
+        return
+    idx = combo.findText(text)
+    if idx >= 0:
+        if hasattr(combo, "blockSignals"):
+            combo.blockSignals(True)
+        combo.setCurrentIndex(idx)
+        if hasattr(combo, "blockSignals"):
+            combo.blockSignals(False)
 
 
 class ChatRequestThread(QThread):
@@ -649,6 +661,7 @@ class ChatPanel(QWidget):
             "Use site_alarm_report for uploaded VIP/site lists, accepted_pm_report for uploaded Accepted PM lists, and bdt_export for BDT validation workbook exports.",
             "Use get_site_dossier when the user asks for everything about one site: all alarms, BDT tests, rule details, photos, and discharge content.",
             "Use generate_graph when the user asks for graphs/charts/trends; it creates a PNG chart from local data.",
+            "Use query_backup_times when the user asks for backup time, backup duration, or battery hold-up between Power and Down alarms.",
         ]
         if self._uploaded_files:
             lines.append("Uploaded local files available to tools:")
@@ -662,7 +675,7 @@ class ChatPanel(QWidget):
 
     def _on_answer(self, answer: str):
         answer = answer.strip() or "(no answer)"
-        if any((self._pending_tool_events.get(call_id) or {}).get("name") in {"query_alarms", "query_bdt_results"} for call_id in self._pending_tool_order):
+        if any((self._pending_tool_events.get(call_id) or {}).get("name") in {"query_alarms", "query_bdt_results", "query_backup_times"} for call_id in self._pending_tool_order):
             answer = _strip_table_blocks(answer)
         self._messages.append(("Assistant", answer))
         self._append_message("Assistant", answer)
@@ -774,6 +787,7 @@ class ChatPanel(QWidget):
             "list_data_sources": "Data Sources",
             "alarm_stats": "Alarm Statistics",
             "query_alarms": "Alarm Rows",
+            "query_backup_times": "Backup Time Sites",
             "query_bdt_results": "BDT Results",
             "get_bdt_detail": "BDT Detail",
             "get_photo_metadata": "Photo Metadata",
@@ -802,7 +816,7 @@ class ChatPanel(QWidget):
             rows = result.get("rows")
             if isinstance(rows, list):
                 return self._photo_metadata_widget(rows)
-        if name in {"query_alarms", "query_bdt_results"}:
+        if name in {"query_alarms", "query_backup_times", "query_bdt_results"}:
             rows = result.get("rows")
             if isinstance(rows, list):
                 return self._rows_table_widget(rows, source_name=name)
@@ -828,6 +842,11 @@ class ChatPanel(QWidget):
         btn_copy.clicked.connect(lambda _checked=False, payload=result: self._copy_text(_json_output_text(payload)))
         row.addWidget(btn_copy)
 
+        if self._can_show_alarm_results_in_viewer(event):
+            btn_show = _make_assistant_button("Show in Alarms")
+            btn_show.clicked.connect(lambda _checked=False, payload=event: self._show_alarm_results_in_viewer(payload))
+            row.addWidget(btn_show)
+
         # Show file actions only if there are paths
         paths = [path for path in _output_paths(result) if Path(path).exists()]
         if paths:
@@ -840,6 +859,90 @@ class ChatPanel(QWidget):
             row.addWidget(btn_folder)
 
         return frame
+
+    @staticmethod
+    def _can_show_alarm_results_in_viewer(event: dict) -> bool:
+        result = event.get("result")
+        args = event.get("args")
+        return (
+            isinstance(args, dict)
+            and isinstance(result, dict)
+            and event.get("name") in {"query_alarms", "query_backup_times"}
+            and isinstance(result.get("rows"), list)
+            and bool(result.get("rows"))
+        )
+
+    def _show_alarm_results_in_viewer(self, event: dict):
+        if not self._can_show_alarm_results_in_viewer(event):
+            return
+        viewer = self._viewer
+        result = event["result"]
+        args = event["args"]
+        rows = result["rows"]
+        if hasattr(viewer, "_set_workspace_view"):
+            viewer._set_workspace_view(0)
+
+        if hasattr(viewer, "_edit_site"):
+            site_ids = result.get("site_ids") if isinstance(result.get("site_ids"), list) else []
+            if event.get("name") == "query_backup_times" and site_ids:
+                site_text = ", ".join(str(site).strip() for site in site_ids if str(site).strip())
+            else:
+                site_text = str(args.get("site_text") or args.get("site_id") or "").strip()
+            viewer._edit_site.setText(site_text)
+        _set_combo_text(getattr(viewer, "_cb_cat", None), str(args.get("category") or "All"))
+        _set_combo_text(getattr(viewer, "_cb_net", None), str(args.get("network_type") or "All"))
+        _set_combo_text(getattr(viewer, "_cb_vnd", None), str(args.get("vendor") or "All"))
+        if hasattr(viewer, "_chk_mindur"):
+            viewer._chk_mindur.setChecked(False)
+        if hasattr(viewer, "_edit_days"):
+            viewer._edit_days.clear()
+
+        if hasattr(viewer, "_chk_date"):
+            date_from = str(args.get("date_from") or "").strip()
+            date_to = str(args.get("date_to") or "").strip()
+            use_date = bool(date_from or date_to)
+            viewer._chk_date.setChecked(use_date)
+            if hasattr(viewer, "_chk_date_range"):
+                viewer._chk_date_range.setChecked(use_date)
+            if hasattr(viewer, "_chk_date_days"):
+                viewer._chk_date_days.setChecked(False)
+            if use_date:
+                if date_from and hasattr(viewer, "_d_from"):
+                    q_from = QDate.fromString(date_from[:10], "yyyy-MM-dd")
+                    if q_from.isValid():
+                        viewer._d_from.setDate(q_from)
+                if date_to and hasattr(viewer, "_d_to"):
+                    q_to = QDate.fromString(date_to[:10], "yyyy-MM-dd")
+                    if q_to.isValid():
+                        viewer._d_to.setDate(q_to)
+
+        if hasattr(viewer, "_both_pd_active"):
+            viewer._both_pd_active = False
+        if hasattr(viewer, "_col_filters"):
+            viewer._col_filters.clear()
+        if hasattr(viewer, "_btn_both"):
+            viewer._btn_both.setStyleSheet("")
+
+        page_size = max(1, min(500, int(args.get("limit") or result.get("row_count") or len(rows) or 1)))
+        offset = max(0, int(args.get("offset") or 0))
+        if hasattr(viewer, "_page_size"):
+            viewer._page_size = page_size
+        if hasattr(viewer, "_page_offset"):
+            viewer._page_offset = offset
+        if hasattr(viewer, "_table") and hasattr(viewer, "_current_alarm_columns"):
+            cols = viewer._current_alarm_columns()
+            sort_by = str(args.get("sort_by") or "occurred_on")
+            if sort_by in cols:
+                header = viewer._table.horizontalHeader()
+                header.setSortIndicator(
+                    cols.index(sort_by),
+                    Qt.DescendingOrder if bool(args.get("sort_desc")) else Qt.AscendingOrder,
+                )
+
+        if hasattr(viewer, "_load_alarm_page"):
+            viewer._load_alarm_page(offset=offset, status_message="Assistant results shown in Alarms")
+        elif hasattr(viewer, "_search"):
+            viewer._search()
 
     def _stats_widget(self, result: dict) -> QWidget:
         frame = QFrame()

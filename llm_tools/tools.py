@@ -40,6 +40,20 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "offset": {"type": "integer", "minimum": 0},
         }),
     },
+    "query_backup_times": {
+        "description": "Compute backup-time site results from local alarms and return sites whose hold-up exceeds a threshold.",
+        "inputSchema": _schema({
+            "site_text": {"type": "string", "description": "Site id/text filter."},
+            "category": {"type": "string", "description": "Alarm category such as Power, Down, or All."},
+            "vendor": {"type": "string"},
+            "network_type": {"type": "string"},
+            "date_from": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
+            "date_to": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
+            "min_minutes": {"type": "number", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 0, "maximum": 500},
+            "offset": {"type": "integer", "minimum": 0},
+        }),
+    },
     "alarm_stats": {
         "description": "Return aggregate alarm statistics for safe filters without loading all rows.",
         "inputSchema": _schema({

@@ -16,6 +16,7 @@ from sqlalchemy import inspect as sa_inspect
 
 try:
     from ..bdt.export import build_bdt_export_sheets
+    from ..core.backup_time import compute_backup_times
     from ..data import alarm_store, state
     from ..data.site_report import (
         build_pm_accept_report,
@@ -38,6 +39,7 @@ try:
     from ..db.repos import blob_repo
     from ..db.repos.pm_repo import load_all_validation_results
 except ImportError:
+    from alarm_app.core.backup_time import compute_backup_times
     from alarm_app.bdt.export import build_bdt_export_sheets
     from alarm_app.data import alarm_store, state
     from alarm_app.data.site_report import (
@@ -264,6 +266,86 @@ class LocalDataService:
         )
         df = self._with_alarm_source(lambda: alarm_store.query_alarms(q))
         return {"rows": _df_records(df), "row_count": len(df)}
+
+    def query_backup_times(self, **kwargs) -> dict[str, Any]:
+        min_minutes = float(kwargs.get("min_minutes") or 0)
+        limit = _limit(kwargs.get("limit"), default=100)
+        offset = max(int(kwargs.get("offset") or 0), 0)
+        q = alarm_store.AlarmQuery(
+            site_text=str(kwargs.get("site_text") or kwargs.get("site_id") or ""),
+            category=str(kwargs.get("category") or "All"),
+            vendor=str(kwargs.get("vendor") or "All"),
+            network_type=str(kwargs.get("network_type") or "All"),
+            date_from=_date_value(kwargs.get("date_from")),
+            date_to=_date_value(kwargs.get("date_to")),
+            both_pd=True,
+            sort_by="occurred_on",
+            sort_desc=False,
+            limit=None,
+            offset=0,
+        )
+
+        def _run():
+            df = alarm_store.query_alarms(q)
+            result, err = compute_backup_times(df)
+            if err or result is None or result.empty:
+                return {
+                    "rows": [],
+                    "row_count": 0,
+                    "total_count": 0,
+                    "site_count": 0,
+                    "site_ids": [],
+                    "min_minutes": min_minutes,
+                    "threshold_minutes": min_minutes,
+                }
+
+            working = result.copy()
+            working["_backup_td"] = pd.to_timedelta(working["backup_time"], errors="coerce")
+            working = working[working["_backup_td"].notna()].copy()
+            if min_minutes > 0:
+                working = working[working["_backup_td"] > pd.Timedelta(minutes=min_minutes)].copy()
+            if working.empty:
+                return {
+                    "rows": [],
+                    "row_count": 0,
+                    "total_count": 0,
+                    "site_count": 0,
+                    "site_ids": [],
+                    "min_minutes": min_minutes,
+                    "threshold_minutes": min_minutes,
+                }
+
+            working = working.sort_values("_backup_td", ascending=False).reset_index(drop=True)
+            grouped_rows: list[dict[str, Any]] = []
+            for site_id, group in working.groupby("site_id", sort=False):
+                top = group.iloc[0]
+                backup_td = top["_backup_td"]
+                grouped_rows.append({
+                    "site_id": top.get("site_id"),
+                    "network_type": top.get("network_type"),
+                    "vendor": top.get("vendor"),
+                    "max_backup_time": top.get("backup_time"),
+                    "max_backup_minutes": round(float(backup_td.total_seconds() / 60.0), 2) if pd.notna(backup_td) else None,
+                    "incident_count": int(len(group)),
+                    "power_time": top.get("power_time"),
+                    "power_cleared": top.get("power_cleared"),
+                    "down_time": top.get("down_time"),
+                })
+
+            total_count = len(grouped_rows)
+            site_rows = grouped_rows[offset:offset + limit] if limit else grouped_rows[offset:]
+            site_ids = [str(row.get("site_id") or "") for row in site_rows if str(row.get("site_id") or "").strip()]
+            return {
+                "rows": _jsonable(site_rows),
+                "row_count": len(site_rows),
+                "total_count": total_count,
+                "site_count": total_count,
+                "site_ids": site_ids,
+                "min_minutes": min_minutes,
+                "threshold_minutes": min_minutes,
+            }
+
+        return self._with_alarm_source(_run)
 
     def alarm_stats(self, **kwargs) -> dict[str, Any]:
         q = alarm_store.AlarmQuery(

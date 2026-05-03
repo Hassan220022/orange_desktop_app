@@ -22,6 +22,14 @@ class _Splitter:
         self._sizes = list(sizes)
 
 
+class _WidthOnly:
+    def __init__(self, width):
+        self._width = width
+
+    def width(self):
+        return self._width
+
+
 class _Button:
     def __init__(self):
         self.checked = None
@@ -77,6 +85,14 @@ def test_apply_assistant_constraints_enforces_open_minimum_width():
     assert viewer._assistant_open is True
     assert btn.checked is True
     assert btn.text == "Assistant On"
+
+
+def test_assistant_max_width_caps_to_sixty_percent_of_available_space():
+    viewer = SimpleNamespace(
+        _content_splitter=_WidthOnly(1000),
+    )
+
+    assert AlarmViewer._assistant_max_width(viewer) == 600
 
 
 def test_set_assistant_panel_open_closes_drawer_and_remembers_width():

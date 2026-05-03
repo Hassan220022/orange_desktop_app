@@ -98,6 +98,7 @@ def test_tool_definitions_are_available_for_mcp_and_openrouter():
     assert "get_current_time" in mcp_names
     assert "get_current_time" in openrouter_names
     assert "query_alarms" in mcp_names
+    assert "query_backup_times" in mcp_names
     assert "get_site_dossier" in mcp_names
     assert "generate_graph" in mcp_names
     assert "export_report" in openrouter_names
@@ -128,6 +129,74 @@ def test_query_alarms_schema_caps_rows_at_one_hundred():
     tools = {tool["name"]: tool for tool in tool_definitions_for_mcp()}
 
     assert tools["query_alarms"]["inputSchema"]["properties"]["limit"]["maximum"] == 100
+
+
+def test_query_backup_times_schema_exposes_threshold_and_row_limit():
+    tools = {tool["name"]: tool for tool in tool_definitions_for_mcp()}
+
+    assert tools["query_backup_times"]["inputSchema"]["properties"]["min_minutes"]["minimum"] == 0
+    assert tools["query_backup_times"]["inputSchema"]["properties"]["limit"]["maximum"] == 500
+
+
+def test_query_backup_times_filters_and_groups_sites(monkeypatch):
+    service = LocalDataService()
+
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.alarm_store.query_alarms",
+        lambda q: pd.DataFrame([
+            {
+                "site_id": "AAA001",
+                "alarm_category": "Power",
+                "occurred_on": "2026-04-01 10:00:00",
+                "cleared_on": "2026-04-01 11:20:00",
+                "network_type": "4G",
+                "vendor": "HUAWEI",
+            }
+        ]),
+    )
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.compute_backup_times",
+        lambda df: (
+            pd.DataFrame([
+                {
+                    "site_id": "AAA001",
+                    "network_type": "4G",
+                    "vendor": "HUAWEI",
+                    "power_time": "2026-04-01 10:00:00",
+                    "power_cleared": "2026-04-01 11:20:00",
+                    "down_time": "2026-04-01 11:05:00",
+                    "backup_time": "01:05:00",
+                },
+                {
+                    "site_id": "AAA001",
+                    "network_type": "4G",
+                    "vendor": "HUAWEI",
+                    "power_time": "2026-04-01 12:00:00",
+                    "power_cleared": "2026-04-01 13:00:00",
+                    "down_time": "2026-04-01 12:30:00",
+                    "backup_time": "00:30:00",
+                },
+                {
+                    "site_id": "BBB002",
+                    "network_type": "5G",
+                    "vendor": "Nokia",
+                    "power_time": "2026-04-01 10:00:00",
+                    "power_cleared": "2026-04-01 11:40:00",
+                    "down_time": "2026-04-01 11:10:00",
+                    "backup_time": "01:10:00",
+                },
+            ]),
+            "",
+        ),
+    )
+
+    result = service.query_backup_times(min_minutes=50, limit=100)
+
+    assert result["site_count"] == 2
+    assert result["site_ids"] == ["BBB002", "AAA001"]
+    assert result["rows"][0]["site_id"] == "BBB002"
+    assert result["rows"][1]["site_id"] == "AAA001"
+    assert result["rows"][1]["incident_count"] == 1
 
 
 def test_mcp_server_lists_and_calls_tools():

@@ -34,7 +34,8 @@ IMPORTANT RULES:
 3. Provide aggregate summaries only when the user explicitly asks for "stats", "summary", or "count".
 4. Never claim that missing data proves a condition; say when the local store has no matching records.
 5. The alarm rows card starts collapsed and can expand up to 100 rows.
-6. Use the host clock context for any time-sensitive answer."""
+6. Use query_backup_times for questions about backup time, backup duration, or battery hold-up between Power and Down alarms.
+7. Use the host clock context for any time-sensitive answer."""
 
 
 def _runtime_context_message() -> str:

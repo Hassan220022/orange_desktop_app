@@ -276,7 +276,7 @@ class AlarmViewer(QMainWindow):
         self._btn_site_sheet = self._search_panel.btn_site_sheet
         self._btn_site_report = self._search_panel.btn_site_report
         self._btn_both = self._search_panel.btn_both
-        self._stats = self._search_panel.stats
+        self._stats = self._left_panel.stats
         # Deferred: trigger date filter state now that bridge refs are assigned
         self._toggle_date_filter(self._chk_date.isChecked())
         splitter.addWidget(self._search_panel)
@@ -1627,7 +1627,8 @@ class AlarmViewer(QMainWindow):
             return 560
         total = self._content_splitter.width() or self.width() or 1
         hard_cap = max(1, total - 1)
-        return max(1, min(560, hard_cap))
+        screen_cap = max(1, int(total * 0.6))
+        return max(1, min(hard_cap, screen_cap))
 
     def _set_assistant_panel_open(self, is_open: bool, persist: bool = True):
         if not hasattr(self, "_content_splitter"):

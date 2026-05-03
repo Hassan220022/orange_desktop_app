@@ -6,6 +6,7 @@ from alarm_app.ui.panels.chat_panel import (
     _output_paths,
     _photo_group_summary,
     _parse_markdown_blocks,
+    _set_combo_text,
     _rows_preview_limit,
 )
 
@@ -68,6 +69,7 @@ def test_parse_markdown_blocks_splits_heading_from_key_value_group():
 
 def test_tool_title_maps_known_tools():
     assert ChatPanel._tool_title("alarm_stats") == "Alarm Statistics"
+    assert ChatPanel._tool_title("query_backup_times") == "Backup Time Sites"
     assert ChatPanel._tool_title("query_bdt_results") == "BDT Results"
 
 
@@ -117,6 +119,7 @@ def test_build_prompt_includes_uploaded_files_for_tools():
     assert "source_file_path" in prompt
     assert "site_alarm_report" in prompt
     assert "Do not repeat full row tables" in prompt
+    assert "Use query_backup_times" in prompt
 
 
 def test_rows_preview_limit_caps_alarm_rows_to_one_hundred():
@@ -157,3 +160,203 @@ def test_alarm_row_columns_match_alarm_tab_order():
         "alarm_category",
         "file_source",
     ]
+
+
+class _FakeCombo:
+    def __init__(self, values):
+        self.values = list(values)
+        self.current_index = 0
+        self.blocked = False
+
+    def findText(self, text):
+        try:
+            return self.values.index(text)
+        except ValueError:
+            return -1
+
+    def setCurrentIndex(self, index):
+        self.current_index = index
+
+    def blockSignals(self, value):
+        self.blocked = bool(value)
+
+
+class _FakeToggle:
+    def __init__(self):
+        self.checked = None
+
+    def setChecked(self, value):
+        self.checked = bool(value)
+
+
+class _FakeDateEdit:
+    def __init__(self):
+        self.value = None
+
+    def setDate(self, value):
+        self.value = value.toString("yyyy-MM-dd")
+
+
+class _FakeHeader:
+    def __init__(self):
+        self.sort = None
+
+    def setSortIndicator(self, section, order):
+        self.sort = (section, order)
+
+
+class _FakeTable:
+    def __init__(self, columns):
+        self._header = _FakeHeader()
+        self.columns = list(columns)
+
+    def horizontalHeader(self):
+        return self._header
+
+
+def test_set_combo_text_selects_matching_value():
+    combo = _FakeCombo(["All", "Power", "Down"])
+
+    _set_combo_text(combo, "Down")
+
+    assert combo.current_index == 2
+    assert combo.blocked is False
+
+
+def test_show_alarm_results_in_viewer_applies_exact_alarm_filters():
+    panel = ChatPanel.__new__(ChatPanel)
+    viewer = type("Viewer", (), {})()
+    viewer._workspace = None
+    viewer._set_workspace_view = lambda index: setattr(viewer, "_workspace", index)
+    viewer._edit_site = type("Edit", (), {"setText": lambda self, value: setattr(self, "text", value)})()
+    viewer._cb_cat = _FakeCombo(["All", "Power", "Down"])
+    viewer._cb_net = _FakeCombo(["All", "4G", "5G"])
+    viewer._cb_vnd = _FakeCombo(["All", "HUAWEI", "Nokia"])
+    viewer._chk_mindur = _FakeToggle()
+    viewer._edit_days = type("Days", (), {"clear": lambda self: setattr(self, "cleared", True)})()
+    viewer._chk_date = _FakeToggle()
+    viewer._chk_date_range = _FakeToggle()
+    viewer._chk_date_days = _FakeToggle()
+    viewer._d_from = _FakeDateEdit()
+    viewer._d_to = _FakeDateEdit()
+    viewer._both_pd_active = True
+    viewer._col_filters = {"alarm_name": {"Power Loss"}}
+    viewer._btn_both = type("Btn", (), {"setStyleSheet": lambda self, value: setattr(self, "style", value)})()
+    viewer._page_size = 500
+    viewer._page_offset = 99
+    viewer._table = _FakeTable(["site_id", "alarm_name", "occurred_on"])
+    viewer._current_alarm_columns = lambda: ["site_id", "alarm_name", "occurred_on"]
+    calls = {}
+    viewer._load_alarm_page = lambda *, offset, status_message=None: calls.update({"offset": offset, "status_message": status_message}) or True
+    panel._viewer = viewer
+
+    event = {
+        "name": "query_alarms",
+        "args": {
+            "site_text": "AAA001",
+            "category": "Power",
+            "network_type": "4G",
+            "vendor": "HUAWEI",
+            "date_from": "2026-04-01",
+            "date_to": "2026-04-30",
+            "sort_by": "occurred_on",
+            "sort_desc": True,
+            "limit": 10,
+            "offset": 3,
+        },
+        "result": {"rows": [{"site_id": "AAA001"}]},
+    }
+
+    panel._show_alarm_results_in_viewer(event)
+
+    assert viewer._workspace == 0
+    assert viewer._edit_site.text == "AAA001"
+    assert viewer._cb_cat.current_index == 1
+    assert viewer._cb_net.current_index == 1
+    assert viewer._cb_vnd.current_index == 1
+    assert viewer._chk_mindur.checked is False
+    assert viewer._chk_date.checked is True
+    assert viewer._chk_date_range.checked is True
+    assert viewer._chk_date_days.checked is False
+    assert viewer._d_from.value == "2026-04-01"
+    assert viewer._d_to.value == "2026-04-30"
+    assert viewer._both_pd_active is False
+    assert viewer._col_filters == {}
+    assert viewer._page_size == 10
+    assert viewer._page_offset == 3
+    assert viewer._table.horizontalHeader().sort == (2, 1)
+    assert calls == {
+        "offset": 3,
+        "status_message": "Assistant results shown in Alarms",
+    }
+
+
+def test_show_alarm_results_in_viewer_uses_backup_time_site_ids():
+    panel = ChatPanel.__new__(ChatPanel)
+    viewer = type("Viewer", (), {})()
+    viewer._workspace = None
+    viewer._set_workspace_view = lambda index: setattr(viewer, "_workspace", index)
+    viewer._edit_site = type("Edit", (), {"setText": lambda self, value: setattr(self, "text", value)})()
+    viewer._cb_cat = _FakeCombo(["All", "Power", "Down"])
+    viewer._cb_net = _FakeCombo(["All", "4G", "5G"])
+    viewer._cb_vnd = _FakeCombo(["All", "HUAWEI", "Nokia"])
+    viewer._chk_mindur = _FakeToggle()
+    viewer._edit_days = type("Days", (), {"clear": lambda self: setattr(self, "cleared", True)})()
+    viewer._chk_date = _FakeToggle()
+    viewer._chk_date_range = _FakeToggle()
+    viewer._chk_date_days = _FakeToggle()
+    viewer._d_from = _FakeDateEdit()
+    viewer._d_to = _FakeDateEdit()
+    viewer._both_pd_active = True
+    viewer._col_filters = {"alarm_name": {"Power Loss"}}
+    viewer._btn_both = type("Btn", (), {"setStyleSheet": lambda self, value: setattr(self, "style", value)})()
+    viewer._page_size = 500
+    viewer._page_offset = 99
+    viewer._table = _FakeTable(["site_id", "alarm_name", "occurred_on"])
+    viewer._current_alarm_columns = lambda: ["site_id", "alarm_name", "occurred_on"]
+    calls = {}
+    viewer._load_alarm_page = lambda *, offset, status_message=None: calls.update({"offset": offset, "status_message": status_message}) or True
+    panel._viewer = viewer
+
+    event = {
+        "name": "query_backup_times",
+        "args": {
+            "site_text": "ignored",
+            "category": "Power",
+            "network_type": "4G",
+            "vendor": "HUAWEI",
+            "date_from": "2026-04-01",
+            "date_to": "2026-04-30",
+            "limit": 2,
+        },
+        "result": {
+            "site_ids": ["AAA001", "BBB002"],
+            "row_count": 2,
+            "rows": [
+                {"site_id": "AAA001", "max_backup_time": "01:05:00"},
+                {"site_id": "BBB002", "max_backup_time": "00:55:00"},
+            ],
+        },
+    }
+
+    panel._show_alarm_results_in_viewer(event)
+
+    assert viewer._workspace == 0
+    assert viewer._edit_site.text == "AAA001, BBB002"
+    assert viewer._cb_cat.current_index == 1
+    assert viewer._cb_net.current_index == 1
+    assert viewer._cb_vnd.current_index == 1
+    assert viewer._chk_mindur.checked is False
+    assert viewer._chk_date.checked is True
+    assert viewer._chk_date_range.checked is True
+    assert viewer._chk_date_days.checked is False
+    assert viewer._d_from.value == "2026-04-01"
+    assert viewer._d_to.value == "2026-04-30"
+    assert viewer._both_pd_active is False
+    assert viewer._col_filters == {}
+    assert viewer._page_size == 2
+    assert viewer._page_offset == 0
+    assert calls == {
+        "offset": 0,
+        "status_message": "Assistant results shown in Alarms",
+    }

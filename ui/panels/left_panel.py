@@ -4,13 +4,13 @@ LeftPanel — sidebar with directory browser and file list.
 
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel,
-    QListWidget, QAbstractItemView, QComboBox,
+    QListWidget, QAbstractItemView, QComboBox, QFrame,
 )
 from PyQt5.QtCore import Qt
 
 
 class LeftPanel(QWidget):
-    """Sidebar containing directory selector, file list, and load button."""
+    """Sidebar containing the directory browser, file list, and stats."""
 
     def __init__(self, viewer, parent=None):
         super().__init__(parent)
@@ -101,3 +101,45 @@ class LeftPanel(QWidget):
         self.lbl_loaded.setStyleSheet(
             "color:#45475a; font-size:11px; background:transparent;")
         lay.addWidget(self.lbl_loaded)
+
+        stats_frame = QFrame()
+        stats_frame.setObjectName("stats_frame")
+        sf = QVBoxLayout(stats_frame)
+        sf.setContentsMargins(12, 10, 12, 10)
+        sf.setSpacing(7)
+
+        sec_lbl = QLabel("STATISTICS")
+        sec_lbl.setObjectName("stats_section_label")
+        sf.addWidget(sec_lbl)
+
+        self.stats: dict[str, QLabel] = {}
+        stat_obj_names = {
+            "total": "stat_total", "power": "stat_power",
+            "down": "stat_down", "door": "stat_door",
+            "sites": "stat_sites", "avg_dur": "stat_avg_dur",
+        }
+        for key, label in (
+            ("total",    "Total Records"),
+            ("power",    "Power Alarms"),
+            ("down",     "Down Alarms"),
+            ("door",     "Door Alarms"),
+            ("sites",    "Unique Sites"),
+            ("avg_dur",  "Avg Duration"),
+        ):
+            row_h = QHBoxLayout(); row_h.setSpacing(4)
+            lt = QLabel(label)
+            lt.setObjectName("stats_label")
+            lv = QLabel("—")
+            lv.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            lv.setObjectName(stat_obj_names[key])
+            self.stats[key] = lv
+            row_h.addWidget(lt); row_h.addWidget(lv)
+            sf.addLayout(row_h)
+
+            if key != "avg_dur":
+                sep = QFrame()
+                sep.setFrameShape(QFrame.HLine)
+                sep.setObjectName("stats_sep")
+                sf.addWidget(sep)
+
+        lay.addWidget(stats_frame)
