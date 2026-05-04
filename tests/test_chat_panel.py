@@ -128,6 +128,36 @@ def test_rows_preview_limit_caps_alarm_rows_to_one_hundred():
     assert _rows_preview_limit(7, 10) == 7
 
 
+def test_message_bubble_width_caps_on_small_and_large_panels():
+    assert ChatPanel._message_bubble_width(300, "assistant") == 280
+    assert ChatPanel._message_bubble_width(2000, "assistant") == 760
+    assert ChatPanel._message_bubble_width(1000, "system") == 760
+
+
+def test_display_graph_type_removes_underscores():
+    assert ChatPanel._display_graph_type("alarm_daily_counts") == "Alarm Daily Counts"
+    assert ChatPanel._display_graph_type(None) == "--"
+
+
+def test_graph_preview_width_clamps_to_chat_area():
+    panel = ChatPanel.__new__(ChatPanel)
+    panel._history_scroll = type("Scroll", (), {"viewport": lambda self: type("Vp", (), {"width": lambda self: 260})()})()
+
+    assert panel._graph_preview_width() == 320
+
+
+def test_schedule_scroll_to_bottom_triggers_immediate_and_delayed_scroll(monkeypatch):
+    panel = ChatPanel.__new__(ChatPanel)
+    calls = []
+
+    monkeypatch.setattr("alarm_app.ui.panels.chat_panel.QTimer.singleShot", lambda delay, fn: calls.append(delay))
+    panel._scroll_to_bottom = lambda: None
+
+    ChatPanel._schedule_scroll_to_bottom(panel)
+
+    assert calls == [0, 50]
+
+
 def test_alarm_row_columns_match_alarm_tab_order():
     rows = [{
         "site_id": "AAA001",

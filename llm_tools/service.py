@@ -878,20 +878,83 @@ class LocalDataService:
             if "_duration_secs" not in work.columns:
                 return [], []
             col = "alarm_category" if "alarm_category" in work.columns else "alarm_name"
-            grouped = work.groupby(col, dropna=False)["_duration_secs"].mean().sort_values(ascending=False)
+            grouped = work.groupby(col, dropna=False)["_duration_secs"].sum().sort_values(ascending=False)
             return grouped.index.astype(str).tolist(), (grouped / 60.0).astype(float).tolist()
         return [], []
 
     @staticmethod
-    def _draw_bar_chart(path: Path, title: str, labels: list[str], values: list[float]) -> None:
+    def _chart_font(size: int, *, bold: bool = False) -> ImageFont.ImageFont:
+        candidates = [
+            "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold else "/System/Library/Fonts/Supplemental/Arial.ttf",
+        ]
+        for candidate in candidates:
+            try:
+                return ImageFont.truetype(candidate, size=size)
+            except Exception:
+                continue
+        return ImageFont.load_default()
+
+    @staticmethod
+    def _text_size(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont) -> tuple[int, int]:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+    @classmethod
+    def _wrap_chart_text(cls, draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> list[str]:
+        cleaned = str(text).replace("_", " ").strip()
+        if not cleaned:
+            return [""]
+        lines: list[str] = []
+        for paragraph in cleaned.split("\n"):
+            words = paragraph.split()
+            if not words:
+                lines.append("")
+                continue
+            current = words[0]
+            for word in words[1:]:
+                candidate = f"{current} {word}"
+                if cls._text_size(draw, candidate, font)[0] <= max_width:
+                    current = candidate
+                else:
+                    lines.append(current)
+                    current = word
+            lines.append(current)
+        return lines
+
+    @staticmethod
+    def _format_chart_label(label: str) -> str:
+        text = str(label).strip().replace("_", " ")
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            return text[5:]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}", text):
+            return text[5:10]
+        return text
+
+    @classmethod
+    def _draw_bar_chart(cls, path: Path, title: str, labels: list[str], values: list[float]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        width, height = 1100, 620
-        margin_left, margin_right, margin_top, margin_bottom = 92, 42, 82, 122
+        point_count = min(len(values), 24)
+        width = max(1200, min(2000, 180 + max(point_count, 1) * 58))
+        height = 760
+        margin_left, margin_right, margin_top, margin_bottom = 104, 48, 112, 152
         image = Image.new("RGB", (width, height), "#10111a")
         draw = ImageDraw.Draw(image)
-        font = ImageFont.load_default()
-        title_font = ImageFont.load_default()
-        draw.text((margin_left, 28), title, fill="#d8def8", font=title_font)
+        font = cls._chart_font(14)
+        title_font = cls._chart_font(24, bold=True)
+        value_font = cls._chart_font(13, bold=True)
+        title_lines = cls._wrap_chart_text(draw, title, title_font, width - margin_left - margin_right)
+        title_text = "\n".join(title_lines)
+        title_bbox = draw.multiline_textbbox((0, 0), title_text, font=title_font, spacing=6)
+        title_w = title_bbox[2] - title_bbox[0]
+        draw.multiline_text(
+            ((width - title_w) / 2, 24),
+            title_text,
+            fill="#d8def8",
+            font=title_font,
+            spacing=6,
+        )
         if not values:
             draw.text((margin_left, height // 2), "No matching data", fill="#8f96ad", font=font)
             image.save(path)
@@ -905,18 +968,37 @@ class LocalDataService:
         axis_color = "#3a3d55"
         draw.line((margin_left, margin_top, margin_left, margin_top + chart_h), fill=axis_color, width=2)
         draw.line((margin_left, margin_top + chart_h, margin_left + chart_w, margin_top + chart_h), fill=axis_color, width=2)
-        bar_gap = 8
-        bar_w = max(14, int((chart_w - bar_gap * (len(values) - 1)) / max(len(values), 1)))
+        bar_gap = 14 if len(values) <= 8 else 10
+        label_band_h = 54 if len(values) <= 8 else 68
+        bar_w = max(22, int((chart_w - bar_gap * (len(values) - 1)) / max(len(values), 1)))
+        usable_chart_h = chart_h - label_band_h - 18
         for idx, (label, value) in enumerate(zip(labels, values, strict=False)):
             x0 = margin_left + idx * (bar_w + bar_gap)
-            bar_h = int((float(value) / max_value) * (chart_h - 24))
+            bar_h = int((float(value) / max_value) * max(usable_chart_h, 24))
             y0 = margin_top + chart_h - bar_h
             x1 = x0 + bar_w
             y1 = margin_top + chart_h
             draw.rectangle((x0, y0, x1, y1), fill="#7aa2ff")
-            draw.text((x0, max(margin_top, y0 - 18)), f"{value:g}", fill="#d8def8", font=font)
-            short = str(label)[:14]
-            draw.text((x0, y1 + 10), short, fill="#b9c1dc", font=font)
+            value_text = f"{value:g}"
+            value_w, value_h = cls._text_size(draw, value_text, value_font)
+            draw.text(
+                (x0 + max(0, (bar_w - value_w) / 2), max(margin_top, y0 - value_h - 6)),
+                value_text,
+                fill="#d8def8",
+                font=value_font,
+            )
+            wrapped_label = cls._wrap_chart_text(draw, cls._format_chart_label(label), font, max(bar_w + 10, 90))
+            label_text = "\n".join(wrapped_label[:3])
+            label_bbox = draw.multiline_textbbox((0, 0), label_text, font=font, spacing=2)
+            label_w = label_bbox[2] - label_bbox[0]
+            draw.multiline_text(
+                (x0 + max(0, (bar_w - label_w) / 2), y1 + 10),
+                label_text,
+                fill="#b9c1dc",
+                font=font,
+                spacing=2,
+                align="center",
+            )
         image.save(path)
 
     @staticmethod

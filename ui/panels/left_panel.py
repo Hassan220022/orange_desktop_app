@@ -84,6 +84,7 @@ class LeftPanel(QWidget):
 
         self.btn_load = QPushButton("Load Selected Files")
         self.btn_load.setObjectName("btn_load")
+        self.btn_load.setProperty("compact", True)
         self.btn_load.setEnabled(False)
         self.btn_load.clicked.connect(viewer._load)
 

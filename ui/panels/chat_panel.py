@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtCore import QDate, QEvent, QThread, QTimer, Qt, QUrl, pyqtSignal
-from PyQt5.QtGui import QDesktopServices, QPixmap
+from PyQt5.QtGui import QDesktopServices, QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -20,6 +20,10 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
+    QDialog,
+    QGraphicsPixmapItem,
+    QGraphicsScene,
+    QGraphicsView,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -261,6 +265,110 @@ def _output_paths(value: object) -> list[str]:
     return unique
 
 
+class _ZoomableImageView(QGraphicsView):
+    """Graphics view with mouse-wheel zoom and reset support."""
+
+    def __init__(self, pixmap: QPixmap, parent=None):
+        super().__init__(parent)
+        self._scene = QGraphicsScene(self)
+        self._item = QGraphicsPixmapItem(pixmap)
+        self._scene.addItem(self._item)
+        self.setScene(self._scene)
+        self.setRenderHints(self.renderHints() | QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self._scale_factor = 1.0
+        self._min_scale = 0.25
+        self._max_scale = 4.0
+        self._did_initial_fit = False
+
+    def _fit_initial(self):
+        if self.viewport().width() <= 0 or self.viewport().height() <= 0:
+            return
+        self.fitInView(self._item, Qt.KeepAspectRatio)
+        self._scale_factor = 1.0
+
+    def reset_zoom(self):
+        self.resetTransform()
+        self._fit_initial()
+        self.centerOn(self._item)
+
+    def zoom(self, factor: float):
+        new_scale = self._scale_factor * factor
+        if new_scale < self._min_scale or new_scale > self._max_scale:
+            return
+        self.scale(factor, factor)
+        self._scale_factor = new_scale
+
+    def zoom_in(self):
+        self.zoom(1.2)
+
+    def zoom_out(self):
+        self.zoom(1 / 1.2)
+
+    def wheelEvent(self, event):
+        if event.angleDelta().y() > 0:
+            self.zoom_in()
+        else:
+            self.zoom_out()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._did_initial_fit:
+            self._fit_initial()
+            self.centerOn(self._item)
+            self._did_initial_fit = True
+
+
+class _ImagePreviewDialog(QDialog):
+    """Zoomable preview for generated charts and local images."""
+
+    def __init__(self, image_path: str, *, title: str | None = None, parent=None):
+        super().__init__(parent)
+        self._path = str(image_path)
+        self.setWindowTitle(title or Path(self._path).name)
+        self.setMinimumSize(860, 640)
+
+        pixmap = QPixmap(self._path)
+        if pixmap.isNull():
+            raise ValueError(f"Could not load image: {self._path}")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(6)
+
+        btn_zoom_in = _make_assistant_button("Zoom In")
+        btn_zoom_out = _make_assistant_button("Zoom Out")
+        btn_reset = _make_assistant_button("Reset")
+        btn_open = _make_assistant_button("Open File")
+        toolbar.addWidget(btn_zoom_in)
+        toolbar.addWidget(btn_zoom_out)
+        toolbar.addWidget(btn_reset)
+        toolbar.addStretch(1)
+        toolbar.addWidget(btn_open)
+        layout.addLayout(toolbar)
+
+        info = QLabel(self._path)
+        info.setWordWrap(True)
+        info.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        info.setObjectName("tool_body")
+        layout.addWidget(info)
+
+        self._view = _ZoomableImageView(pixmap, self)
+        self._view.setObjectName("image_preview_view")
+        layout.addWidget(self._view, 1)
+
+        btn_zoom_in.clicked.connect(self._view.zoom_in)
+        btn_zoom_out.clicked.connect(self._view.zoom_out)
+        btn_reset.clicked.connect(self._view.reset_zoom)
+        btn_open.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(self._path)))
+
+
 def _make_assistant_button(text: str, *, minimum_width: int = 0) -> QPushButton:
     button = QPushButton(text)
     button.setObjectName("assistant_chip")
@@ -471,9 +579,6 @@ class ChatPanel(QWidget):
 
         layout.addWidget(composer)
 
-        self._append_system(
-            "Ready. Ask naturally — I can inspect local alarm data, BDT results, photos, and exports."
-        )
         self._adaptive_buttons = [
             self.btn_sources,
             self.btn_alarm_stats,
@@ -680,12 +785,14 @@ class ChatPanel(QWidget):
         self._messages.append(("Assistant", answer))
         self._append_message("Assistant", answer)
         self._flush_pending_tool_events()
+        self._schedule_scroll_to_bottom()
         self._viewer._sbar.showMessage("Chat response received", 2500)
 
     def _on_error(self, error: str):
         self._pending_tool_events.clear()
         self._pending_tool_order.clear()
         self._append_message("Error", error)
+        self._schedule_scroll_to_bottom()
         self._viewer._sbar.showMessage("Chat request failed", 3500)
 
     def _on_tool_event(self, event: object):
@@ -713,7 +820,7 @@ class ChatPanel(QWidget):
             self._render_tool_event(event)
         self._pending_tool_events.clear()
         self._pending_tool_order.clear()
-        QTimer.singleShot(0, self._scroll_to_bottom)
+        self._schedule_scroll_to_bottom()
 
     def _render_tool_event(self, event: dict):
         call_id = str(event.get("tool_call_id") or f"{event.get('name', 'tool')}-{len(self._tool_cards)}")
@@ -1033,23 +1140,26 @@ class ChatPanel(QWidget):
         lay.addWidget(self._rows_table_widget(clean_rows, max_rows=6))
         return frame
 
-    def _open_photo_preview(self, path: str):
-        pixmap = QPixmap(path)
-        if pixmap.isNull():
-            QMessageBox.warning(self, "Image Missing", f"Could not load image:\n{path}")
+    def _open_image_preview(self, path: str, *, title: str | None = None):
+        try:
+            dialog = _ImagePreviewDialog(path, title=title, parent=self)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Image Missing", str(exc))
             return
-        dialog = QMessageBox(self)
-        dialog.setWindowTitle(Path(path).name)
-        dialog.setText(path)
-        screen = QApplication.primaryScreen()
-        max_width = 900
-        max_height = 700
-        if screen is not None:
-            size = screen.availableGeometry().size()
-            max_width = min(max_width, int(size.width() * 0.75))
-            max_height = min(max_height, int(size.height() * 0.75))
-        dialog.setIconPixmap(pixmap.scaled(max_width, max_height, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         dialog.exec_()
+
+    @staticmethod
+    def _display_graph_type(value: object) -> str:
+        text = str(value or "--").strip().replace("_", " ")
+        return text.title() if text != "--" else text
+
+    def _graph_preview_width(self) -> int:
+        viewport = self._history_scroll.viewport() if hasattr(self, "_history_scroll") else None
+        width = viewport.width() if viewport is not None else self.width()
+        return max(320, min(900, int(width) - 48))
+
+    def _open_photo_preview(self, path: str):
+        self._open_image_preview(path)
 
     def _copy_text(self, text: str):
         QApplication.clipboard().setText(text)
@@ -1105,19 +1215,25 @@ class ChatPanel(QWidget):
         lay = QVBoxLayout(frame)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(7)
+        lay.addWidget(self._kv_widget({
+            "graph_type": self._display_graph_type(result.get("graph_type")),
+            "points": result.get("points"),
+        }))
         path = str(result.get("path") or "")
         pixmap = QPixmap(path)
         if not pixmap.isNull():
-            label = QLabel()
-            label.setObjectName("tool_body")
-            label.setAlignment(Qt.AlignCenter)
-            label.setPixmap(pixmap.scaledToWidth(520, Qt.SmoothTransformation))
-            lay.addWidget(label)
-        lay.addWidget(self._kv_widget({
-            "path": path,
-            "graph_type": result.get("graph_type"),
-            "points": result.get("points"),
-        }))
+            btn_zoom = _make_assistant_button("Zoom Image")
+            btn_zoom.clicked.connect(lambda _checked=False, p=path: self._open_image_preview(p, title=Path(p).name))
+            preview_width = self._graph_preview_width()
+            preview = QLabel()
+            preview.setObjectName("tool_body")
+            preview.setAlignment(Qt.AlignCenter)
+            preview.setMaximumWidth(preview_width)
+            preview.setPixmap(pixmap.scaledToWidth(preview_width, Qt.SmoothTransformation))
+            preview.setCursor(Qt.PointingHandCursor)
+            preview.mousePressEvent = lambda event, p=path: self._open_image_preview(p, title=Path(p).name)
+            lay.addWidget(preview)
+            lay.addWidget(btn_zoom, 0, Qt.AlignLeft)
         return frame
 
     def _data_sources_widget(self, result: dict) -> QWidget:
@@ -1386,6 +1502,7 @@ class ChatPanel(QWidget):
         label.setTextFormat(Qt.RichText)
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         label.setText(text)
         return label
 
@@ -1462,29 +1579,40 @@ class ChatPanel(QWidget):
         row = QWidget()
         row.setObjectName("chat_row")
         row_layout = QHBoxLayout(row)
-        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setContentsMargins(0, 2, 0, 2)
         row_layout.setSpacing(0)
 
         bubble = QFrame()
         bubble.setObjectName(bubble_name)
-        if role_key == "you":
-            bubble.setMaximumWidth(max(280, int(max(1, self.width()) * 0.82)))
-            bubble.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
-        else:
-            bubble.setMaximumWidth(16777215)
-            bubble.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        bubble.setMaximumWidth(self._message_bubble_width(self.width(), role_key))
+        bubble.setSizePolicy(
+            QSizePolicy.Maximum if role_key == "you" else QSizePolicy.Expanding,
+            QSizePolicy.Preferred,
+        )
         bubble_layout = QVBoxLayout(bubble)
-        bubble_layout.setContentsMargins(10, 8, 10, 9)
-        bubble_layout.setSpacing(4)
+        bubble_layout.setContentsMargins(12, 10, 12, 10)
+        bubble_layout.setSpacing(6)
+
+        normalized = _normalize_message_text(text)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
 
         timestamp = datetime.now().strftime("%H:%M")
         meta = QLabel(f"{role} · {timestamp}")
         meta.setObjectName(meta_name)
-        bubble_layout.addWidget(meta)
+        header.addWidget(meta)
+        header.addStretch(1)
+        bubble_layout.addLayout(header)
 
-        normalized = _normalize_message_text(text)
         self._append_blocks(bubble_layout, normalized)
-        bubble_layout.addWidget(self._message_actions_widget(role, normalized))
+
+        footer = QHBoxLayout()
+        footer.setContentsMargins(0, 2, 0, 0)
+        footer.setSpacing(0)
+        footer.addStretch(1)
+        footer.addWidget(self._message_actions_widget(role, normalized))
+        bubble_layout.addLayout(footer)
 
         if role_key == "you":
             row_layout.addStretch(1)
@@ -1494,19 +1622,29 @@ class ChatPanel(QWidget):
 
         self._history_layout.insertWidget(self._history_layout.count() - 1, row)
         if store:
-            QTimer.singleShot(0, self._scroll_to_bottom)
+            self._schedule_scroll_to_bottom()
 
     def _message_actions_widget(self, role: str, text: str) -> QWidget:
         frame = QFrame()
         frame.setObjectName("tool_detail")
         row = FlowLayout(frame, hspacing=4, vspacing=4)
-        row.setContentsMargins(0, 4, 0, 0)
+        row.setContentsMargins(0, 0, 0, 0)
 
         btn_copy = _make_assistant_button("Copy")
         btn_copy.clicked.connect(lambda _checked=False, t=text: self._copy_text(t))
         row.addWidget(btn_copy)
 
         return frame
+
+    @staticmethod
+    def _message_bubble_width(available_width: int, role_key: str) -> int:
+        available_width = max(available_width, 0)
+        ratio = {
+            "you": 0.74,
+            "system": 0.82,
+            "error": 0.82,
+        }.get(role_key, 0.80)
+        return max(280, min(int(available_width * ratio), 760))
 
     def _save_message_output(self, role: str, text: str):
         default_name = f"assistant-{role.lower()}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
@@ -1524,3 +1662,14 @@ class ChatPanel(QWidget):
     def _scroll_to_bottom(self):
         bar = self._history_scroll.verticalScrollBar()
         bar.setValue(bar.maximum())
+
+    def _schedule_scroll_to_bottom(self):
+        QTimer.singleShot(0, self._scroll_to_bottom)
+        QTimer.singleShot(50, self._scroll_to_bottom)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_history_scroll"):
+            bar = self._history_scroll.verticalScrollBar()
+            if bar.value() >= bar.maximum() - 8:
+                self._schedule_scroll_to_bottom()

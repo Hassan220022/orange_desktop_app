@@ -199,6 +199,25 @@ def test_query_backup_times_filters_and_groups_sites(monkeypatch):
     assert result["rows"][1]["incident_count"] == 1
 
 
+def test_alarm_duration_chart_uses_total_duration_by_category():
+    service = LocalDataService()
+    df = pd.DataFrame([
+        {"alarm_category": "Power", "_duration_secs": 120},
+        {"alarm_category": "Power", "_duration_secs": 180},
+        {"alarm_category": "Down", "_duration_secs": 60},
+    ])
+
+    labels, values = service._alarm_graph_series(df, "alarm_duration_by_category")
+
+    assert labels == ["Power", "Down"]
+    assert values == [5.0, 1.0]
+
+
+def test_format_chart_label_shortens_full_dates():
+    assert LocalDataService._format_chart_label("2026-05-04") == "05-04"
+    assert LocalDataService._format_chart_label("2026-05-04 12:30:00") == "05-04"
+
+
 def test_mcp_server_lists_and_calls_tools():
     class _Service:
         def list_data_sources(self):
