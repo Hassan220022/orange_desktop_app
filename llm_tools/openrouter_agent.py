@@ -209,9 +209,10 @@ class OpenRouterAgent:
         payload = {
             "model": model or self.model,
             "messages": messages,
-            "tools": tools,
-            "tool_choice": "auto",
         }
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
         req = urllib.request.Request(
             OPENROUTER_URL,
             data=json.dumps(payload).encode("utf-8"),

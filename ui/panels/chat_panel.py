@@ -747,7 +747,8 @@ class ChatPanel(QWidget):
                     content = str(item[1]).strip()
                     if content:
                         restored.append(_chat_message(role, content))
-            self._messages = restored[-CHAT_RAW_TURN_LIMIT:]
+            self._messages = restored
+            self._rehydrate_history()
         self._conversation_summary = str(data.get("summary") or "")
         uploads = data.get("uploaded_files")
         if isinstance(uploads, list):
@@ -889,6 +890,28 @@ class ChatPanel(QWidget):
             content = str(item.get("content") or "")
             lines.append(f"{role}: {content}")
         return "\n".join(lines)
+
+    def _rehydrate_history(self):
+        try:
+            history_layout = self._history_layout
+        except RuntimeError:
+            return
+        except AttributeError:
+            return
+        while history_layout.count() > 1:
+            item = history_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        if self._conversation_summary.strip():
+            self._append_system("Earlier chat summarized and will be included in future replies.")
+        for item in self._messages:
+            role = str(item.get("role") or "").strip().lower()
+            content = str(item.get("content") or "")
+            if role == "user":
+                self._append_message("You", content)
+            elif role == "assistant":
+                self._append_message("Assistant", content)
 
     def _on_answer(self, answer: str):
         answer = answer.strip() or "(no answer)"

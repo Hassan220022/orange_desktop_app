@@ -162,6 +162,23 @@ def test_chat_state_round_trips_summary_messages_and_uploads():
     assert restored._uploaded_files == [{"name": "vip.csv", "path": "/tmp/vip.csv", "kind": "uploaded_list"}]
 
 
+def test_restore_chat_state_preserves_more_than_raw_prompt_limit():
+    restored = ChatPanel.__new__(ChatPanel)
+    restored._messages = []
+    restored._conversation_summary = ""
+    restored._uploaded_files = []
+
+    ChatPanel.restore_chat_state(restored, {
+        "messages": [
+            {"role": "user" if idx % 2 == 0 else "assistant", "content": f"turn {idx}", "timestamp": ""}
+            for idx in range(12)
+        ],
+    })
+
+    assert len(restored._messages) == 12
+    assert restored._messages[0]["content"] == "turn 0"
+
+
 def test_rows_preview_limit_caps_alarm_rows_to_one_hundred():
     assert _rows_preview_limit(250, 10) == 10
     assert _rows_preview_limit(250, 120) == 100

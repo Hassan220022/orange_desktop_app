@@ -631,6 +631,31 @@ def test_openrouter_agent_summarizes_history_with_existing_summary():
     assert "Assistant: hi" in prompt
 
 
+def test_openrouter_complete_omits_tool_choice_when_no_tools(monkeypatch):
+    agent = OpenRouterAgent(api_key="test", service=SimpleNamespace())
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode("utf-8")
+
+    def _urlopen(req, timeout):
+        captured["payload"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr(openrouter_agent_mod.urllib.request, "urlopen", _urlopen)
+
+    assert agent._complete([{"role": "user", "content": "summarize"}], tools=[]) == {"content": "ok"}
+    assert "tools" not in captured["payload"]
+    assert "tool_choice" not in captured["payload"]
+
+
 def test_chat_message_includes_role_content_and_timestamp(monkeypatch):
     class _Now:
         @classmethod
