@@ -165,6 +165,7 @@ def test_chat_state_round_trips_summary_messages_and_uploads():
     panel._messages = [{"role": "user", "content": "hello", "timestamp": "t"}]
     panel._uploaded_files = [{"name": "vip.csv", "path": "/tmp/vip.csv", "kind": "uploaded_list"}]
     panel._saved_sessions = []
+    panel._model = "openrouter/model-a"
 
     state = ChatPanel.chat_state(panel)
 
@@ -173,11 +174,14 @@ def test_chat_state_round_trips_summary_messages_and_uploads():
     restored._conversation_summary = ""
     restored._uploaded_files = []
     restored._saved_sessions = []
+    restored._model = "openrouter/model-b"
+    restored.set_model = lambda model: setattr(restored, "_model", model)
     ChatPanel.restore_chat_state(restored, state)
 
     assert restored._conversation_summary == "Summary text"
     assert restored._messages == [{"role": "user", "content": "hello", "timestamp": "t"}]
     assert restored._uploaded_files == [{"name": "vip.csv", "path": "/tmp/vip.csv", "kind": "uploaded_list"}]
+    assert restored._model == "openrouter/model-a"
 
 
 def test_restore_chat_state_preserves_all_message_turns():
@@ -198,6 +202,44 @@ def test_restore_chat_state_preserves_all_message_turns():
     assert restored._messages[0]["content"] == "turn 0"
 
 
+def test_restore_session_applies_saved_model():
+    class _Status:
+        def __init__(self):
+            self.messages = []
+
+        def showMessage(self, message, timeout=0):
+            self.messages.append((message, timeout))
+
+    class _Layout:
+        def count(self):
+            return 1
+
+    panel = ChatPanel.__new__(ChatPanel)
+    panel._thread = None
+    panel._summary_thread = None
+    panel._saved_sessions = []
+    panel._messages = []
+    panel._conversation_summary = ""
+    panel._uploaded_files = []
+    panel._tool_cards = {}
+    panel._pending_tool_events = {}
+    panel._pending_tool_order = []
+    panel._pending_tool_seq = 0
+    panel._history_layout = _Layout()
+    panel._viewer = type("Viewer", (), {"_sbar": _Status()})()
+    panel._model = "openrouter/current-model"
+    panel._rehydrate_history = lambda: None
+    panel.set_model = lambda model: setattr(panel, "_model", model)
+
+    ChatPanel._restore_session(panel, {
+        "model": "openrouter/restored-model",
+        "messages": [{"role": "user", "content": "old question", "timestamp": ""}],
+    })
+
+    assert panel._model == "openrouter/restored-model"
+    assert panel._messages == [{"role": "user", "content": "old question", "timestamp": ""}]
+
+
 
 def test_chat_state_round_trips_saved_sessions():
     panel = ChatPanel.__new__(ChatPanel)
@@ -207,6 +249,7 @@ def test_chat_state_round_trips_saved_sessions():
     panel._saved_sessions = [
         {"id": "abc", "title": "old chat", "messages": [{"role": "user", "content": "bye", "timestamp": ""}], "summary": "old summary"},
     ]
+    panel._model = "model"
 
     state = ChatPanel.chat_state(panel)
     assert len(state["saved_sessions"]) == 1
@@ -216,6 +259,7 @@ def test_chat_state_round_trips_saved_sessions():
     restored._conversation_summary = ""
     restored._uploaded_files = []
     restored._saved_sessions = []
+    restored.set_model = lambda model: setattr(restored, "_model", model)
     ChatPanel.restore_chat_state(restored, state)
     assert len(restored._saved_sessions) == 1
     assert restored._saved_sessions[0]["title"] == "old chat"

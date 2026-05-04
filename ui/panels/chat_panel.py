@@ -883,11 +883,15 @@ class ChatPanel(QWidget):
             "messages": list(self._messages),
             "uploaded_files": list(self._uploaded_files),
             "saved_sessions": list(self._saved_sessions),
+            "model": self._model,
         }
 
     def restore_chat_state(self, data: object):
         if not isinstance(data, dict):
             return
+        model = str(data.get("model") or "").strip()
+        if model:
+            self.set_model(model)
         self._conversation_summary = str(data.get("summary") or "")
         messages = data.get("messages")
         if isinstance(messages, list):
