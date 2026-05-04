@@ -22,6 +22,7 @@ class PhotoSlot:
     """One labelled photo placeholder in the BDT template."""
     label: str                       # e.g. "Battery current", "PLVD set point"
     image_data: bytes | None = None  # raw JPEG/PNG bytes, None if empty
+    image_path: str = ""
     image_ext: str = ""              # "jpeg" or "png"
     category: str = "other"
     verification: dict = field(default_factory=dict)

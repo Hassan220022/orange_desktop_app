@@ -1126,7 +1126,30 @@ class BdtDetailPanel(QWidget):
     # ------------------------------------------------------------------
     # Photo fullsize viewer
     # ------------------------------------------------------------------
-    def _show_photo_fullsize(self, image_data: bytes, label: str):
+    @staticmethod
+    def _slot_has_image(slot) -> bool:
+        return bool(getattr(slot, "image_data", None) or getattr(slot, "image_path", ""))
+
+    @staticmethod
+    def _slot_pixmap(slot) -> QPixmap:
+        pix = QPixmap()
+        image_data = getattr(slot, "image_data", None)
+        if image_data:
+            pix.loadFromData(image_data)
+        else:
+            image_path = str(getattr(slot, "image_path", "") or "")
+            if image_path:
+                pix.load(image_path)
+        return pix
+
+    @staticmethod
+    def _slot_fullsize_source(slot):
+        image_data = getattr(slot, "image_data", None)
+        if image_data:
+            return image_data
+        return str(getattr(slot, "image_path", "") or "")
+
+    def _show_photo_fullsize(self, image_source, label: str):
         """Open a modal dialog with zoom (scroll wheel, +/- buttons, fit)."""
         dlg = QDialog(self)
         dlg.setWindowTitle(label)
@@ -1139,7 +1162,10 @@ class BdtDetailPanel(QWidget):
 
         # Original pixmap (never mutated)
         original_pix = QPixmap()
-        original_pix.loadFromData(image_data)
+        if isinstance(image_source, (bytes, bytearray)):
+            original_pix.loadFromData(bytes(image_source))
+        else:
+            original_pix.load(str(image_source or ""))
 
         # State shared by closures
         state = {"zoom": 100}  # percentage
@@ -1301,7 +1327,7 @@ class BdtDetailPanel(QWidget):
         grouped: dict[str, list] = {}
         for slot in bdt.photo_slots:
             # Skip empty placeholders so the gallery has no blank gaps.
-            if not getattr(slot, "image_data", None):
+            if not self._slot_has_image(slot):
                 continue
             category = self._slot_category(slot)
             grouped.setdefault(category, []).append(slot)
@@ -1345,20 +1371,27 @@ class BdtDetailPanel(QWidget):
                 card_lay.setContentsMargins(4, 4, 4, 4)
                 card_lay.setSpacing(2)
 
-                if slot.image_data:
+                if self._slot_has_image(slot):
                     card.setObjectName("bdt_photo_card")
                     card.setCursor(Qt.PointingHandCursor)
-                    pix = QPixmap()
-                    pix.loadFromData(slot.image_data)
-                    thumb = pix.scaledToWidth(
-                        thumb_w, Qt.SmoothTransformation)
-                    img_lbl = QLabel()
-                    img_lbl.setPixmap(thumb)
-                    img_lbl.setAlignment(Qt.AlignCenter)
-                    card_lay.addWidget(img_lbl)
-                    _data = slot.image_data
-                    _label = slot.label
-                    card.mousePressEvent = lambda _, d=_data, l=_label: self._show_photo_fullsize(d, l)
+                    pix = self._slot_pixmap(slot)
+                    if pix.isNull():
+                        card.setObjectName("bdt_photo_missing")
+                        card.setMinimumHeight(int(thumb_w * 0.66))
+                        na_lbl = QLabel("Not Available")
+                        na_lbl.setObjectName("bdt_photo_missing_label")
+                        na_lbl.setAlignment(Qt.AlignCenter)
+                        card_lay.addWidget(na_lbl, 1)
+                    else:
+                        thumb = pix.scaledToWidth(
+                            thumb_w, Qt.SmoothTransformation)
+                        img_lbl = QLabel()
+                        img_lbl.setPixmap(thumb)
+                        img_lbl.setAlignment(Qt.AlignCenter)
+                        card_lay.addWidget(img_lbl)
+                        _source = self._slot_fullsize_source(slot)
+                        _label = slot.label
+                        card.mousePressEvent = lambda _, s=_source, l=_label: self._show_photo_fullsize(s, l)
                 else:
                     card.setObjectName("bdt_photo_missing")
                     card.setMinimumHeight(int(thumb_w * 0.66))
@@ -1491,7 +1524,7 @@ class BdtDetailPanel(QWidget):
         summary = {cat: 0 for cat in sorted(self._COMPARE_KEY_CATEGORIES)}
         for slot in slots:
             cat = self._slot_category(slot)
-            if cat in summary and slot.image_data:
+            if cat in summary and self._slot_has_image(slot):
                 summary[cat] += 1
         return summary
 
@@ -1699,19 +1732,25 @@ class BdtDetailPanel(QWidget):
         card_lay.setContentsMargins(2, 2, 2, 2)
         card_lay.setSpacing(1)
 
-        if slot and slot.image_data:
+        if slot and self._slot_has_image(slot):
             card.setObjectName("bdt_photo_card")
             card.setCursor(Qt.PointingHandCursor)
-            pix = QPixmap()
-            pix.loadFromData(slot.image_data)
-            thumb = pix.scaledToWidth(160, Qt.SmoothTransformation)
-            img_lbl = QLabel()
-            img_lbl.setPixmap(thumb)
-            img_lbl.setAlignment(Qt.AlignCenter)
-            card_lay.addWidget(img_lbl)
-            _data = slot.image_data
-            _label = getattr(slot, "label", "") or getattr(slot, "category", "") or "Photo"
-            card.mousePressEvent = lambda _, d=_data, l=_label: self._show_photo_fullsize(d, l)
+            pix = self._slot_pixmap(slot)
+            if pix.isNull():
+                card.setObjectName("bdt_photo_missing")
+                na_lbl = QLabel("N/A")
+                na_lbl.setObjectName("bdt_photo_missing_label")
+                na_lbl.setAlignment(Qt.AlignCenter)
+                card_lay.addWidget(na_lbl, 1)
+            else:
+                thumb = pix.scaledToWidth(160, Qt.SmoothTransformation)
+                img_lbl = QLabel()
+                img_lbl.setPixmap(thumb)
+                img_lbl.setAlignment(Qt.AlignCenter)
+                card_lay.addWidget(img_lbl)
+                _source = self._slot_fullsize_source(slot)
+                _label = getattr(slot, "label", "") or getattr(slot, "category", "") or "Photo"
+                card.mousePressEvent = lambda _, s=_source, l=_label: self._show_photo_fullsize(s, l)
         else:
             card.setObjectName("bdt_photo_missing")
             na_lbl = QLabel("N/A")

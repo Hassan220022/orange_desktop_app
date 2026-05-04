@@ -624,6 +624,8 @@ class ChatPanel(QWidget):
         self.lbl_status = QLabel(self._api_status_text())
         self.lbl_status.setObjectName("assistant_status")
         self.lbl_status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.lbl_status.setMinimumWidth(0)
+        self.lbl_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         title_row.addWidget(self.lbl_status)
         head_lay.addLayout(title_row)
 
@@ -637,6 +639,7 @@ class ChatPanel(QWidget):
 
         self.edit_model = QComboBox()
         self.edit_model.setObjectName("chat_model")
+        self.edit_model.setMinimumWidth(0)
         self.edit_model.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._populate_model_options(list(FALLBACK_FREE_MODELS))
         self.edit_model.currentIndexChanged.connect(self._sync_model)
@@ -739,9 +742,7 @@ class ChatPanel(QWidget):
         for btn in getattr(self, "_adaptive_buttons", []):
             btn.setMinimumHeight(content_height)
         two_column_tools = (content_width * 2) + 48
-        model_width = self.edit_model.fontMetrics().horizontalAdvance(self.edit_model.currentText() or self._model) + 96
-        status_width = self.lbl_status.fontMetrics().horizontalAdvance(self.lbl_status.text()) + 120
-        self._recommended_min_width = max(350, two_column_tools, min(520, model_width), min(520, status_width))
+        self._recommended_min_width = max(310, two_column_tools)
 
     def changeEvent(self, event):
         super().changeEvent(event)

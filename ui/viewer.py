@@ -309,7 +309,7 @@ class AlarmViewer(QMainWindow):
 
         # Embedded assistant panel (Copilot-like, not a separate workspace tab)
         self._chat_panel = ChatPanel(self)
-        self._assistant_width = 390
+        self._assistant_width = 320
         self._assistant_open = True
         self._content_splitter = QSplitter(Qt.Horizontal)
         self._content_splitter.setHandleWidth(6)
@@ -319,7 +319,7 @@ class AlarmViewer(QMainWindow):
         self._content_splitter.setStretchFactor(1, 0)
         self._content_splitter.setCollapsible(0, False)
         self._content_splitter.setCollapsible(1, True)
-        self._content_splitter.setSizes([1160, self._assistant_width])
+        self._content_splitter.setSizes([1240, self._assistant_width])
         self._content_splitter.splitterMoved.connect(self._on_content_splitter_moved)
 
         rl.addWidget(self._content_splitter, 1)
@@ -424,18 +424,6 @@ class AlarmViewer(QMainWindow):
         self._btn_theme.clicked.connect(self._toggle_theme)
         l.addWidget(self._btn_theme)
 
-        # Skip photos toggle
-        self._chk_skip_photos = QCheckBox("Skip Photos")
-        self._chk_skip_photos.setObjectName("chk_skip_photos")
-        self._chk_skip_photos.setChecked(self._skip_photos)
-        self._chk_skip_photos.toggled.connect(self._toggle_skip_photos)
-        l.addWidget(self._chk_skip_photos)
-
-        self._lbl_count = QLabel("")
-        self._lbl_count.setObjectName("lbl_green")
-        self._lbl_count.setMinimumWidth(0)
-        l.addWidget(self._lbl_count)
-
         self._refresh_header_button_texts()
         return w
 
@@ -486,10 +474,6 @@ class AlarmViewer(QMainWindow):
             self._lbl_workspace.setVisible(True)
         if hasattr(self, "_btn_daily_report"):
             self._btn_daily_report.setVisible(not is_bdt)
-        if hasattr(self, "_chk_skip_photos"):
-            self._chk_skip_photos.setVisible(not is_bdt)
-        if hasattr(self, "_lbl_count"):
-            self._lbl_count.setVisible(not is_bdt)
         for btn_index, btn in enumerate(getattr(self, "_workspace_buttons", [])):
             btn.setChecked(btn_index == index)
         if is_bdt and hasattr(self, "_bdt_sidebar"):
@@ -709,7 +693,7 @@ class AlarmViewer(QMainWindow):
         if "chat_state" in s and hasattr(self, "_chat_panel"):
             self._chat_panel.restore_chat_state(s.get("chat_state"))
         if "assistant_width" in s:
-            self._assistant_width = max(120, int(s.get("assistant_width") or self._assistant_width))
+            self._assistant_width = max(120, min(340, int(s.get("assistant_width") or self._assistant_width)))
         if "assistant_open" in s:
             self._assistant_open = bool(s.get("assistant_open"))
 
@@ -1419,7 +1403,6 @@ class AlarmViewer(QMainWindow):
             self._page_offset = 0
             self._model.clear()
             self._alarm_table_columns = []
-            self._lbl_count.setText("Showing  0  of  0 records")
             self._refresh_alarm_stats(base_query)
             self._refresh_alarm_facets()
             self._update_pagination_controls()
@@ -1443,7 +1426,7 @@ class AlarmViewer(QMainWindow):
         self._refresh_alarm_facets()
         start = page_offset + 1
         end = min(page_offset + len(page_df), total)
-        self._lbl_count.setText(f"Showing  {start:,}-{end:,}  of  {total:,} records")
+
         self._update_pagination_controls()
         if status_message:
             self._sbar.showMessage(status_message)
@@ -1523,9 +1506,6 @@ class AlarmViewer(QMainWindow):
             view = self._apply_filters(self._full_df)
             self._populate(view)
             self._refresh_stats(view)
-            self._lbl_count.setText(
-                f"Showing  {len(view):,}  of  {len(self._full_df):,} records"
-            )
             self._sbar.showMessage("Alarms re-classified by alarm ID config")
             return
 
@@ -1650,8 +1630,11 @@ class AlarmViewer(QMainWindow):
         self._set_assistant_panel_open(not is_open)
 
     def _assistant_min_width(self) -> int:
+        return 280
+
+    def _assistant_open_min_width(self) -> int:
         recommended = int(getattr(self._chat_panel, "_recommended_min_width", 0) or 0)
-        return max(280, recommended)
+        return max(self._assistant_min_width(), recommended)
 
     def _assistant_max_width(self) -> int:
         if not hasattr(self, "_content_splitter"):
@@ -1675,8 +1658,8 @@ class AlarmViewer(QMainWindow):
             self._content_splitter.setSizes([total, 0])
         else:
             max_open = self._assistant_max_width()
-            min_open = min(self._assistant_min_width(), max_open)
-            target = max(min_open, min(self._assistant_width or 420, max_open))
+            open_min = min(self._assistant_open_min_width(), max_open)
+            target = max(open_min, min(self._assistant_width or 320, max_open))
             target = min(target, total - 1)
             self._assistant_open = True
             self._assistant_width = target
@@ -2217,9 +2200,6 @@ class AlarmViewer(QMainWindow):
         view = self._apply_filters(self._full_df)
         self._populate(view)
         self._refresh_stats(view)
-        self._lbl_count.setText(
-            f"Showing  {len(view):,}  of  {len(self._full_df):,} records"
-        )
         self._sbar.showMessage(f"{msg}; displaying in-memory results")
 
     def _load_bdt_results_from_db(self) -> list:
@@ -2370,8 +2350,6 @@ class AlarmViewer(QMainWindow):
         self._populate(df)
         self._refresh_stats(df)
         n = len(df)
-        self._lbl_count.setText(
-            f"Showing  {n:,}  of  {len(self._full_df):,} records")
 
         raw = self._edit_site.text().strip()
         if raw:
@@ -2426,9 +2404,6 @@ class AlarmViewer(QMainWindow):
                 df = df[df["_duration_secs"] >= self._spn_mindur.value() * 60]
             self._populate(df)
             self._refresh_stats(df)
-            self._lbl_count.setText(
-                f"Showing  {len(df):,}  of  "
-                f"{len(self._full_df):,} records")
         self._sbar.showMessage("Filters cleared")
 
     def _show_backup_times(self):

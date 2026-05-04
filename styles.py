@@ -143,26 +143,26 @@ QPushButton#btn_backup:hover {
 
 /* Both P+D — orange */
 QPushButton#btn_both {
-    background: #2e2010;
+    background: #3e2c12;
     color: #fab387;
-    border: 1px solid #4a3018;
+    border: 1px solid #604020;
 }
 QPushButton#btn_both:hover {
-    background: #3a2814;
+    background: #4a3818;
     border-color: #fab387;
 }
 
 /* Load — amber */
 QPushButton#btn_load {
-    background: #2e2010;
+    background: #3e2c12;
     color: #fab387;
-    border: 1px solid #4a3018;
+    border: 1px solid #604020;
     font-size: 13px;
     padding: 8px 14px;
     min-height: 38px;
 }
 QPushButton#btn_load:hover {
-    background: #3a2814;
+    background: #4a3818;
     border-color: #fab387;
 }
 QPushButton#btn_load:disabled {
@@ -1472,6 +1472,13 @@ QPushButton#btn_load:disabled {
     border-color: #ccd0da;
     color: #9ca0b0;
 }
+QPushButton#btn_load[compact="true"] {
+    min-width: 0px;
+    min-height: 26px;
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: 5px;
+}
 
 /* Small selection buttons */
 QPushButton#btn_small {
@@ -1504,6 +1511,13 @@ QPushButton#btn_dir {
 QPushButton#btn_dir:hover {
     background: #d5e0fc;
     border-color: #1e66f5;
+}
+QPushButton#btn_dir[compact="true"] {
+    min-width: 0px;
+    min-height: 26px;
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: 5px;
 }
 QPushButton[compact="true"] {
     padding: 3px 8px;

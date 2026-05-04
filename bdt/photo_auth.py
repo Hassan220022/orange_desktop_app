@@ -43,12 +43,20 @@ def _cache_key(image_data: bytes, image_ext: str) -> str:
 def verify_photo_slots(photo_slots: list) -> None:
     """Attach verification results to each populated photo slot."""
     for slot in photo_slots or []:
-        if not getattr(slot, "image_data", None):
+        image_data = getattr(slot, "image_data", None)
+        if not image_data:
+            image_path = str(getattr(slot, "image_path", "") or "")
+            if image_path:
+                try:
+                    image_data = Path(image_path).read_bytes()
+                except OSError:
+                    image_data = None
+        if not image_data:
             continue
         if getattr(slot, "verification", None):
             continue
         slot.verification = verify_image_bytes(
-            slot.image_data,
+            image_data,
             getattr(slot, "image_ext", ""),
         )
 
