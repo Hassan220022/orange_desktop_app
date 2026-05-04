@@ -728,6 +728,7 @@ class ChatPanel(QWidget):
     def restore_chat_state(self, data: object):
         if not isinstance(data, dict):
             return
+        self._conversation_summary = str(data.get("summary") or "")
         messages = data.get("messages")
         if isinstance(messages, list):
             restored: list[dict[str, str]] = []
@@ -749,7 +750,6 @@ class ChatPanel(QWidget):
                         restored.append(_chat_message(role, content))
             self._messages = restored
             self._rehydrate_history()
-        self._conversation_summary = str(data.get("summary") or "")
         uploads = data.get("uploaded_files")
         if isinstance(uploads, list):
             self._uploaded_files = [
