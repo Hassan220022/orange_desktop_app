@@ -800,6 +800,9 @@ class ChatPanel(QWidget):
         self.send_prompt("Show alarm stats summary: total, power, down, door, sites, and average duration.")
 
     def show_chat_history(self):
+        if self._chat_work_in_progress():
+            self._viewer._sbar.showMessage("Wait for the current chat task to finish before opening history.", 3500)
+            return
         original_ids = {str(session.get("id") or "") for session in self._saved_sessions}
         dialog = ChatHistoryDialog(self._saved_sessions, parent=self)
         dialog.session_selected.connect(self._restore_session)
@@ -811,6 +814,19 @@ class ChatPanel(QWidget):
             if str(session.get("id") or "") not in original_ids | remaining_ids
         ]
         self._saved_sessions = (archived_now + remaining)[:MAX_SAVED_SESSIONS]
+
+    def _chat_work_in_progress(self) -> bool:
+        try:
+            thread = self._thread
+        except (AttributeError, RuntimeError):
+            thread = None
+        if thread is not None and thread.isRunning():
+            return True
+        try:
+            summary_thread = self._summary_thread
+        except (AttributeError, RuntimeError):
+            summary_thread = None
+        return bool(summary_thread is not None and summary_thread.isRunning())
 
     def _archive_current_session(self):
         if not self._messages:
@@ -833,6 +849,9 @@ class ChatPanel(QWidget):
         self._saved_sessions = self._saved_sessions[:MAX_SAVED_SESSIONS]
 
     def _restore_session(self, session: dict):
+        if self._chat_work_in_progress():
+            self._viewer._sbar.showMessage("Wait for the current chat task to finish before restoring history.", 3500)
+            return
         self._archive_current_session()
         self._messages.clear()
         self._conversation_summary = ""

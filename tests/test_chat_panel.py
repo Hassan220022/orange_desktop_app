@@ -268,6 +268,37 @@ def test_show_chat_history_preserves_current_chat_archived_during_restore(monkey
     assert "old chat" in titles
 
 
+def test_restore_session_is_blocked_while_summary_thread_runs():
+    class _Thread:
+        def isRunning(self):
+            return True
+
+    class _Status:
+        def __init__(self):
+            self.messages = []
+
+        def showMessage(self, message, timeout=0):
+            self.messages.append((message, timeout))
+
+    panel = ChatPanel.__new__(ChatPanel)
+    panel._thread = None
+    panel._summary_thread = _Thread()
+    panel._viewer = type("Viewer", (), {"_sbar": _Status()})()
+    panel._saved_sessions = []
+    panel._messages = [{"role": "user", "content": "active question", "timestamp": ""}]
+    panel._conversation_summary = "active summary"
+    panel._uploaded_files = []
+
+    ChatPanel._restore_session(panel, {"messages": [{"role": "user", "content": "old question"}]})
+
+    assert panel._messages == [{"role": "user", "content": "active question", "timestamp": ""}]
+    assert panel._conversation_summary == "active summary"
+    assert panel._saved_sessions == []
+    assert panel._viewer._sbar.messages == [
+        ("Wait for the current chat task to finish before restoring history.", 3500)
+    ]
+
+
 
 def test_rows_preview_limit_caps_alarm_rows_to_one_hundred():
     assert _rows_preview_limit(250, 10) == 10
