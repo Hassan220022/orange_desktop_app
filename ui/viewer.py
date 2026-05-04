@@ -680,6 +680,7 @@ class AlarmViewer(QMainWindow):
             "ui_zoom_pct": self._app_zoom_pct,
             "theme_mode": self._theme_mode,
             "chat_model": self._chat_panel.model() if hasattr(self, "_chat_panel") else "",
+            "chat_state": self._chat_panel.chat_state() if hasattr(self, "_chat_panel") else {},
             "assistant_open": bool(getattr(self, "_assistant_open", True)),
             "assistant_width": int(getattr(self, "_assistant_width", 420) or 420),
         }
@@ -705,6 +706,8 @@ class AlarmViewer(QMainWindow):
             self._update_theme_button_label()
         if "chat_model" in s and hasattr(self, "_chat_panel"):
             self._chat_panel.set_model(str(s.get("chat_model") or ""))
+        if "chat_state" in s and hasattr(self, "_chat_panel"):
+            self._chat_panel.restore_chat_state(s.get("chat_state"))
         if "assistant_width" in s:
             self._assistant_width = max(120, int(s.get("assistant_width") or self._assistant_width))
         if "assistant_open" in s:

@@ -6,7 +6,7 @@ import pandas as pd
 
 import alarm_app.llm_tools.openrouter_agent as openrouter_agent_mod
 from alarm_app.llm_tools.mcp_server import AlarmViewerMcpServer
-from alarm_app.llm_tools.openrouter_agent import OpenRouterAgent
+from alarm_app.llm_tools.openrouter_agent import OpenRouterAgent, _chat_message
 from alarm_app.llm_tools.openrouter_agent import OpenRouterToolSupportError
 from alarm_app.llm_tools.openrouter_models import (
     FREE_MODELS_ROUTER,
@@ -557,6 +557,95 @@ def test_openrouter_agent_injects_runtime_context_message(monkeypatch):
     assert captured["messages"][1] == {
         "role": "system",
         "content": "Current local machine time: 2026-05-03T12:34:56+03:00",
+    }
+
+
+def test_openrouter_agent_assembles_summary_history_and_current_message():
+    service = SimpleNamespace(list_data_sources=lambda: {"ok": True})
+    agent = OpenRouterAgent(api_key="test", service=service)
+    captured = {}
+
+    def _complete(messages, tools, model=None):
+        captured["messages"] = messages
+        return {"content": "done"}
+
+    agent._complete = _complete
+
+    assert agent.ask(
+        "current",
+        summary="Earlier summary",
+        history=[
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+        ],
+    ) == "done"
+    assert captured["messages"][2] == {
+        "role": "system",
+        "content": "Conversation summary:\nEarlier summary",
+    }
+    assert captured["messages"][3:6] == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply"},
+        {"role": "user", "content": "current"},
+    ]
+
+
+def test_openrouter_agent_normalizes_history_to_alternating_turns():
+    history = OpenRouterAgent._normalized_history([
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": "duplicate user"},
+        {"role": "assistant", "content": "reply"},
+        {"role": "assistant", "content": "duplicate assistant"},
+        {"role": "user", "content": "next"},
+    ])
+
+    assert history == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply"},
+        {"role": "user", "content": "next"},
+    ]
+
+
+def test_openrouter_agent_summarizes_history_with_existing_summary():
+    agent = OpenRouterAgent(api_key="test", service=SimpleNamespace())
+    captured = {}
+
+    def _complete(messages, tools, model=None):
+        captured["messages"] = messages
+        captured["tools"] = tools
+        return {"content": "updated summary"}
+
+    agent._complete = _complete
+
+    assert agent.summarize_history(
+        [
+            {"role": "user", "content": "hello", "timestamp": "2026-05-04T00:00:00Z"},
+            {"role": "assistant", "content": "hi", "timestamp": ""},
+        ],
+        existing_summary="old summary",
+    ) == "updated summary"
+    assert captured["tools"] == []
+    prompt = captured["messages"][1]["content"]
+    assert "old summary" in prompt
+    assert "User [2026-05-04T00:00:00Z]: hello" in prompt
+    assert "Assistant: hi" in prompt
+
+
+def test_chat_message_includes_role_content_and_timestamp(monkeypatch):
+    class _Now:
+        @classmethod
+        def now(cls, tz=None):
+            return cls()
+
+        def isoformat(self, timespec=None):
+            return "2026-05-04T00:00:00+00:00"
+
+    monkeypatch.setattr(openrouter_agent_mod, "datetime", _Now)
+
+    assert _chat_message("user", "hello") == {
+        "role": "user",
+        "content": "hello",
+        "timestamp": "2026-05-04T00:00:00+00:00",
     }
 
 

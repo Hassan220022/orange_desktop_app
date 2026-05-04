@@ -8,7 +8,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 try:
@@ -37,10 +37,23 @@ IMPORTANT RULES:
 6. Use query_backup_times for questions about backup time, backup duration, or battery hold-up between Power and Down alarms.
 7. Use the host clock context for any time-sensitive answer."""
 
+SUMMARY_SYSTEM_PROMPT = """You compress Alarm Viewer assistant conversations.
+Preserve all user goals, key facts, tool findings, decisions, generated files,
+uploaded files, unresolved questions, and the most recent active topic.
+Be dense and specific. Do not invent facts."""
+
 
 def _runtime_context_message() -> str:
     local_now = datetime.now().astimezone()
     return f"Current local machine time: {local_now.isoformat(timespec='seconds')}"
+
+
+def _chat_message(role: str, content: str) -> dict[str, Any]:
+    return {
+        "role": role,
+        "content": content,
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
 
 
 class OpenRouterToolSupportError(RuntimeError):
@@ -57,14 +70,22 @@ class OpenRouterAgent:
         self,
         prompt: str,
         *,
+        history: list[dict[str, Any]] | None = None,
+        summary: str = "",
+        system_context: str = "",
         max_tool_rounds: int = 6,
         on_tool_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> str:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "system", "content": _runtime_context_message()},
-            {"role": "user", "content": prompt},
         ]
+        if system_context.strip():
+            messages.append({"role": "system", "content": system_context.strip()})
+        if summary.strip():
+            messages.append({"role": "system", "content": f"Conversation summary:\n{summary.strip()}"})
+        messages.extend(self._normalized_history(history or []))
+        messages.append({"role": "user", "content": prompt})
         tools = tool_definitions_for_openrouter()
 
         active_model = self.model
@@ -118,6 +139,65 @@ class OpenRouterAgent:
                     "content": json.dumps(result, default=str, ensure_ascii=False),
                 })
         return "The agent reached the tool-call limit before producing a final answer."
+
+    def summarize_history(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        existing_summary: str = "",
+        model: str | None = None,
+    ) -> str:
+        transcript = self._transcript(messages)
+        if not transcript and not existing_summary.strip():
+            return ""
+        prompt = (
+            "Existing summary:\n"
+            f"{existing_summary.strip() or '(none)'}\n\n"
+            "New conversation turns to absorb:\n"
+            f"{transcript or '(none)'}\n\n"
+            "Return one updated handoff summary. End with the most recent active topic."
+        )
+        response = self._complete(
+            [
+                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            tools=[],
+            model=model or self.model,
+        )
+        return str(response.get("content") or "").strip()
+
+    @staticmethod
+    def _normalized_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        expected = "user"
+        for item in history:
+            role = str(item.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"} or role != expected:
+                continue
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            normalized.append({"role": role, "content": content})
+            expected = "assistant" if expected == "user" else "user"
+        return normalized
+
+    @staticmethod
+    def _transcript(messages: list[dict[str, Any]]) -> str:
+        lines: list[str] = []
+        for item in messages:
+            role = str(item.get("role") or "").strip().lower()
+            if role not in {"user", "assistant"}:
+                continue
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            timestamp = str(item.get("timestamp") or "").strip()
+            prefix = role.title()
+            if timestamp:
+                prefix = f"{prefix} [{timestamp}]"
+            lines.append(f"{prefix}: {content}")
+        return "\n".join(lines)
 
     def _complete(
         self,

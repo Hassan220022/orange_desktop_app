@@ -39,7 +39,7 @@ from PyQt5.QtWidgets import (
 try:
     from ...constants import DISPLAY_COLUMNS
     from ..flow_layout import FlowLayout
-    from ...llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent
+    from ...llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message
     from ...llm_tools.openrouter_models import (
         FALLBACK_FREE_MODELS,
         OpenRouterModelOption,
@@ -51,7 +51,7 @@ except ImportError:
     try:
         from alarm_app.constants import DISPLAY_COLUMNS
         from alarm_app.ui.flow_layout import FlowLayout
-        from alarm_app.llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent
+        from alarm_app.llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message
         from alarm_app.llm_tools.openrouter_models import (
             FALLBACK_FREE_MODELS,
             OpenRouterModelOption,
@@ -62,7 +62,7 @@ except ImportError:
     except ImportError:
         from constants import DISPLAY_COLUMNS  # type: ignore[no-redef]
         from ui.flow_layout import FlowLayout  # type: ignore[no-redef]
-        from llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent  # type: ignore[no-redef]
+        from llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message  # type: ignore[no-redef]
         from llm_tools.openrouter_models import (  # type: ignore[no-redef]
             FALLBACK_FREE_MODELS,
             OpenRouterModelOption,
@@ -79,6 +79,9 @@ _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _TABLE_ROW_RE = re.compile(r"^\|(.+)\|\s*$")
 _TABLE_SEP_RE = re.compile(r"^\|\s*(:?-+:?\s*\|\s*)+$")
+CHAT_RAW_TURN_LIMIT = 10
+CHAT_SUMMARY_TRIGGER_TURNS = 14
+CHAT_SUMMARY_BATCH_TURNS = 6
 
 
 def _format_inline_markdown(text: str) -> str:
@@ -420,10 +423,21 @@ class ChatRequestThread(QThread):
     error = pyqtSignal(str)
     tool_event = pyqtSignal(object)
 
-    def __init__(self, *, prompt: str, model: str):
+    def __init__(
+        self,
+        *,
+        prompt: str,
+        model: str,
+        history: list[dict] | None = None,
+        summary: str = "",
+        system_context: str = "",
+    ):
         super().__init__()
         self.prompt = prompt
         self.model = model
+        self.history = list(history or [])
+        self.summary = summary
+        self.system_context = system_context
 
     def run(self):
         load_local_env()
@@ -434,12 +448,44 @@ class ChatRequestThread(QThread):
         try:
             answer = OpenRouterAgent(api_key=api_key, model=self.model).ask(
                 self.prompt,
+                history=self.history,
+                summary=self.summary,
+                system_context=self.system_context,
                 on_tool_event=self.tool_event.emit,
             )
         except Exception as exc:
             self.error.emit(str(exc))
             return
         self.finished.emit(answer)
+
+
+class ChatSummaryThread(QThread):
+    """Compact older chat turns without blocking the Qt event loop."""
+
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, *, messages: list[dict], existing_summary: str, model: str):
+        super().__init__()
+        self.messages = list(messages)
+        self.existing_summary = existing_summary
+        self.model = model
+
+    def run(self):
+        load_local_env()
+        api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        if not api_key:
+            self.error.emit("OPENROUTER_API_KEY is not set.")
+            return
+        try:
+            summary = OpenRouterAgent(api_key=api_key, model=self.model).summarize_history(
+                self.messages,
+                existing_summary=self.existing_summary,
+            )
+        except Exception as exc:
+            self.error.emit(str(exc))
+            return
+        self.finished.emit(summary)
 
 
 class FreeModelsThread(QThread):
@@ -456,9 +502,12 @@ class ChatPanel(QWidget):
 
     def __init__(self, viewer, parent=None):
         super().__init__(parent)
+        load_local_env()
         self._viewer = viewer
         self._thread: ChatRequestThread | None = None
-        self._messages: list[tuple[str, str]] = []
+        self._summary_thread: ChatSummaryThread | None = None
+        self._messages: list[dict[str, str]] = []
+        self._conversation_summary = ""
         self._tool_cards: dict[str, tuple[QFrame, QVBoxLayout]] = {}
         self._pending_tool_events: dict[str, dict] = {}
         self._pending_tool_order: list[str] = []
@@ -627,6 +676,8 @@ class ChatPanel(QWidget):
 
     def set_model(self, model: str):
         model = normalize_free_model_id(model)
+        if model != self._model:
+            self._prepare_model_switch(model)
         self._model = model
         if hasattr(self, "edit_model"):
             self._select_model_option(model)
@@ -638,7 +689,10 @@ class ChatPanel(QWidget):
     def clear_chat(self):
         if self._thread and self._thread.isRunning():
             return
+        if self._summary_thread and self._summary_thread.isRunning():
+            return
         self._messages.clear()
+        self._conversation_summary = ""
         self._tool_cards.clear()
         self._pending_tool_events.clear()
         self._pending_tool_order.clear()
@@ -663,6 +717,45 @@ class ChatPanel(QWidget):
         self._models_thread = FreeModelsThread()
         self._models_thread.finished.connect(self._on_free_models_loaded)
         self._models_thread.start()
+
+    def chat_state(self) -> dict[str, object]:
+        return {
+            "summary": self._conversation_summary,
+            "messages": list(self._messages),
+            "uploaded_files": list(self._uploaded_files),
+        }
+
+    def restore_chat_state(self, data: object):
+        if not isinstance(data, dict):
+            return
+        messages = data.get("messages")
+        if isinstance(messages, list):
+            restored: list[dict[str, str]] = []
+            for item in messages:
+                if isinstance(item, dict):
+                    role = str(item.get("role") or "").strip().lower()
+                    content = str(item.get("content") or "").strip()
+                    if role in {"user", "assistant"} and content:
+                        restored.append({
+                            "role": role,
+                            "content": content,
+                            "timestamp": str(item.get("timestamp") or ""),
+                        })
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    role_name = str(item[0]).strip().lower()
+                    role = "assistant" if role_name == "assistant" else "user"
+                    content = str(item[1]).strip()
+                    if content:
+                        restored.append(_chat_message(role, content))
+            self._messages = restored[-CHAT_RAW_TURN_LIMIT:]
+        self._conversation_summary = str(data.get("summary") or "")
+        uploads = data.get("uploaded_files")
+        if isinstance(uploads, list):
+            self._uploaded_files = [
+                {"name": str(item.get("name") or ""), "path": str(item.get("path") or ""), "kind": str(item.get("kind") or "")}
+                for item in uploads
+                if isinstance(item, dict) and item.get("path")
+            ]
 
     def _on_free_models_loaded(self, options: object):
         if isinstance(options, list) and options:
@@ -726,6 +819,9 @@ class ChatPanel(QWidget):
         text = text.strip()
         if not text or (self._thread and self._thread.isRunning()):
             return
+        if self._summary_thread and self._summary_thread.isRunning():
+            return
+        load_local_env()
         if not os.environ.get("OPENROUTER_API_KEY", "").strip():
             QMessageBox.warning(
                 self,
@@ -736,15 +832,22 @@ class ChatPanel(QWidget):
             return
 
         self.input.clear()
-        self._messages.append(("User", text))
+        history = list(self._messages)
+        summary = self._conversation_summary
+        self._messages.append(_chat_message("user", text))
         self._append_message("You", text)
         self._pending_tool_events.clear()
         self._pending_tool_order.clear()
         self._pending_tool_seq = 0
         self._set_busy(True)
 
-        prompt = self._build_prompt()
-        self._thread = ChatRequestThread(prompt=prompt, model=self._model)
+        self._thread = ChatRequestThread(
+            prompt=text,
+            model=self._model,
+            history=history,
+            summary=summary,
+            system_context=self._build_system_context(),
+        )
         self._thread.tool_event.connect(self._on_tool_event)
         self._thread.finished.connect(self._on_answer)
         self._thread.error.connect(self._on_error)
@@ -752,8 +855,7 @@ class ChatPanel(QWidget):
         self._thread.error.connect(lambda _error: self._set_busy(False))
         self._thread.start()
 
-    def _build_prompt(self) -> str:
-        recent = self._messages[-10:]
+    def _build_system_context(self) -> str:
         lines = [
             "You are answering inside the Alarm Viewer desktop app.",
             "ALWAYS call a tool to check the database before answering any question about data. Never answer from memory or assumptions.",
@@ -773,8 +875,18 @@ class ChatPanel(QWidget):
             for idx, upload in enumerate(self._uploaded_files[-5:], start=1):
                 lines.append(f"{idx}. {upload['name']} -> {upload['path']}")
             lines.append("When using an uploaded file, pass its path as source_file_path.")
+        return "\n".join(lines)
+
+    def _build_prompt(self) -> str:
+        lines = [self._build_system_context()]
+        if self._conversation_summary.strip():
+            lines.append("Summary of earlier conversation:")
+            lines.append(self._conversation_summary.strip())
         lines.append("Conversation:")
-        for role, content in recent:
+        recent = OpenRouterAgent._normalized_history(self._messages[-CHAT_RAW_TURN_LIMIT:])
+        for item in recent:
+            role = str(item.get("role") or "").title()
+            content = str(item.get("content") or "")
             lines.append(f"{role}: {content}")
         return "\n".join(lines)
 
@@ -782,18 +894,81 @@ class ChatPanel(QWidget):
         answer = answer.strip() or "(no answer)"
         if any((self._pending_tool_events.get(call_id) or {}).get("name") in {"query_alarms", "query_bdt_results", "query_backup_times"} for call_id in self._pending_tool_order):
             answer = _strip_table_blocks(answer)
-        self._messages.append(("Assistant", answer))
+        self._messages.append(_chat_message("assistant", answer))
         self._append_message("Assistant", answer)
         self._flush_pending_tool_events()
+        self._maybe_start_summary()
         self._schedule_scroll_to_bottom()
         self._viewer._sbar.showMessage("Chat response received", 2500)
 
     def _on_error(self, error: str):
         self._pending_tool_events.clear()
         self._pending_tool_order.clear()
+        self._drop_unanswered_user_turn()
         self._append_message("Error", error)
         self._schedule_scroll_to_bottom()
         self._viewer._sbar.showMessage("Chat request failed", 3500)
+
+    def _drop_unanswered_user_turn(self):
+        if self._messages and self._messages[-1].get("role") == "user":
+            self._messages.pop()
+
+    def _prepare_model_switch(self, new_model: str):
+        if not self._messages:
+            return
+        if self._summary_thread and self._summary_thread.isRunning():
+            return
+        raw_count = min(len(self._messages), CHAT_SUMMARY_BATCH_TURNS)
+        self._start_summary(
+            self._messages[:-raw_count],
+            keep_tail=raw_count,
+            model=self._model,
+            status=f"Preparing handoff summary for {new_model}",
+        )
+
+    def _maybe_start_summary(self):
+        if len(self._messages) <= CHAT_SUMMARY_TRIGGER_TURNS:
+            return
+        self._start_summary(
+            self._messages[:CHAT_SUMMARY_BATCH_TURNS],
+            keep_tail=len(self._messages) - CHAT_SUMMARY_BATCH_TURNS,
+            model=self._model,
+            status="Summarizing older chat turns",
+        )
+
+    def _start_summary(self, messages: list[dict[str, str]], *, keep_tail: int, model: str, status: str):
+        if not messages:
+            return
+        if self._summary_thread and self._summary_thread.isRunning():
+            return
+        messages = OpenRouterAgent._normalized_history(messages)
+        if not messages:
+            return
+        self._summary_thread = ChatSummaryThread(
+            messages=messages,
+            existing_summary=self._conversation_summary,
+            model=model,
+        )
+        self._summary_thread.finished.connect(lambda summary, keep_tail=keep_tail: self._on_summary_ready(summary, keep_tail))
+        self._summary_thread.error.connect(self._on_summary_error)
+        self._summary_thread.start()
+        self._viewer._sbar.showMessage(status, 2500)
+        self._refresh_send_state()
+
+    def _on_summary_ready(self, summary: str, keep_tail: int):
+        summary = summary.strip()
+        if summary:
+            self._conversation_summary = summary
+            if keep_tail > 0:
+                self._messages = self._messages[-keep_tail:]
+            else:
+                self._messages.clear()
+        self._viewer._sbar.showMessage("Chat summary updated", 2500)
+        self._refresh_send_state()
+
+    def _on_summary_error(self, error: str):
+        self._viewer._sbar.showMessage(f"Chat summary skipped: {error}", 3500)
+        self._refresh_send_state()
 
     def _on_tool_event(self, event: object):
         if not isinstance(event, dict):
@@ -1475,17 +1650,22 @@ class ChatPanel(QWidget):
         return str(value)
 
     def _set_busy(self, busy: bool):
-        self.btn_send.setEnabled(not busy and bool(self.input.toPlainText().strip()))
-        self.btn_clear.setEnabled(not busy)
-        self.btn_sources.setEnabled(not busy)
-        self.btn_alarm_stats.setEnabled(not busy)
-        self.btn_upload.setEnabled(not busy)
-        self.edit_model.setEnabled(not busy)
-        self.input.setEnabled(not busy)
+        summary_busy = bool(self._summary_thread and self._summary_thread.isRunning())
+        effective_busy = busy or summary_busy
+        self.btn_send.setEnabled(not effective_busy and bool(self.input.toPlainText().strip()))
+        self.btn_clear.setEnabled(not effective_busy)
+        self.btn_sources.setEnabled(not effective_busy)
+        self.btn_alarm_stats.setEnabled(not effective_busy)
+        self.btn_upload.setEnabled(not effective_busy)
+        self.edit_model.setEnabled(not effective_busy)
+        self.input.setEnabled(not effective_busy)
         self.lbl_status.setText("Thinking..." if busy else self._api_status_text())
 
     def _refresh_send_state(self):
-        busy = bool(self._thread and self._thread.isRunning())
+        busy = bool(
+            (self._thread and self._thread.isRunning())
+            or (self._summary_thread and self._summary_thread.isRunning())
+        )
         self.btn_send.setEnabled(not busy and bool(self.input.toPlainText().strip()))
 
     def _api_status_text(self) -> str:
