@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
 from alarm_app.ui.dialogs import ColumnFilterPopup
+from alarm_app.constants import BDT_RESULT_HEADERS
 
 
 class _FakeTable:
@@ -67,6 +68,8 @@ def _panel_for(results):
     panel._bdt_filtered_results = []
     panel._bdt_row_map_cache = {}
     panel._bdt_distinct_cache = {}
+    panel._bdt_summary_cache = None
+    panel._bdt_filter_signature = None
     panel.bdt_table = _FakeTable(len(results))
     panel.bdt_search = SimpleNamespace(text=lambda: "")
     panel.bdt_summary = _Label()
@@ -79,9 +82,10 @@ def _panel_for(results):
     panel._invalidate_bdt_filter_cache = lambda: BdtValidationPanel._invalidate_bdt_filter_cache(panel)
     panel._row_map_for_result = lambda res: BdtValidationPanel._row_map_for_result(panel, res)
     panel._distinct_bdt_values = lambda col_name: BdtValidationPanel._distinct_bdt_values(panel, col_name)
+    panel._current_bdt_filter_signature = lambda: BdtValidationPanel._current_bdt_filter_signature(panel)
     panel._filtered_bdt_results_for_text = lambda text: BdtValidationPanel._filtered_bdt_results_for_text(panel, text)
     panel._update_bdt_pagination_controls = lambda: BdtValidationPanel._update_bdt_pagination_controls(panel)
-    panel._populate_bdt_table = lambda: BdtValidationPanel._populate_bdt_table(panel)
+    panel._populate_bdt_table = lambda **kwargs: BdtValidationPanel._populate_bdt_table(panel, **kwargs)
     return panel
 
 
@@ -157,6 +161,17 @@ def test_rule_cell_text_normalizes_non_primary_verdicts_to_no_data():
     assert BdtValidationPanel._rule_cell_text(SimpleNamespace(verdict="N/A", detail="Not enough readings")) == "No data"
     assert BdtValidationPanel._rule_cell_text(SimpleNamespace(verdict="", detail="")) == "No data"
     assert BdtValidationPanel._rule_cell_text(SimpleNamespace(verdict="Accepted", detail="ok")) == "Accepted"
+
+
+def test_bdt_row_map_includes_battery_status_field():
+    result = _result("AAA001", "2026-04-19", "Accepted", "a.xlsx")
+    result.bdt_data = SimpleNamespace(num_batteries=0, summary_data={})
+    panel = _panel_for([result])
+
+    row_map = BdtValidationPanel._row_map_for_result(panel, result)
+
+    assert "Battery Status" in BDT_RESULT_HEADERS
+    assert row_map["Battery Status"] == "No Battery"
 
 
 def test_copy_bdt_cell_copies_value_and_updates_status(monkeypatch):

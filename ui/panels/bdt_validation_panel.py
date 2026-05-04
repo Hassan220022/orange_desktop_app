@@ -27,7 +27,7 @@ try:
     )
     from ..threads import ExportThread, BDTValidationThread
     from ...bdt.parser import BDTData
-    from ...bdt.validator import ValidationResult
+    from ...bdt.validator import ValidationResult, bdt_battery_status
     from ...bdt.export import build_bdt_export_sheets
     from ..dialogs import (
         AcceptedPmReportDialog,
@@ -51,7 +51,7 @@ except ImportError:
         )
         from alarm_app.ui.threads import ExportThread, BDTValidationThread
         from alarm_app.bdt.parser import BDTData
-        from alarm_app.bdt.validator import ValidationResult
+        from alarm_app.bdt.validator import ValidationResult, bdt_battery_status
         from alarm_app.bdt.export import build_bdt_export_sheets
         from alarm_app.ui.dialogs import (
             AcceptedPmReportDialog,
@@ -74,7 +74,7 @@ except ImportError:
         )
         from ui.threads import ExportThread, BDTValidationThread
         from bdt.parser import BDTData
-        from bdt.validator import ValidationResult
+        from bdt.validator import ValidationResult, bdt_battery_status
         from bdt.export import build_bdt_export_sheets
         from ui.dialogs import (
             AcceptedPmReportDialog,
@@ -98,11 +98,13 @@ class BdtValidationPanel(QWidget):
         super().__init__(parent)
         self._viewer = viewer
         self._bdt_col_filters: dict[str, set[str] | None] = {}
-        self._bdt_page_size = 500
+        self._bdt_page_size = 100
         self._bdt_page_offset = 0
         self._bdt_filtered_results: list = []
+        self._bdt_filter_signature: tuple | None = None
         self._bdt_row_map_cache: dict[int, dict[str, str]] = {}
         self._bdt_distinct_cache: dict[str, list[str]] = {}
+        self._bdt_summary_cache: tuple[int, int, int] | None = None
         self._build(viewer)
 
     @staticmethod
@@ -602,11 +604,32 @@ class BdtValidationPanel(QWidget):
     def _invalidate_bdt_filter_cache(self):
         self._bdt_row_map_cache.clear()
         self._bdt_distinct_cache.clear()
+        self._bdt_summary_cache = None
+        self._bdt_filter_signature = None
 
-    def _populate_bdt_table(self):
+    def _current_bdt_filter_signature(self) -> tuple:
+        filters = tuple(
+            sorted(
+                (col_name, tuple(sorted(values or ())))
+                for col_name, values in self._bdt_col_filters.items()
+            )
+        )
+        return (
+            id(self._viewer._bdt_results),
+            len(self._viewer._bdt_results),
+            self.bdt_search.text(),
+            filters,
+        )
+
+    def _populate_bdt_table(self, *, refresh_filter: bool = True):
         results = self._viewer._bdt_results
-        filtered_results = self._filtered_bdt_results_for_text(self.bdt_search.text())
-        self._bdt_filtered_results = filtered_results
+        signature = self._current_bdt_filter_signature()
+        if refresh_filter or signature != self._bdt_filter_signature:
+            filtered_results = self._filtered_bdt_results_for_text(self.bdt_search.text())
+            self._bdt_filtered_results = filtered_results
+            self._bdt_filter_signature = signature
+        else:
+            filtered_results = self._bdt_filtered_results
         total = len(filtered_results)
         page_size = max(int(self._bdt_page_size), 1)
         max_offset = ((total - 1) // page_size) * page_size if total > 0 else 0
@@ -643,10 +666,20 @@ class BdtValidationPanel(QWidget):
         if hasattr(self.bdt_table, "setUpdatesEnabled"):
             self.bdt_table.setUpdatesEnabled(True)
 
-        all_rules = [rule for r in results for rule in r.rules]
-        n_acc = sum(1 for r in all_rules if r.verdict == "Accepted")
-        n_rej = sum(1 for r in all_rules if r.verdict == "Rejected")
-        n_rev = sum(1 for r in all_rules if r.verdict == "Revise")
+        if self._bdt_summary_cache is None:
+            n_acc = n_rej = n_rev = 0
+            for result in results:
+                for rule in getattr(result, "rules", []) or []:
+                    verdict = getattr(rule, "verdict", "")
+                    if verdict == "Accepted":
+                        n_acc += 1
+                    elif verdict == "Rejected":
+                        n_rej += 1
+                    elif verdict == "Revise":
+                        n_rev += 1
+            self._bdt_summary_cache = (n_acc, n_rej, n_rev)
+        else:
+            n_acc, n_rej, n_rev = self._bdt_summary_cache
         self.bdt_summary.setText(
             f"<span style='color:#a6e3a1;'>{n_acc} Accepted</span>"
             f" &middot; <span style='color:#f38ba8;'>{n_rej} Rejected</span>"
@@ -665,6 +698,7 @@ class BdtValidationPanel(QWidget):
             "Site Code": getattr(res, "site_code", "") or "--",
             "Test Date": getattr(res, "test_date", "") or "--",
             "Verdict": getattr(res, "overall", "") or "--",
+            "Battery Status": bdt_battery_status(getattr(res, "bdt_data", None)),
             "End Rectifier Voltage (V)": self._format_end_rectifier_voltage(
                 getattr(res, "bdt_data", None)),
             "Lead-acid SOH (%)": self._format_lead_acid_soh(getattr(res, "bdt_data", None)),
@@ -895,7 +929,7 @@ class BdtValidationPanel(QWidget):
 
     def _load_previous_bdt_page(self):
         self._bdt_page_offset = max(self._bdt_page_offset - self._bdt_page_size, 0)
-        self._populate_bdt_table()
+        self._populate_bdt_table(refresh_filter=False)
 
     def _load_next_bdt_page(self):
         total = len(self._bdt_filtered_results)
@@ -903,7 +937,7 @@ class BdtValidationPanel(QWidget):
             return
         max_offset = ((total - 1) // self._bdt_page_size) * self._bdt_page_size
         self._bdt_page_offset = min(self._bdt_page_offset + self._bdt_page_size, max_offset)
-        self._populate_bdt_table()
+        self._populate_bdt_table(refresh_filter=False)
 
     def _copy_bdt_cell(self, index):
         if not index.isValid():

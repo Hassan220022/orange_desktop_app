@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QPushButton, QLineEdit, QCheckBox, QScrollArea, QWidget,
     QTableWidget, QTableWidgetItem, QSpinBox,
-    QFileDialog, QMessageBox, QAbstractItemView, QHeaderView,
+    QFileDialog, QMessageBox, QAbstractItemView, QHeaderView, QComboBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
@@ -454,6 +454,100 @@ class FeatureFlagDialog(QDialog):
 
     def get_flags(self) -> dict:
         return {k: cb.isChecked() for k, cb in self._checks.items()}
+
+
+class AppSettingsDialog(QDialog):
+    """Central app settings dialog."""
+
+    def __init__(self, settings: dict, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Settings")
+        self.setMinimumWidth(420)
+        if parent:
+            self.setStyleSheet(parent.styleSheet())
+        self._settings = dict(settings or {})
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(12)
+
+        title = QLabel("Application Settings")
+        title.setObjectName("assistant_title")
+        lay.addWidget(title)
+
+        self.cmb_theme = QComboBox()
+        self.cmb_theme.setObjectName("filter_combo")
+        for value, label in (("auto", "Auto"), ("dark", "Dark"), ("light", "Light")):
+            self.cmb_theme.addItem(label, value)
+        theme_index = self.cmb_theme.findData(str(self._settings.get("theme_mode") or "auto"))
+        self.cmb_theme.setCurrentIndex(max(theme_index, 0))
+        self._add_labeled_row(lay, "Theme", self.cmb_theme)
+
+        self.chk_assistant = QCheckBox("Show assistant panel")
+        self.chk_assistant.setChecked(bool(self._settings.get("assistant_open", True)))
+        lay.addWidget(self.chk_assistant)
+
+        self.chk_skip_photos = QCheckBox("Skip BDT photos during validation")
+        self.chk_skip_photos.setChecked(bool(self._settings.get("skip_photos", False)))
+        lay.addWidget(self.chk_skip_photos)
+
+        api_title = QLabel("OpenRouter")
+        api_title.setObjectName("workspace_card_title")
+        lay.addWidget(api_title)
+
+        self.edit_api_key = QLineEdit()
+        self.edit_api_key.setObjectName("filter_input")
+        self.edit_api_key.setEchoMode(QLineEdit.Password)
+        self.edit_api_key.setPlaceholderText("sk-or-...")
+        self.edit_api_key.setText(str(self._settings.get("openrouter_api_key") or ""))
+        self._add_labeled_row(lay, "API Key", self.edit_api_key)
+
+        flags_title = QLabel("Feature Flags")
+        flags_title.setObjectName("workspace_card_title")
+        lay.addWidget(flags_title)
+
+        self.chk_sync = QCheckBox("Enable sync to server")
+        self.chk_sync.setChecked(bool(self._settings.get("sync_on", False)))
+        lay.addWidget(self.chk_sync)
+        self.chk_cloud = QCheckBox("Read from cloud API")
+        self.chk_cloud.setChecked(bool(self._settings.get("cloud_read_on", False)))
+        lay.addWidget(self.chk_cloud)
+        self.chk_bootstrap = QCheckBox("Bootstrap backfill")
+        self.chk_bootstrap.setChecked(bool(self._settings.get("bootstrap_on", False)))
+        lay.addWidget(self.chk_bootstrap)
+
+        btn_row = QHBoxLayout()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setObjectName("btn_clear")
+        btn_cancel.clicked.connect(self.reject)
+        btn_save = QPushButton("Save")
+        btn_save.setObjectName("btn_search")
+        btn_save.clicked.connect(self.accept)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_save)
+        lay.addLayout(btn_row)
+
+    def _add_labeled_row(self, parent_layout: QVBoxLayout, label: str, widget):
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        lbl = QLabel(label)
+        lbl.setObjectName("filter_inline")
+        row.addWidget(lbl)
+        row.addWidget(widget, 1)
+        parent_layout.addLayout(row)
+
+    def get_settings(self) -> dict:
+        return {
+            "theme_mode": str(self.cmb_theme.currentData() or "auto"),
+            "assistant_open": self.chk_assistant.isChecked(),
+            "skip_photos": self.chk_skip_photos.isChecked(),
+            "openrouter_api_key": self.edit_api_key.text().strip(),
+            "sync_on": self.chk_sync.isChecked(),
+            "cloud_read_on": self.chk_cloud.isChecked(),
+            "bootstrap_on": self.chk_bootstrap.isChecked(),
+        }
 
 
 class BdtParametersDialog(QDialog):

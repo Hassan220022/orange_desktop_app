@@ -4,7 +4,6 @@ BdtWorkspacePanel — VS Code-style sidebar for the test validation workspace.
 
 from PyQt5.QtWidgets import (
     QAbstractItemView,
-    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -185,23 +184,6 @@ class BdtWorkspacePanel(QWidget):
 
         lay.addWidget(actions_card)
 
-        options_card = QFrame()
-        options_card.setObjectName("workspace_card")
-        options_lay = QVBoxLayout(options_card)
-        options_lay.setContentsMargins(10, 8, 10, 10)
-        options_lay.setSpacing(6)
-
-        options_title = QLabel("Options")
-        options_title.setObjectName("workspace_card_title")
-        options_lay.addWidget(options_title)
-
-        self.chk_skip_photos = QCheckBox("Skip Photos")
-        self.chk_skip_photos.setChecked(self._viewer._skip_photos)
-        self.chk_skip_photos.toggled.connect(self._sync_skip_photos_to_viewer)
-        options_lay.addWidget(self.chk_skip_photos)
-
-        lay.addWidget(options_card)
-
         status_card = QFrame()
         status_card.setObjectName("workspace_card")
         status_lay = QVBoxLayout(status_card)
@@ -314,6 +296,8 @@ class BdtWorkspacePanel(QWidget):
             self._viewer._toggle_skip_photos(checked)
 
     def _sync_skip_photos_from_viewer(self):
+        if not hasattr(self, "chk_skip_photos"):
+            return
         checked = bool(getattr(self._viewer, "_skip_photos", False))
         self.chk_skip_photos.blockSignals(True)
         self.chk_skip_photos.setChecked(checked)

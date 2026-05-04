@@ -36,7 +36,7 @@ try:
                           BDTValidationThread, BackupTimeThread)
     from .dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
                           AlarmIdConfigDialog, BackupTimeDialog,
-                          FeatureFlagDialog)
+                          FeatureFlagDialog, AppSettingsDialog)
     from .panels.search_panel import SearchPanel
     from .panels.left_panel import LeftPanel
     from .panels.bdt_workspace_panel import BdtWorkspacePanel
@@ -68,7 +68,7 @@ except ImportError:
                                           BDTValidationThread, BackupTimeThread)
         from alarm_app.ui.dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
                                           AlarmIdConfigDialog, BackupTimeDialog,
-                                          FeatureFlagDialog)
+                                          FeatureFlagDialog, AppSettingsDialog)
         from alarm_app.ui.panels.search_panel import SearchPanel
         from alarm_app.ui.panels.left_panel import LeftPanel
         from alarm_app.ui.panels.bdt_workspace_panel import BdtWorkspacePanel
@@ -99,7 +99,7 @@ except ImportError:
                                 BDTValidationThread, BackupTimeThread)
         from ui.dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
                                 AlarmIdConfigDialog, BackupTimeDialog,
-                                FeatureFlagDialog)
+                                FeatureFlagDialog, AppSettingsDialog)
         from ui.panels.search_panel import SearchPanel
         from ui.panels.left_panel import LeftPanel
         from ui.panels.bdt_workspace_panel import BdtWorkspacePanel
@@ -160,6 +160,7 @@ class AlarmViewer(QMainWindow):
         self._font_size_px_re = re.compile(r"(font-size\s*:\s*)(\d+(?:\.\d+)?)px", re.IGNORECASE)
         self._theme_mode = "auto"  # will be overridden by state restore
         self._skip_photos = False  # skip photo extraction toggle state
+        self._openrouter_api_key = ""
         self._build_ui()
         self._setup_zoom_shortcuts()
         self.setStyleSheet(self._resolve_theme_style())
@@ -395,34 +396,13 @@ class AlarmViewer(QMainWindow):
         self._btn_config_alarm_ids = btn_config
         l.addWidget(btn_config)
 
-        btn_flags = QPushButton("Feature Flags")
-        btn_flags.setObjectName("btn_dir")
-        self._mark_compact_button(btn_flags)
-        btn_flags.setProperty("full_text", "Feature Flags")
-        btn_flags.setProperty("short_text", "Flags")
-        btn_flags.clicked.connect(self._show_feature_flags)
-        self._btn_feature_flags = btn_flags
-        l.addWidget(btn_flags)
-
-        self._btn_assistant = QPushButton("Assistant On")
-        self._btn_assistant.setObjectName("btn_assistant")
-        self._mark_compact_button(self._btn_assistant)
-        self._btn_assistant.setProperty("full_text_on", "Assistant On")
-        self._btn_assistant.setProperty("full_text_off", "Assistant Off")
-        self._btn_assistant.setProperty("short_text_on", "Asst On")
-        self._btn_assistant.setProperty("short_text_off", "Asst Off")
-        self._btn_assistant.setCheckable(True)
-        self._btn_assistant.setChecked(True)
-        self._btn_assistant.clicked.connect(self._toggle_assistant_panel)
-        l.addWidget(self._btn_assistant)
-
-        self._btn_theme = QPushButton("Theme: Auto")
-        self._btn_theme.setObjectName("btn_theme")
-        self._mark_compact_button(self._btn_theme)
-        self._btn_theme.setProperty("full_prefix", "Theme: ")
-        self._btn_theme.setProperty("short_prefix", "")
-        self._btn_theme.clicked.connect(self._toggle_theme)
-        l.addWidget(self._btn_theme)
+        self._btn_settings = QPushButton("Settings")
+        self._btn_settings.setObjectName("btn_dir")
+        self._mark_compact_button(self._btn_settings)
+        self._btn_settings.setProperty("full_text", "Settings")
+        self._btn_settings.setProperty("short_text", "Settings")
+        self._btn_settings.clicked.connect(self._show_settings)
+        l.addWidget(self._btn_settings)
 
         self._refresh_header_button_texts()
         return w
@@ -488,22 +468,10 @@ class AlarmViewer(QMainWindow):
 
     def _refresh_header_button_texts(self):
         short = self._use_short_header_labels()
-        for attr in ("_btn_daily_report", "_btn_config_alarm_ids", "_btn_feature_flags"):
+        for attr in ("_btn_daily_report", "_btn_config_alarm_ids", "_btn_settings"):
             btn = getattr(self, attr, None)
             if btn is not None:
                 btn.setText(str(btn.property("short_text" if short else "full_text") or btn.text()))
-
-        if hasattr(self, "_btn_assistant"):
-            key = "short" if short else "full"
-            state_key = "on" if getattr(self, "_assistant_open", True) else "off"
-            self._btn_assistant.setText(
-                str(self._btn_assistant.property(f"{key}_text_{state_key}") or self._btn_assistant.text())
-            )
-
-        if hasattr(self, "_btn_theme"):
-            mode_label = {"auto": "Auto", "dark": "Dark", "light": "Light"}.get(self._theme_mode, "Auto")
-            prefix = str(self._btn_theme.property("short_prefix" if short else "full_prefix") or "")
-            self._btn_theme.setText(f"{prefix}{mode_label}")
 
     def _refresh_compact_buttons(self):
         for button in self.findChildren(QPushButton):
@@ -663,6 +631,8 @@ class AlarmViewer(QMainWindow):
             "window_geometry": [geo.x(), geo.y(), geo.width(), geo.height()],
             "ui_zoom_pct": self._app_zoom_pct,
             "theme_mode": self._theme_mode,
+            "skip_photos": self._skip_photos,
+            "openrouter_api_key": self._openrouter_api_key,
             "chat_model": self._chat_panel.model() if hasattr(self, "_chat_panel") else "",
             "chat_state": self._chat_panel.chat_state() if hasattr(self, "_chat_panel") else {},
             "assistant_open": bool(getattr(self, "_assistant_open", True)),
@@ -688,6 +658,10 @@ class AlarmViewer(QMainWindow):
         if "theme_mode" in s:
             self._theme_mode = s["theme_mode"]
             self._update_theme_button_label()
+        self._skip_photos = bool(s.get("skip_photos", self._skip_photos))
+        self._openrouter_api_key = str(s.get("openrouter_api_key") or "")
+        if hasattr(self, "_chat_panel"):
+            self._chat_panel.refresh_settings()
         if "chat_model" in s and hasattr(self, "_chat_panel"):
             self._chat_panel.set_model(str(s.get("chat_model") or ""))
         if "chat_state" in s and hasattr(self, "_chat_panel"):
@@ -1486,6 +1460,45 @@ class AlarmViewer(QMainWindow):
             elif not new_flags.get("sync_on") and self._sync_worker is not None:
                 self._stop_sync_worker()
 
+    def _show_settings(self):
+        settings = {
+            "theme_mode": self._theme_mode,
+            "assistant_open": bool(getattr(self, "_assistant_open", True)),
+            "skip_photos": self._skip_photos,
+            "openrouter_api_key": self._openrouter_api_key,
+            **self._sync_flags,
+        }
+        dlg = AppSettingsDialog(settings, self)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        self._apply_app_settings(dlg.get_settings())
+
+    def _apply_app_settings(self, settings: dict):
+        previous_sync_on = bool(self._sync_flags.get("sync_on", False))
+        theme_mode = str(settings.get("theme_mode") or "auto")
+        if theme_mode != self._theme_mode:
+            self._set_theme(theme_mode)
+        self._skip_photos = bool(settings.get("skip_photos", False))
+        self._openrouter_api_key = str(settings.get("openrouter_api_key") or "").strip()
+        self._sync_flags.update({
+            "sync_on": bool(settings.get("sync_on", False)),
+            "cloud_read_on": bool(settings.get("cloud_read_on", False)),
+            "bootstrap_on": bool(settings.get("bootstrap_on", False)),
+        })
+        if hasattr(self, "_chat_panel"):
+            self._chat_panel.refresh_settings()
+        self._set_assistant_panel_open(bool(settings.get("assistant_open", True)), persist=False)
+        self._save_ui_state()
+        sync_on = bool(self._sync_flags.get("sync_on", False))
+        if sync_on and not previous_sync_on:
+            self._start_sync_worker_if_enabled()
+        elif not sync_on and previous_sync_on and self._sync_worker is not None:
+            self._stop_sync_worker()
+        self._sbar.showMessage("Settings saved", 2500)
+
+    def openrouter_api_key(self) -> str:
+        return self._openrouter_api_key
+
     def _show_alarm_id_config(self):
         dlg = AlarmIdConfigDialog(parent=self)
         dlg.saved.connect(self._reclassify_alarms)
@@ -1751,7 +1764,7 @@ class AlarmViewer(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if hasattr(self, "_btn_theme"):
+        if hasattr(self, "_btn_settings"):
             self._refresh_header_button_texts()
         if hasattr(self, "_main_splitter"):
             self._apply_sidebar_constraints()
@@ -1873,7 +1886,7 @@ class AlarmViewer(QMainWindow):
             self._table.verticalHeader().setDefaultSectionSize(row_h)
         if hasattr(self, "_bdt_table"):
             self._bdt_table.verticalHeader().setDefaultSectionSize(row_h)
-        if hasattr(self, "_btn_theme"):
+        if hasattr(self, "_btn_settings"):
             self._refresh_compact_buttons()
             self._refresh_header_button_texts()
         if hasattr(self, "_main_splitter"):

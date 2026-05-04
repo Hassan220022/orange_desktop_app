@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import html
 import json
-import os
 import re
 from datetime import datetime
 import uuid
@@ -50,7 +49,6 @@ try:
         fetch_free_tool_models,
         normalize_free_model_id,
     )
-    from ...runtime.env import load_local_env
 except ImportError:
     try:
         from alarm_app.constants import DISPLAY_COLUMNS
@@ -62,7 +60,6 @@ except ImportError:
             fetch_free_tool_models,
             normalize_free_model_id,
         )
-        from alarm_app.runtime.env import load_local_env
     except ImportError:
         from constants import DISPLAY_COLUMNS  # type: ignore[no-redef]
         from ui.flow_layout import FlowLayout  # type: ignore[no-redef]
@@ -73,7 +70,6 @@ except ImportError:
             fetch_free_tool_models,
             normalize_free_model_id,
         )
-        from runtime.env import load_local_env  # type: ignore[no-redef]
 
 
 _BULLET_RE = re.compile(r"^\s*(?:[-*•])\s+(.*)$")
@@ -434,6 +430,7 @@ class ChatRequestThread(QThread):
         *,
         prompt: str,
         model: str,
+        api_key: str,
         history: list[dict] | None = None,
         summary: str = "",
         system_context: str = "",
@@ -441,15 +438,15 @@ class ChatRequestThread(QThread):
         super().__init__()
         self.prompt = prompt
         self.model = model
+        self.api_key = api_key
         self.history = list(history or [])
         self.summary = summary
         self.system_context = system_context
 
     def run(self):
-        load_local_env()
-        api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        api_key = self.api_key.strip()
         if not api_key:
-            self.error.emit("OPENROUTER_API_KEY is not set.")
+            self.error.emit("OpenRouter API key is not set in Settings.")
             return
         try:
             answer = OpenRouterAgent(api_key=api_key, model=self.model).ask(
@@ -471,17 +468,17 @@ class ChatSummaryThread(QThread):
     finished = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, *, messages: list[dict], existing_summary: str, model: str):
+    def __init__(self, *, messages: list[dict], existing_summary: str, model: str, api_key: str):
         super().__init__()
         self.messages = list(messages)
         self.existing_summary = existing_summary
         self.model = model
+        self.api_key = api_key
 
     def run(self):
-        load_local_env()
-        api_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        api_key = self.api_key.strip()
         if not api_key:
-            self.error.emit("OPENROUTER_API_KEY is not set.")
+            self.error.emit("OpenRouter API key is not set in Settings.")
             return
         try:
             summary = OpenRouterAgent(api_key=api_key, model=self.model).summarize_history(
@@ -584,7 +581,6 @@ class ChatPanel(QWidget):
 
     def __init__(self, viewer, parent=None):
         super().__init__(parent)
-        load_local_env()
         self._viewer = viewer
         self._thread: ChatRequestThread | None = None
         self._summary_thread: ChatSummaryThread | None = None
@@ -597,7 +593,7 @@ class ChatPanel(QWidget):
         self._uploaded_files: list[dict[str, str]] = []
         self._saved_sessions: list[dict] = []
         self._models_thread: FreeModelsThread | None = None
-        self._model = normalize_free_model_id(os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL))
+        self._model = DEFAULT_MODEL
         self._recommended_min_width = 350
         self._build()
 
@@ -990,13 +986,18 @@ class ChatPanel(QWidget):
             return
         if self._summary_thread and self._summary_thread.isRunning():
             return
-        load_local_env()
-        if not os.environ.get("OPENROUTER_API_KEY", "").strip():
-            QMessageBox.warning(
-                self,
-                "OpenRouter API Key Missing",
-                "Set OPENROUTER_API_KEY before using the chat agent.",
+        api_key = self._viewer.openrouter_api_key()
+        if not api_key:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Warning)
+            box.setWindowTitle("OpenRouter API Key Missing")
+            box.setTextFormat(Qt.RichText)
+            box.setText(
+                'Open Settings and enter your OpenRouter API key before using the chat agent.<br><br>'
+                'Get your key from <a href="https://openrouter.ai/settings/keys">OpenRouter API Keys</a>.'
             )
+            box.setStandardButtons(QMessageBox.Ok)
+            box.exec_()
             self.lbl_status.setText(self._api_status_text())
             return
 
@@ -1013,6 +1014,7 @@ class ChatPanel(QWidget):
         self._thread = ChatRequestThread(
             prompt=text,
             model=self._model,
+            api_key=api_key,
             history=history,
             summary=summary,
             system_context=self._build_system_context(),
@@ -1125,6 +1127,7 @@ class ChatPanel(QWidget):
             messages=messages,
             existing_summary=self._conversation_summary,
             model=model,
+            api_key=self._viewer.openrouter_api_key(),
         )
         self._summary_thread.finished.connect(lambda summary, keep_tail=keep_tail: self._on_summary_ready(summary, keep_tail))
         self._summary_thread.error.connect(self._on_summary_error)
@@ -1849,8 +1852,11 @@ class ChatPanel(QWidget):
         self.btn_send.setEnabled(not busy and bool(self.input.toPlainText().strip()))
 
     def _api_status_text(self) -> str:
-        key_state = "API key ready" if os.environ.get("OPENROUTER_API_KEY", "").strip() else "API key missing"
+        key_state = "API key ready" if self._viewer.openrouter_api_key() else "API key missing"
         return f"{key_state} · Model: {self._model}"
+
+    def refresh_settings(self):
+        self.lbl_status.setText(self._api_status_text())
 
     def _append_system(self, text: str):
         self._append_message("System", text, store=False)
