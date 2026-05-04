@@ -107,40 +107,29 @@ def test_json_output_text_is_copyable_pretty_json():
     assert '"site": "0600UP"' in text
 
 
-def test_build_prompt_includes_uploaded_files_for_tools():
+def test_build_system_context_includes_uploaded_files_for_tools():
     panel = ChatPanel.__new__(ChatPanel)
-    panel._messages = [{"role": "user", "content": "Generate a VIP report", "timestamp": "2026-05-04T00:00:00Z"}]
-    panel._conversation_summary = ""
     panel._uploaded_files = [{"name": "vip.csv", "path": "/tmp/vip.csv"}]
 
-    prompt = ChatPanel._build_prompt(panel)
+    ctx = ChatPanel._build_system_context(panel)
 
-    assert "Uploaded local files available to tools:" in prompt
-    assert "vip.csv -> /tmp/vip.csv" in prompt
-    assert "source_file_path" in prompt
-    assert "site_alarm_report" in prompt
-    assert "Do not repeat full row tables" in prompt
-    assert "Use query_backup_times" in prompt
+    assert "Uploaded local files available to tools:" in ctx
+    assert "vip.csv -> /tmp/vip.csv" in ctx
+    assert "source_file_path" in ctx
+    assert "site_alarm_report" in ctx
+    assert "Do not repeat full row tables" in ctx
+    assert "Use query_backup_times" in ctx
 
 
-def test_build_prompt_includes_summary_and_recent_raw_messages():
+def test_build_system_context_excludes_upload_section_when_no_files():
     panel = ChatPanel.__new__(ChatPanel)
-    panel._conversation_summary = "Earlier: user asked for outage stats."
     panel._uploaded_files = []
-    panel._messages = []
-    for idx in range(6):
-        panel._messages.extend([
-            {"role": "user", "content": f"question {idx}", "timestamp": ""},
-            {"role": "assistant", "content": f"answer {idx}", "timestamp": ""},
-        ])
 
-    prompt = ChatPanel._build_prompt(panel)
+    ctx = ChatPanel._build_system_context(panel)
 
-    assert "Summary of earlier conversation:" in prompt
-    assert "Earlier: user asked for outage stats." in prompt
-    assert "question 0" not in prompt
-    assert "question 1" in prompt
-    assert "answer 5" in prompt
+    assert "Uploaded local files" not in ctx
+    assert "Do not repeat full row tables" in ctx
+    assert "Use query_backup_times" in ctx
 
 
 def test_chat_state_round_trips_summary_messages_and_uploads():
@@ -162,7 +151,7 @@ def test_chat_state_round_trips_summary_messages_and_uploads():
     assert restored._uploaded_files == [{"name": "vip.csv", "path": "/tmp/vip.csv", "kind": "uploaded_list"}]
 
 
-def test_restore_chat_state_preserves_more_than_raw_prompt_limit():
+def test_restore_chat_state_preserves_all_message_turns():
     restored = ChatPanel.__new__(ChatPanel)
     restored._messages = []
     restored._conversation_summary = ""

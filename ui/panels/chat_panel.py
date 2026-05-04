@@ -79,7 +79,6 @@ _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _TABLE_ROW_RE = re.compile(r"^\|(.+)\|\s*$")
 _TABLE_SEP_RE = re.compile(r"^\|\s*(:?-+:?\s*\|\s*)+$")
-CHAT_RAW_TURN_LIMIT = 10
 CHAT_SUMMARY_TRIGGER_TURNS = 14
 CHAT_SUMMARY_BATCH_TURNS = 6
 
@@ -876,19 +875,6 @@ class ChatPanel(QWidget):
             for idx, upload in enumerate(self._uploaded_files[-5:], start=1):
                 lines.append(f"{idx}. {upload['name']} -> {upload['path']}")
             lines.append("When using an uploaded file, pass its path as source_file_path.")
-        return "\n".join(lines)
-
-    def _build_prompt(self) -> str:
-        lines = [self._build_system_context()]
-        if self._conversation_summary.strip():
-            lines.append("Summary of earlier conversation:")
-            lines.append(self._conversation_summary.strip())
-        lines.append("Conversation:")
-        recent = OpenRouterAgent._normalized_history(self._messages[-CHAT_RAW_TURN_LIMIT:])
-        for item in recent:
-            role = str(item.get("role") or "").title()
-            content = str(item.get("content") or "")
-            lines.append(f"{role}: {content}")
         return "\n".join(lines)
 
     def _rehydrate_history(self):
