@@ -379,7 +379,9 @@ class _ImagePreviewDialog(QDialog):
 def _make_assistant_button(text: str, *, minimum_width: int = 0) -> QPushButton:
     button = QPushButton(text)
     button.setObjectName("assistant_chip")
-    button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+    button.setCursor(Qt.PointingHandCursor)
+    button.setMinimumHeight(max(32, button.fontMetrics().height() + 14))
+    button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
     if minimum_width:
         button.setMinimumWidth(minimum_width)
     return button

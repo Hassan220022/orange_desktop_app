@@ -1,4 +1,5 @@
 import alarm_app.ui.panels.chat_panel as chat_panel_mod
+from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
 from alarm_app.ui.panels.chat_panel import (
     ChatPanel,
     _alarm_row_columns,
@@ -10,6 +11,31 @@ from alarm_app.ui.panels.chat_panel import (
     _set_combo_text,
     _rows_preview_limit,
 )
+
+
+def _qss_block(style: str, selector: str) -> str:
+    start = style.index(selector)
+    open_brace = style.index("{", start)
+    close_brace = style.index("}", open_brace)
+    return style[open_brace + 1:close_brace]
+
+
+def test_assistant_chip_button_metrics_match_themes():
+    dark_block = _qss_block(STYLE_DARK, "QPushButton#assistant_chip")
+    light_block = _qss_block(STYLE_LIGHT, "QPushButton#assistant_chip")
+
+    for prop in ("padding: 6px 12px", "min-height: 32px", "font-size: 12px", "border-radius: 7px"):
+        assert prop in dark_block
+        assert prop in light_block
+
+
+def test_header_assistant_button_metrics_match_themes():
+    dark_block = _qss_block(STYLE_DARK, "QPushButton#btn_assistant")
+    light_block = _qss_block(STYLE_LIGHT, "QPushButton#btn_assistant")
+
+    for prop in ("padding: 3px 8px", "min-height: 26px", "font-size: 11px", "border-radius: 5px"):
+        assert prop in dark_block
+        assert prop in light_block
 
 
 def test_parse_markdown_blocks_recognizes_lists_and_paragraphs():

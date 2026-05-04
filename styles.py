@@ -227,6 +227,10 @@ QPushButton#btn_assistant {
     background: #1f2438;
     color: #89b4fa;
     border: 1px solid #31415d;
+    min-height: 26px;
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: 5px;
 }
 QPushButton#btn_assistant:hover {
     background: #26314a;
@@ -330,11 +334,11 @@ QPushButton#assistant_chip {
     background: #1a2744;
     color: #89b4fa;
     border: 1px solid #2a4070;
-    border-radius: 6px;
-    padding: 4px 10px;
-    min-height: 24px;
+    border-radius: 7px;
+    padding: 6px 12px;
+    min-height: 32px;
     min-width: 0px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
 }
 QPushButton#assistant_chip:hover {
@@ -1511,6 +1515,10 @@ QPushButton#btn_assistant {
     background: #dce0e8;
     color: #1e66f5;
     border: 1px solid #a8c2f8;
+    min-height: 26px;
+    padding: 3px 8px;
+    font-size: 11px;
+    border-radius: 5px;
 }
 QPushButton#btn_assistant:hover {
     background: #d5e0fc;
@@ -1614,11 +1622,11 @@ QPushButton#assistant_chip {
     background: #e0e8f8;
     color: #2a5090;
     border: 1px solid #a8b8d8;
-    border-radius: 6px;
-    padding: 4px 10px;
-    min-height: 24px;
+    border-radius: 7px;
+    padding: 6px 12px;
+    min-height: 32px;
     min-width: 0px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
 }
 QPushButton#assistant_chip:hover {
