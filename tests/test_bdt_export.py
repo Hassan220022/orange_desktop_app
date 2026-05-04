@@ -123,6 +123,23 @@ class TestBDTExport:
         assert list(sheet["Rule Verdict"]) == ["Revise"]
         assert list(sheet["Overall Verdict"]) == ["Revise"]
 
+    def test_validation_export_omits_skipped_battery_rule_reasons(self):
+        res = _make_result(
+            overall="Rejected",
+            rules=[
+                RuleResult("R1", "Photos", False, "Rejected", "Missing batteries photo"),
+                RuleResult("R2", "Power Alarm + Duration", None, "Skipped", "No battery installed"),
+            ],
+        )
+
+        sheets = build_bdt_export_sheets([res], health_pct=0.8)
+        row = sheets["Validation Results"].iloc[0]
+        evidence = sheets["Rule Evidence"]
+
+        assert row["Verdict Reason"] == "R1 - Photos: Missing batteries photo"
+        assert row["R2 - Power Alarm + Duration - Detail"] == ""
+        assert list(evidence["Rule ID"]) == ["R1"]
+
     def test_pm_summary_reads_normal_summary_keys(self):
         res = _make_result(
             summary_data={

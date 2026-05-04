@@ -18,6 +18,7 @@ from alarm_app.bdt.validator import (
     _rule_10_door_alarm_match,
     _rule_11_summary_checklist,
     _theoretical_backup_minutes,
+    bdt_battery_status,
     validate_bdt,
 )
 
@@ -225,6 +226,65 @@ class TestValidateBDTOverall:
         result = validate_bdt(bdt, None)
         assert any(r.verdict == "N/A" for r in result.rules)
         assert result.overall == "Revise"
+
+    def test_no_battery_skips_battery_dependent_rules_only(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(photo_slots=slots, photo_count=16, num_batteries=0)
+        alarm_df = _make_alarm_df([_power_alarm(), _door_alarm()])
+
+        result = validate_bdt(bdt, alarm_df)
+
+        verdicts = {r.rule_id: r.verdict for r in result.rules}
+        assert verdicts["R1"] == "Accepted"
+        assert verdicts["R10"] == "Accepted"
+        assert verdicts["R11"] == "N/A"
+        assert all(verdicts[r] == "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
+        assert result.overall == "Accepted"
+
+    def test_faulty_battery_skips_battery_dependent_rules_only(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(
+            photo_slots=slots,
+            photo_count=16,
+            summary_data={"Reason for Stop BDT": "Faulty battery"},
+        )
+        alarm_df = _make_alarm_df([_power_alarm(), _door_alarm()])
+
+        result = validate_bdt(bdt, alarm_df)
+
+        verdicts = {r.rule_id: r.verdict for r in result.rules}
+        assert all(verdicts[r] == "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
+        assert verdicts["R1"] == "Accepted"
+        assert verdicts["R10"] == "Accepted"
+
+    def test_summary_zero_batteries_skips_battery_dependent_rules(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(
+            photo_slots=slots,
+            photo_count=16,
+            summary_data={"No. of Batteries": "0"},
+        )
+        alarm_df = _make_alarm_df([_power_alarm(), _door_alarm()])
+
+        result = validate_bdt(bdt, alarm_df)
+
+        verdicts = {r.rule_id: r.verdict for r in result.rules}
+        assert all(verdicts[r] == "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
+
+    def test_battery_status_labels_battery_state(self):
+        assert bdt_battery_status(_make_bdt()) == "Has Battery"
+        assert bdt_battery_status(_make_bdt(num_batteries=0)) == "No Battery"
+        assert bdt_battery_status(_make_bdt(summary_data={"Reason for Stop BDT": "Faulty battery"})) == "Faulty Battery"
+        assert bdt_battery_status(None) == "--"
 
 
 # ── R1 Photos ────────────────────────────────────────────────────────────

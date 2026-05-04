@@ -479,6 +479,8 @@ def _aggregate_verdict_reason(rules) -> str:
     for verdict in ("Rejected", "Revise", "N/A", "No data"):
         for rule in rules or []:
             rule_verdict = str(getattr(rule, "verdict", "") or "").strip()
+            if rule_verdict == "Skipped":
+                continue
             visible_verdict = _rule_cell_text(rule)
             if verdict in {"N/A", "No data"}:
                 if visible_verdict != "No data":
@@ -544,7 +546,7 @@ def build_validation_rows(results, health_pct: float | None = None) -> list[dict
                 label = format_bdt_rule_label(rule_id, rule_name)
                 row[label] = _rule_cell_text(rule)
                 verdict = str(getattr(rule, "verdict", "") or "").strip()
-                if verdict != "Accepted":
+                if verdict not in {"Accepted", "Skipped"}:
                     details[f"{label} - Detail"] = str(getattr(rule, "detail", "") or "")
         row.update(details)
         rows.append({column: row.get(column, "") for column in _VALIDATION_EXPORT_HEADERS})
@@ -561,7 +563,7 @@ def build_rule_evidence_rows(results) -> list[dict[str, str]]:
             "Overall Verdict": str(getattr(res, "overall", "") or "--"),
         }
         for rule in getattr(res, "rules", []) or []:
-            if str(getattr(rule, "verdict", "") or "").strip() == "Accepted":
+            if str(getattr(rule, "verdict", "") or "").strip() in {"Accepted", "Skipped"}:
                 continue
             rule_id = str(getattr(rule, "rule_id", "") or "")
             rows.append(

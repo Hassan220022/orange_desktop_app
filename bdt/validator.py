@@ -80,14 +80,19 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
         bdt_data=bdt,
     )
 
+    battery_skip_reason = _battery_skip_reason(bdt)
+
     result.rules.append(_rule_1_photos(bdt))
-    result.rules.append(_rule_2_power_alarm_match(bdt, alarm_df, tol_override=power_timing_tol))
-    result.rules.append(_rule_3_string_vs_busbar(bdt))
-    result.rules.append(_rule_5_start_ampere(bdt))
-    result.rules.append(_rule_6_end_voltage(bdt, health_pct))
-    result.rules.append(_rule_7_inverse_relationship(bdt))
-    result.rules.append(_rule_8_backup_time(bdt, health_pct))
-    result.rules.append(_rule_9_discharge_current_tolerance(bdt))
+    if battery_skip_reason:
+        result.rules.extend(_skipped_battery_rules(battery_skip_reason))
+    else:
+        result.rules.append(_rule_2_power_alarm_match(bdt, alarm_df, tol_override=power_timing_tol))
+        result.rules.append(_rule_3_string_vs_busbar(bdt))
+        result.rules.append(_rule_5_start_ampere(bdt))
+        result.rules.append(_rule_6_end_voltage(bdt, health_pct))
+        result.rules.append(_rule_7_inverse_relationship(bdt))
+        result.rules.append(_rule_8_backup_time(bdt, health_pct))
+        result.rules.append(_rule_9_discharge_current_tolerance(bdt))
     result.rules.append(_rule_10_door_alarm_match(bdt, alarm_df))
     result.rules.append(_rule_11_summary_checklist(bdt))
 
@@ -114,6 +119,84 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
 
 
 # ── Rule implementations ──────────────────────────────────
+
+
+def _clean_battery_text(value) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+def _battery_key(value) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _battery_skip_reason(bdt: BDTData) -> str:
+    num_batteries = getattr(bdt, "num_batteries", None)
+    if num_batteries == 0:
+        return "No battery installed"
+
+    summary_data = dict(getattr(bdt, "summary_data", {}) or {})
+    battery_count_keys = {
+        _battery_key(key)
+        for key in ("No of Batteries", "No. of Batteries", "Number of Batteries", "# of Batteries")
+    }
+    for key, raw in summary_data.items():
+        if _battery_key(key) not in battery_count_keys:
+            continue
+        try:
+            if raw is not None and float(str(raw).strip().replace(",", ".")) == 0:
+                return "No battery installed"
+        except (TypeError, ValueError):
+            pass
+
+    texts = [
+        getattr(bdt, "battery_brand", ""),
+        getattr(bdt, "battery_model", ""),
+        *summary_data.values(),
+    ]
+    for text in (_clean_battery_text(value) for value in texts):
+        if not text:
+            continue
+        if re.search(r"\b(no|without|missing)\s+batter(?:y|ies)\b", text):
+            return "No battery installed"
+        if re.search(r"\bbatter(?:y|ies)\s+(missing|not installed|removed)\b", text):
+            return "No battery installed"
+        if "battery" in text or "batteries" in text:
+            if re.search(r"\b(faulty|fault|bad|damaged|dead|defective)\b", text):
+                return "Faulty battery reported"
+    return ""
+
+
+def bdt_battery_status(bdt: BDTData | None) -> str:
+    if bdt is None:
+        return "--"
+    reason = _battery_skip_reason(bdt)
+    if reason.startswith("No battery"):
+        return "No Battery"
+    if reason.startswith("Faulty battery"):
+        return "Faulty Battery"
+    return "Has Battery"
+
+
+def _skipped_battery_rules(reason: str) -> list[RuleResult]:
+    rules = (
+        ("R2", "Power Alarm + Duration"),
+        ("R3", "String vs Bus Bar Ampere"),
+        ("R5", "Starting I-Battery ampere"),
+        ("R6", "End Voltage Range"),
+        ("R7", "V/A Inverse"),
+        ("R8", "Sizing vs Actual"),
+        ("R9", "Discharge Current Tolerance"),
+    )
+    return [
+        RuleResult(
+            rule_id=rule_id,
+            rule_name=rule_name,
+            passed=None,
+            verdict="Skipped",
+            detail=f"{reason}; battery-dependent rule not considered",
+        )
+        for rule_id, rule_name in rules
+    ]
 
 
 def _rule_1_photos(bdt: BDTData) -> RuleResult:
