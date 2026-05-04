@@ -543,7 +543,9 @@ def build_validation_rows(results, health_pct: float | None = None) -> list[dict
                 rule_name = str(getattr(rule, "rule_name", "") or BDT_RULE_NAME_BY_CODE.get(rule_id, rule_id))
                 label = format_bdt_rule_label(rule_id, rule_name)
                 row[label] = _rule_cell_text(rule)
-                details[f"{label} - Detail"] = str(getattr(rule, "detail", "") or "")
+                verdict = str(getattr(rule, "verdict", "") or "").strip()
+                if verdict != "Accepted":
+                    details[f"{label} - Detail"] = str(getattr(rule, "detail", "") or "")
         row.update(details)
         rows.append({column: row.get(column, "") for column in _VALIDATION_EXPORT_HEADERS})
     return rows
@@ -559,6 +561,8 @@ def build_rule_evidence_rows(results) -> list[dict[str, str]]:
             "Overall Verdict": str(getattr(res, "overall", "") or "--"),
         }
         for rule in getattr(res, "rules", []) or []:
+            if str(getattr(rule, "verdict", "") or "").strip() == "Accepted":
+                continue
             rule_id = str(getattr(rule, "rule_id", "") or "")
             rows.append(
                 {

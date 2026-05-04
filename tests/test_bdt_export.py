@@ -86,7 +86,7 @@ class TestBDTExport:
         assert row["R2 - Power Alarm + Duration"] == "Accepted"
         assert row["R10 - Door Alarm Condition"] == "No data"
         assert row["R1 - Photos - Detail"] == "AI-generated photo signal detected"
-        assert row["R2 - Power Alarm + Duration - Detail"] == "Matched window"
+        assert row["R2 - Power Alarm + Duration - Detail"] == ""
         assert row["R10 - Door Alarm Condition - Detail"] == "No alarm data loaded"
         assert row["End Rectifier Voltage (V)"] == "46.25"
         assert row["Lead-acid SOH (%)"] == "80"
@@ -118,10 +118,10 @@ class TestBDTExport:
 
         sheet = build_bdt_export_sheets([res], health_pct=0.8)["Rule Evidence"]
 
-        assert len(sheet) == 2
-        assert list(sheet["Rule ID"]) == ["R1", "R8"]
-        assert list(sheet["Rule Verdict"]) == ["Revise", "Accepted"]
-        assert list(sheet["Overall Verdict"]) == ["Revise", "Revise"]
+        assert len(sheet) == 1
+        assert list(sheet["Rule ID"]) == ["R1"]
+        assert list(sheet["Rule Verdict"]) == ["Revise"]
+        assert list(sheet["Overall Verdict"]) == ["Revise"]
 
     def test_pm_summary_reads_normal_summary_keys(self):
         res = _make_result(
