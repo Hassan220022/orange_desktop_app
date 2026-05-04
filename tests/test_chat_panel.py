@@ -137,6 +137,7 @@ def test_chat_state_round_trips_summary_messages_and_uploads():
     panel._conversation_summary = "Summary text"
     panel._messages = [{"role": "user", "content": "hello", "timestamp": "t"}]
     panel._uploaded_files = [{"name": "vip.csv", "path": "/tmp/vip.csv", "kind": "uploaded_list"}]
+    panel._saved_sessions = []
 
     state = ChatPanel.chat_state(panel)
 
@@ -144,6 +145,7 @@ def test_chat_state_round_trips_summary_messages_and_uploads():
     restored._messages = []
     restored._conversation_summary = ""
     restored._uploaded_files = []
+    restored._saved_sessions = []
     ChatPanel.restore_chat_state(restored, state)
 
     assert restored._conversation_summary == "Summary text"
@@ -156,6 +158,7 @@ def test_restore_chat_state_preserves_all_message_turns():
     restored._messages = []
     restored._conversation_summary = ""
     restored._uploaded_files = []
+    restored._saved_sessions = []
 
     ChatPanel.restore_chat_state(restored, {
         "messages": [
@@ -166,6 +169,30 @@ def test_restore_chat_state_preserves_all_message_turns():
 
     assert len(restored._messages) == 12
     assert restored._messages[0]["content"] == "turn 0"
+
+
+
+def test_chat_state_round_trips_saved_sessions():
+    panel = ChatPanel.__new__(ChatPanel)
+    panel._conversation_summary = ""
+    panel._messages = [{"role": "user", "content": "hi", "timestamp": ""}]
+    panel._uploaded_files = []
+    panel._saved_sessions = [
+        {"id": "abc", "title": "old chat", "messages": [{"role": "user", "content": "bye", "timestamp": ""}], "summary": "old summary"},
+    ]
+
+    state = ChatPanel.chat_state(panel)
+    assert len(state["saved_sessions"]) == 1
+
+    restored = ChatPanel.__new__(ChatPanel)
+    restored._messages = []
+    restored._conversation_summary = ""
+    restored._uploaded_files = []
+    restored._saved_sessions = []
+    ChatPanel.restore_chat_state(restored, state)
+    assert len(restored._saved_sessions) == 1
+    assert restored._saved_sessions[0]["title"] == "old chat"
+
 
 
 def test_rows_preview_limit_caps_alarm_rows_to_one_hundred():

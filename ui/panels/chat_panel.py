@@ -7,6 +7,7 @@ import json
 import os
 import re
 from datetime import datetime
+import uuid
 from pathlib import Path
 
 from PyQt5.QtCore import QDate, QEvent, QThread, QTimer, Qt, QUrl, pyqtSignal
@@ -15,6 +16,7 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QComboBox,
+    QDialogButtonBox,
     QFrame,
     QFileDialog,
     QGridLayout,
@@ -25,6 +27,8 @@ from PyQt5.QtWidgets import (
     QGraphicsScene,
     QGraphicsView,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -79,6 +83,7 @@ _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _TABLE_ROW_RE = re.compile(r"^\|(.+)\|\s*$")
 _TABLE_SEP_RE = re.compile(r"^\|\s*(:?-+:?\s*\|\s*)+$")
+MAX_SAVED_SESSIONS = 50
 CHAT_SUMMARY_TRIGGER_TURNS = 14
 CHAT_SUMMARY_BATCH_TURNS = 6
 
@@ -496,6 +501,82 @@ class FreeModelsThread(QThread):
         self.finished.emit(fetch_free_tool_models())
 
 
+
+class ChatHistoryDialog(QDialog):
+    """Lists saved chat sessions and lets the user restore one."""
+
+    session_selected = pyqtSignal(dict)
+
+    def __init__(self, sessions: list[dict], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Chat History")
+        self.setMinimumSize(420, 340)
+        self._sessions = list(sessions)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        if not self._sessions:
+            layout.addWidget(QLabel("No saved conversations yet."))
+        else:
+            self._list = QListWidget()
+            self._list.setObjectName("chat_history_list")
+            for sess in self._sessions:
+                title = str(sess.get("title") or "Untitled chat")
+                ts = str(sess.get("saved_at") or "")
+                turn_count = len(sess.get("messages") or [])
+                label = f"{title}  ({turn_count} turns)"
+                if ts:
+                    label += f"  —  {ts[:16]}"
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, sess)
+                self._list.addItem(item)
+            self._list.itemDoubleClicked.connect(self._on_double_click)
+            layout.addWidget(self._list, 1)
+
+        buttons = QDialogButtonBox()
+        self._btn_restore = buttons.addButton("Restore", QDialogButtonBox.AcceptRole)
+        self._btn_delete = buttons.addButton("Delete", QDialogButtonBox.DestructiveRole)
+        buttons.addButton(QDialogButtonBox.Close)
+        self._btn_restore.setEnabled(bool(self._sessions))
+        self._btn_delete.setEnabled(bool(self._sessions))
+        buttons.accepted.connect(self._restore_selected)
+        buttons.rejected.connect(self.reject)
+        self._btn_delete.clicked.connect(self._delete_selected)
+        layout.addWidget(buttons)
+
+    def _restore_selected(self):
+        if not hasattr(self, "_list"):
+            return
+        item = self._list.currentItem()
+        if item is None and self._list.count():
+            item = self._list.item(0)
+        if item is None:
+            return
+        self.session_selected.emit(item.data(Qt.UserRole))
+        self.accept()
+
+    def _on_double_click(self, item: QListWidgetItem):
+        self.session_selected.emit(item.data(Qt.UserRole))
+        self.accept()
+
+    def _delete_selected(self):
+        if not hasattr(self, "_list"):
+            return
+        row = self._list.currentRow()
+        if row < 0:
+            return
+        self._list.takeItem(row)
+        if 0 <= row < len(self._sessions):
+            self._sessions.pop(row)
+        self._btn_restore.setEnabled(self._list.count() > 0)
+        self._btn_delete.setEnabled(self._list.count() > 0)
+
+    def remaining_sessions(self) -> list[dict]:
+        return list(self._sessions)
+
+
 class ChatPanel(QWidget):
     """Embedded Copilot-like assistant panel for local app data."""
 
@@ -512,6 +593,7 @@ class ChatPanel(QWidget):
         self._pending_tool_order: list[str] = []
         self._pending_tool_seq = 0
         self._uploaded_files: list[dict[str, str]] = []
+        self._saved_sessions: list[dict] = []
         self._models_thread: FreeModelsThread | None = None
         self._model = normalize_free_model_id(os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL))
         self._recommended_min_width = 350
@@ -579,6 +661,11 @@ class ChatPanel(QWidget):
         self.btn_clear = _make_assistant_button("New Chat", minimum_width=118)
         self.btn_clear.clicked.connect(self.clear_chat)
         tools_grid.addWidget(self.btn_clear, 1, 1)
+
+        self.btn_history = _make_assistant_button("Chat History", minimum_width=118)
+        self.btn_history.clicked.connect(self.show_chat_history)
+        tools_grid.addWidget(self.btn_history, 2, 0, 1, 2)
+
         tools_grid.setColumnStretch(0, 1)
         tools_grid.setColumnStretch(1, 1)
         head_lay.addLayout(tools_grid)
@@ -632,6 +719,7 @@ class ChatPanel(QWidget):
             self.btn_alarm_stats,
             self.btn_upload,
             self.btn_clear,
+            self.btn_history,
             self.btn_send,
         ]
         self._refresh_responsive_metrics()
@@ -690,6 +778,7 @@ class ChatPanel(QWidget):
             return
         if self._summary_thread and self._summary_thread.isRunning():
             return
+        self._archive_current_session()
         self._messages.clear()
         self._conversation_summary = ""
         self._tool_cards.clear()
@@ -710,6 +799,49 @@ class ChatPanel(QWidget):
     def ask_alarm_stats(self):
         self.send_prompt("Show alarm stats summary: total, power, down, door, sites, and average duration.")
 
+    def show_chat_history(self):
+        dialog = ChatHistoryDialog(self._saved_sessions, parent=self)
+        dialog.session_selected.connect(self._restore_session)
+        dialog.exec_()
+        self._saved_sessions = dialog.remaining_sessions()
+
+    def _archive_current_session(self):
+        if not self._messages:
+            return
+        first_user = next(
+            (m["content"] for m in self._messages if m.get("role") == "user"),
+            "Untitled chat",
+        )
+        title = (first_user[:60] + "…") if len(first_user) > 60 else first_user
+        session = {
+            "id": str(uuid.uuid4()),
+            "title": title,
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+            "messages": list(self._messages),
+            "summary": self._conversation_summary,
+            "uploaded_files": list(self._uploaded_files),
+            "model": self._model,
+        }
+        self._saved_sessions.insert(0, session)
+        self._saved_sessions = self._saved_sessions[:MAX_SAVED_SESSIONS]
+
+    def _restore_session(self, session: dict):
+        self._archive_current_session()
+        self._messages.clear()
+        self._conversation_summary = ""
+        self._tool_cards.clear()
+        self._pending_tool_events.clear()
+        self._pending_tool_order.clear()
+        self._pending_tool_seq = 0
+        self._uploaded_files.clear()
+        while self._history_layout.count() > 1:
+            item = self._history_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.restore_chat_state(session)
+        self._viewer._sbar.showMessage("Chat session restored", 2500)
+
     def refresh_free_models(self):
         if self._models_thread and self._models_thread.isRunning():
             return
@@ -722,6 +854,7 @@ class ChatPanel(QWidget):
             "summary": self._conversation_summary,
             "messages": list(self._messages),
             "uploaded_files": list(self._uploaded_files),
+            "saved_sessions": list(self._saved_sessions),
         }
 
     def restore_chat_state(self, data: object):
@@ -756,6 +889,9 @@ class ChatPanel(QWidget):
                 for item in uploads
                 if isinstance(item, dict) and item.get("path")
             ]
+        sessions = data.get("saved_sessions")
+        if isinstance(sessions, list):
+            self._saved_sessions = [s for s in sessions if isinstance(s, dict)][:MAX_SAVED_SESSIONS]
 
     def _on_free_models_loaded(self, options: object):
         if isinstance(options, list) and options:
@@ -1666,6 +1802,7 @@ class ChatPanel(QWidget):
         self.btn_sources.setEnabled(not effective_busy)
         self.btn_alarm_stats.setEnabled(not effective_busy)
         self.btn_upload.setEnabled(not effective_busy)
+        self.btn_history.setEnabled(not effective_busy)
         self.edit_model.setEnabled(not effective_busy)
         self.input.setEnabled(not effective_busy)
         self.lbl_status.setText("Thinking..." if busy else self._api_status_text())
