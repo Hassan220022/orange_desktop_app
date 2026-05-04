@@ -881,7 +881,6 @@ class ChatPanel(QWidget):
                     if content:
                         restored.append(_chat_message(role, content))
             self._messages = restored
-            self._rehydrate_history()
         uploads = data.get("uploaded_files")
         if isinstance(uploads, list):
             self._uploaded_files = [
@@ -892,6 +891,7 @@ class ChatPanel(QWidget):
         sessions = data.get("saved_sessions")
         if isinstance(sessions, list):
             self._saved_sessions = [s for s in sessions if isinstance(s, dict)][:MAX_SAVED_SESSIONS]
+        self._rehydrate_history()
 
     def _on_free_models_loaded(self, options: object):
         if isinstance(options, list) and options:
@@ -1027,6 +1027,9 @@ class ChatPanel(QWidget):
                 widget.deleteLater()
         if self._conversation_summary.strip():
             self._append_system("Earlier chat summarized and will be included in future replies.")
+        if self._uploaded_files:
+            names = ", ".join(str(upload.get("name") or upload.get("path") or "file") for upload in self._uploaded_files[-5:])
+            self._append_system(f"Restored uploaded files available to tools: {names}")
         for item in self._messages:
             role = str(item.get("role") or "").strip().lower()
             content = str(item.get("content") or "")
@@ -1049,14 +1052,10 @@ class ChatPanel(QWidget):
     def _on_error(self, error: str):
         self._pending_tool_events.clear()
         self._pending_tool_order.clear()
-        self._drop_unanswered_user_turn()
+        self._messages.append(_chat_message("assistant", "The previous request failed before an assistant answer was received."))
         self._append_message("Error", error)
         self._schedule_scroll_to_bottom()
         self._viewer._sbar.showMessage("Chat request failed", 3500)
-
-    def _drop_unanswered_user_turn(self):
-        if self._messages and self._messages[-1].get("role") == "user":
-            self._messages.pop()
 
     def _prepare_model_switch(self, new_model: str):
         if not self._messages:
@@ -1108,12 +1107,14 @@ class ChatPanel(QWidget):
                 self._messages = self._messages[-keep_tail:]
             else:
                 self._messages.clear()
+        self._summary_thread = None
         self._viewer._sbar.showMessage("Chat summary updated", 2500)
-        self._refresh_send_state()
+        self._set_busy(False)
 
     def _on_summary_error(self, error: str):
+        self._summary_thread = None
         self._viewer._sbar.showMessage(f"Chat summary skipped: {error}", 3500)
-        self._refresh_send_state()
+        self._set_busy(False)
 
     def _on_tool_event(self, event: object):
         if not isinstance(event, dict):

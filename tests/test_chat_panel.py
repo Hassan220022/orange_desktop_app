@@ -195,6 +195,41 @@ def test_chat_state_round_trips_saved_sessions():
 
 
 
+
+def test_chat_error_preserves_failed_user_turn_with_assistant_error_turn():
+    panel = ChatPanel.__new__(ChatPanel)
+    panel._messages = [{"role": "user", "content": "original question", "timestamp": ""}]
+    panel._pending_tool_events = {"call": {}}
+    panel._pending_tool_order = ["call"]
+    panel._append_message = lambda *args, **kwargs: None
+    panel._schedule_scroll_to_bottom = lambda: None
+    panel._viewer = type("Viewer", (), {"_sbar": type("Sbar", (), {"showMessage": lambda *args, **kwargs: None})()})()
+
+    ChatPanel._on_error(panel, "timeout")
+
+    assert panel._messages[0]["content"] == "original question"
+    assert panel._messages[1]["role"] == "assistant"
+    assert panel._pending_tool_events == {}
+    assert panel._pending_tool_order == []
+
+
+def test_restore_chat_state_rehydrates_after_uploads_are_loaded():
+    panel = ChatPanel.__new__(ChatPanel)
+    panel._messages = []
+    panel._conversation_summary = ""
+    panel._uploaded_files = []
+    panel._saved_sessions = []
+    calls = []
+    panel._rehydrate_history = lambda: calls.append(list(panel._uploaded_files))
+
+    ChatPanel.restore_chat_state(panel, {
+        "uploaded_files": [{"name": "vip.csv", "path": "/tmp/vip.csv", "kind": "uploaded_list"}],
+    })
+
+    assert calls == [[{"name": "vip.csv", "path": "/tmp/vip.csv", "kind": "uploaded_list"}]]
+
+
+
 def test_rows_preview_limit_caps_alarm_rows_to_one_hundred():
     assert _rows_preview_limit(250, 10) == 10
     assert _rows_preview_limit(250, 120) == 100
