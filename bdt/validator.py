@@ -677,50 +677,6 @@ def _rule_2_power_alarm_match(bdt: BDTData,
     )
 
 
-def _rule_4_discharge_table(bdt: BDTData,
-                             tolerance: float) -> RuleResult:
-    """R4: Backup time matches discharge table calculation.
-
-    Lithium batteries also must continue with 5-minute readings once the
-    discharge voltage reaches 47V or below.
-    """
-    if not bdt.discharge_readings:
-        return RuleResult(
-            rule_id="R4", rule_name="Discharge Table Match",
-            passed=None, verdict="N/A",
-            detail="No discharge readings found",
-        )
-
-    last_mins = _max_reached_discharge_minutes(bdt)
-    if last_mins is None:
-        return RuleResult(
-            rule_id="R4", rule_name="Discharge Table Match",
-            passed=False, verdict="Revise",
-            detail="Discharge table is empty — no readings recorded",
-        )
-
-    if _is_lithium(bdt.battery_brand):
-        cadence_issue = _lithium_cadence_violation(bdt)
-        if cadence_issue:
-            return RuleResult(
-                rule_id="R4", rule_name="Discharge Table Match",
-                passed=False, verdict="Rejected",
-                detail=cadence_issue,
-            )
-
-    reported = bdt.discharge_minutes
-    diff_ratio = (abs(reported - last_mins) / last_mins
-                  if last_mins > 0 else 1.0)
-    passed = diff_ratio <= tolerance
-
-    return RuleResult(
-        rule_id="R4", rule_name="Discharge Table Match",
-        passed=passed,
-        verdict="Accepted" if passed else "Revise",
-        detail=(f"Table shows {last_mins:.0f} min of readings, "
-                f"reported: {reported:.0f} min"),
-    )
-
 
 def _rule_5_start_ampere(bdt: BDTData) -> RuleResult:
     """R5: Starting I-Battery ampere should be approximately 0A."""

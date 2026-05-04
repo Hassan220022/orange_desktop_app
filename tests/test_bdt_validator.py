@@ -10,7 +10,6 @@ from alarm_app.bdt.validator import (
     _rule_1_photos,
     _rule_2_power_alarm_match,
     _rule_3_string_vs_busbar,
-    _rule_4_discharge_table,
     _rule_5_start_ampere,
     _rule_6_end_voltage,
     _rule_7_inverse_relationship,
@@ -594,68 +593,6 @@ class TestR2PowerAlarmMatch:
         r = _rule_2_power_alarm_match(bdt, alarm_df, tol_override=5.0)
         assert r.verdict == "Accepted"
 
-
-# ── R4 Discharge Table ──────────────────────────────────────────────────
-
-class TestR4DischargeTable:
-
-    def test_discharge_table_matches_accepted(self):
-        bdt = _make_bdt(
-            discharge_readings=[
-                ("30 min", 52.0, 30.0),
-                ("60 min", 51.0, 30.4),
-                ("120 min", 46.0, 30.9),
-            ],
-            discharge_minutes=120.0,
-        )
-        r = _rule_4_discharge_table(bdt, tolerance=0.15)
-        assert r.verdict == "Accepted"
-
-    def test_discharge_table_empty_revise(self):
-        bdt = _make_bdt(
-            discharge_readings=[
-                ("30 min", None, None),
-                ("60 min", None, None),
-            ],
-            discharge_minutes=60.0,
-        )
-        r = _rule_4_discharge_table(bdt, tolerance=0.15)
-        assert r.verdict == "Revise"
-
-
-class TestR4LithiumCadence:
-
-    def test_lithium_47v_every_five_minutes_accepted(self):
-        bdt = _make_bdt(
-            battery_brand="Lithium",
-            discharge_readings=[
-                ("5 min", 50.8, 29.9),
-                ("10 min", 49.5, 29.8),
-                ("15 min", 47.0, 29.7),
-                ("20 min", 46.6, 29.6),
-                ("25 min", 46.1, 29.5),
-            ],
-            discharge_minutes=25.0,
-        )
-        r = _rule_4_discharge_table(bdt, tolerance=0.15)
-        assert r.verdict == "Accepted"
-
-    def test_lithium_cadence_violation_rejected(self):
-        bdt = _make_bdt(
-            battery_brand="Lithium",
-            discharge_readings=[
-                ("5 min", 50.8, 29.9),
-                ("10 min", 49.5, 29.8),
-                ("15 min", 47.0, 29.7),
-                ("22 min", 46.6, 29.6),
-                ("27 min", 46.1, 29.5),
-            ],
-            discharge_minutes=27.0,
-        )
-        r = _rule_4_discharge_table(bdt, tolerance=0.15)
-        assert r.verdict == "Rejected"
-        assert "47V" in r.detail
-        assert "5 min" in r.detail
 
 
 # ── R5 Starting I-Battery ───────────────────────────────────────────────
