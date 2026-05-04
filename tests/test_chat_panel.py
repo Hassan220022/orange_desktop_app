@@ -1,3 +1,4 @@
+import alarm_app.ui.panels.chat_panel as chat_panel_mod
 from alarm_app.ui.panels.chat_panel import (
     ChatPanel,
     _alarm_row_columns,
@@ -227,6 +228,44 @@ def test_restore_chat_state_rehydrates_after_uploads_are_loaded():
     })
 
     assert calls == [[{"name": "vip.csv", "path": "/tmp/vip.csv", "kind": "uploaded_list"}]]
+
+
+
+
+def test_show_chat_history_preserves_current_chat_archived_during_restore(monkeypatch):
+    class _Signal:
+        def __init__(self):
+            self.callback = None
+
+        def connect(self, callback):
+            self.callback = callback
+
+    class _Dialog:
+        def __init__(self, sessions, parent=None):
+            self.sessions = list(sessions)
+            self.session_selected = _Signal()
+
+        def exec_(self):
+            self.session_selected.callback(self.sessions[0])
+
+        def remaining_sessions(self):
+            return list(self.sessions)
+
+    monkeypatch.setattr(chat_panel_mod, "ChatHistoryDialog", _Dialog)
+
+    panel = ChatPanel.__new__(ChatPanel)
+    panel._saved_sessions = [{"id": "old", "title": "old chat", "messages": []}]
+    panel._messages = [{"role": "user", "content": "current question", "timestamp": ""}]
+    panel._conversation_summary = ""
+    panel._uploaded_files = []
+    panel._model = "model"
+    panel._restore_session = lambda session: ChatPanel._archive_current_session(panel)
+
+    ChatPanel.show_chat_history(panel)
+
+    titles = [session.get("title") for session in panel._saved_sessions]
+    assert "current question" in titles
+    assert "old chat" in titles
 
 
 

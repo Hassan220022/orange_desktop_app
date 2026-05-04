@@ -800,10 +800,17 @@ class ChatPanel(QWidget):
         self.send_prompt("Show alarm stats summary: total, power, down, door, sites, and average duration.")
 
     def show_chat_history(self):
+        original_ids = {str(session.get("id") or "") for session in self._saved_sessions}
         dialog = ChatHistoryDialog(self._saved_sessions, parent=self)
         dialog.session_selected.connect(self._restore_session)
         dialog.exec_()
-        self._saved_sessions = dialog.remaining_sessions()
+        remaining = dialog.remaining_sessions()
+        remaining_ids = {str(session.get("id") or "") for session in remaining}
+        archived_now = [
+            session for session in self._saved_sessions
+            if str(session.get("id") or "") not in original_ids | remaining_ids
+        ]
+        self._saved_sessions = (archived_now + remaining)[:MAX_SAVED_SESSIONS]
 
     def _archive_current_session(self):
         if not self._messages:
