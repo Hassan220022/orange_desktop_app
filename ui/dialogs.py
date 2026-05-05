@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLineEdit, QCheckBox, QScrollArea, QWidget,
     QTableWidget, QTableWidgetItem, QSpinBox, QDoubleSpinBox,
     QFileDialog, QMessageBox, QAbstractItemView, QHeaderView, QComboBox,
+    QSplitter, QListWidget, QListWidgetItem, QTextBrowser,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
@@ -17,15 +18,18 @@ try:
     from ..constants import BT_HEADERS, BT_WIDTHS
     from ..core.backup_time import fmt_td as _fmt_td
     from ..data import state
+    from ..bdt.rule_docs import full_rules_html, iter_rule_docs
 except ImportError:
     try:
         from alarm_app.constants import BT_HEADERS, BT_WIDTHS
         from alarm_app.core.backup_time import fmt_td as _fmt_td
         from alarm_app.data import state
+        from alarm_app.bdt.rule_docs import full_rules_html, iter_rule_docs
     except ImportError:
         from constants import BT_HEADERS, BT_WIDTHS
         from core.backup_time import fmt_td as _fmt_td
         from data import state
+        from bdt.rule_docs import full_rules_html, iter_rule_docs
 
 
 def _resolved_parent_theme_mode(parent) -> str:
@@ -740,6 +744,14 @@ class BdtParametersDialog(QDialog):
         lay.addStretch(1)
 
         btn_row = QHBoxLayout()
+        btn_explain = QPushButton("Explain rules")
+        btn_explain.setObjectName("btn_dir")
+        btn_explain.setToolTip(
+            "Open the BDT Validation Rules reference to see what each "
+            "tolerance affects and how each rule is calculated."
+        )
+        btn_explain.clicked.connect(self._show_rules_reference)
+        btn_row.addWidget(btn_explain)
         btn_row.addStretch()
         btn_reset = QPushButton("Reset to defaults")
         btn_reset.setObjectName("btn_clear")
@@ -754,6 +766,10 @@ class BdtParametersDialog(QDialog):
         btn_row.addWidget(btn_cancel)
         btn_row.addWidget(btn_save)
         outer.addLayout(btn_row)
+
+    def _show_rules_reference(self):
+        dlg = BdtRulesReferenceDialog(parent=self)
+        dlg.exec_()
 
     def _build_tolerance_row(self, spec: dict, tolerances: dict) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -1056,15 +1072,16 @@ class BdtValidationIntroDialog(QDialog):
 class BdtRulesReferenceDialog(QDialog):
     """Reference dialog that explains each BDT validation rule."""
 
-    def __init__(self, *, rule_rows: list[tuple[str, str, str]], parent=None):
+    def __init__(self, *, rule_rows: list[tuple[str, str, str]] | None = None,
+                 parent=None):
         super().__init__(parent)
         self.setWindowTitle("BDT Validation Rules")
-        self.setMinimumWidth(760)
-        self.setMinimumHeight(640)
+        self.setMinimumWidth(880)
+        self.setMinimumHeight(680)
         self._theme_mode = _resolved_parent_theme_mode(parent)
         if parent:
             self.setStyleSheet(parent.styleSheet())
-        self._build(rule_rows)
+        self._build(rule_rows or [])
 
     def _label_style(self, role: str) -> str:
         if self._theme_mode == "light":
@@ -1087,49 +1104,83 @@ class BdtRulesReferenceDialog(QDialog):
         lay.setSpacing(12)
 
         intro = QLabel(
-            "This reference explains what each BDT validation rule checks, so reviewers can read a verdict and understand the reason behind it."
+            "Read what each BDT validation rule checks, what inputs it uses, "
+            "and exactly how it's calculated. Use the rule list on the left "
+            "to jump directly to a rule; press Ctrl+F inside the panel to "
+            "search the full reference."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet(self._label_style("intro"))
         lay.addWidget(intro)
 
         summary = QLabel(
-            "Use it when you need a plain-language explanation of the rule intent, not just the short rule label shown in the table."
+            "User-editable thresholds appear under Settings \u2192 BDT "
+            "Validation Parameters \u2192 Validation Tolerances."
         )
         summary.setWordWrap(True)
         summary.setStyleSheet(self._label_style("summary"))
         lay.addWidget(summary)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
 
-        container = QWidget()
-        rows_lay = QVBoxLayout(container)
-        rows_lay.setContentsMargins(0, 0, 0, 0)
-        rows_lay.setSpacing(10)
+        nav = QListWidget()
+        nav.setObjectName("rules_reference_nav")
+        nav.setUniformItemSizes(True)
+        nav.setMinimumWidth(180)
+        nav.setMaximumWidth(220)
 
-        for rule_code, rule_name, description in rule_rows:
-            card = QFrame()
-            card.setObjectName("workspace_card")
-            card_lay = QVBoxLayout(card)
-            card_lay.setContentsMargins(12, 12, 12, 12)
-            card_lay.setSpacing(6)
+        # Build navigator from the canonical rule_docs ordering. The
+        # ``rule_rows`` argument is preserved for backwards compatibility
+        # with callers that wanted to drive labels themselves: when its
+        # entries match a known rule key we use their friendlier name,
+        # otherwise we fall back to the title baked into rule_docs.
+        external_titles = {code: name for code, name, _desc in (rule_rows or [])}
 
-            title = QLabel(f"{rule_code} - {rule_name}")
-            title.setObjectName("workspace_card_title")
-            card_lay.addWidget(title)
+        nav_keys: list[str] = []
+        for key, default_title, _html in iter_rule_docs():
+            if key in external_titles:
+                title = f"{key} \u2014 {external_titles[key]}"
+            else:
+                title = default_title
+            QListWidgetItem(title, nav)
+            nav_keys.append(key)
 
-            body = QLabel(description)
-            body.setWordWrap(True)
-            body.setStyleSheet(self._label_style("body"))
-            card_lay.addWidget(body)
+        browser = QTextBrowser()
+        browser.setOpenExternalLinks(False)
+        browser.setOpenLinks(False)
+        browser.setHtml(full_rules_html())
+        # Soft monochrome styling that respects the dialog's theme.
+        if self._theme_mode == "light":
+            browser.setStyleSheet(
+                "QTextBrowser { background:#ffffff; color:#4c4f69; "
+                "border:1px solid #ccd0da; border-radius:6px; "
+                "padding:8px; font-size:12px; }"
+            )
+        else:
+            browser.setStyleSheet(
+                "QTextBrowser { background:#1a1a2a; color:#cdd6f4; "
+                "border:1px solid #2a2a3e; border-radius:6px; "
+                "padding:8px; font-size:12px; }"
+            )
 
-            rows_lay.addWidget(card)
+        def _on_nav(row: int) -> None:
+            if 0 <= row < len(nav_keys):
+                browser.scrollToAnchor(nav_keys[row])
 
-        rows_lay.addStretch()
-        scroll.setWidget(container)
-        lay.addWidget(scroll, 1)
+        nav.currentRowChanged.connect(_on_nav)
+        nav.setCurrentRow(0)
+
+        splitter.addWidget(nav)
+        splitter.addWidget(browser)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([200, 560])
+        lay.addWidget(splitter, 1)
+
+        self._nav = nav
+        self._browser = browser
+        self._nav_keys = nav_keys
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
