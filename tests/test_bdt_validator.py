@@ -800,8 +800,9 @@ class TestR8SizingVsActual:
         r = _rule_8_backup_time(bdt, health_pct=0.95)
         assert r.verdict == "Accepted"
 
-    def test_abs_difference_above_15_rejected(self):
-        # theoretical = 150 min; actual = 130, diff=20
+    def test_abs_difference_above_tolerance_rejected(self):
+        # theoretical = 150 min; default tolerance window = max(150*0.15, 15) = 22.5 min;
+        # actual = 120, diff=30 → above window
         bdt = _make_bdt(
             battery_brand="Lithium",
             battery_ah=100.0,
@@ -809,10 +810,44 @@ class TestR8SizingVsActual:
             num_strings=1,
             start_voltage=48.0,
             start_ampere=40.0,
-            discharge_minutes=130.0,
+            discharge_minutes=120.0,
         )
         r = _rule_8_backup_time(bdt, health_pct=0.95)
         assert r.verdict == "Rejected"
+        assert "limit:" in r.detail and "% of theoretical" in r.detail
+
+    def test_tolerance_floor_15_minutes_for_short_tests(self):
+        # theoretical ≈ 60 min; theoretical * 0.15 = 9 min, but floor is 15 min;
+        # diff = 14 → Accepted (would have been rejected without floor)
+        bdt = _make_bdt(
+            battery_brand="Lithium",
+            battery_ah=100.0,
+            battery_voltage=48.0,
+            num_strings=1,
+            start_voltage=48.0,
+            start_ampere=100.0,  # makes theoretical = 60 min
+            discharge_minutes=46.0,  # diff = 14
+        )
+        r = _rule_8_backup_time(bdt, health_pct=0.95)
+        assert r.verdict == "Accepted"
+
+    def test_tolerance_parameter_widens_window(self):
+        # theoretical = 150 min; with tolerance=0.30, window = 45 min;
+        # actual = 110, diff=40 → would be Rejected at 0.15 (window 22.5),
+        # but Accepted at 0.30 (window 45)
+        bdt = _make_bdt(
+            battery_brand="Lithium",
+            battery_ah=100.0,
+            battery_voltage=48.0,
+            num_strings=1,
+            start_voltage=48.0,
+            start_ampere=40.0,
+            discharge_minutes=110.0,
+        )
+        strict = _rule_8_backup_time(bdt, health_pct=0.95, tolerance=0.15)
+        loose = _rule_8_backup_time(bdt, health_pct=0.95, tolerance=0.30)
+        assert strict.verdict == "Rejected"
+        assert loose.verdict == "Accepted"
 
     def test_missing_specs_rejected_not_na(self):
         bdt = _make_bdt(

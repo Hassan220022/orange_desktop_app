@@ -122,6 +122,13 @@ except ImportError:
         from bdt.export import build_bdt_export_sheets
 
 
+def _format_count_label(start: int, end: int, total: int) -> str:
+    if total <= 0:
+        return ""
+    range_text = f"{start}" if start == end else f"{start}-{end}"
+    return f"Showing  {range_text}  of  {total} records"
+
+
 class AlarmViewer(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -375,6 +382,10 @@ class AlarmViewer(QMainWindow):
         self._lbl_workspace = QLabel(self._workspace_defs[0]["label"])
         self._lbl_workspace.setObjectName("lbl_app_name")
         l.addWidget(self._lbl_workspace)
+
+        self._lbl_count = QLabel("")
+        self._lbl_count.setObjectName("lbl_dim")
+        l.addWidget(self._lbl_count)
 
         self._btn_daily_report = QPushButton("Daily Report")
         self._btn_daily_report.setObjectName("btn_dir")
@@ -1218,6 +1229,9 @@ class AlarmViewer(QMainWindow):
             total_pages = ((total - 1) // page_size) + 1
         self._lbl_page.setText(f"Page {page_no}/{total_pages}")
         self._lbl_page_range.setText(f"Rows {start:,}-{end:,} of {total:,}")
+        lbl_count = getattr(self, "_lbl_count", None)
+        if lbl_count is not None:
+            lbl_count.setText(_format_count_label(start, end, total))
         self._btn_prev_page.setEnabled(offset > 0)
         self._btn_next_page.setEnabled(total > 0 and offset + self._model.rowCount() < total)
 
@@ -1398,8 +1412,6 @@ class AlarmViewer(QMainWindow):
         self._apply_col_widths(list(visible_df.columns))
         self._refresh_alarm_stats(base_query)
         self._refresh_alarm_facets()
-        start = page_offset + 1
-        end = min(page_offset + len(page_df), total)
 
         self._update_pagination_controls()
         if status_message:
@@ -2213,6 +2225,11 @@ class AlarmViewer(QMainWindow):
         view = self._apply_filters(self._full_df)
         self._populate(view)
         self._refresh_stats(view)
+        view_total = len(view)
+        lbl_count = getattr(self, "_lbl_count", None)
+        if lbl_count is not None:
+            start = 1 if view_total else 0
+            lbl_count.setText(_format_count_label(start, view_total, view_total))
         self._sbar.showMessage(f"{msg}; displaying in-memory results")
 
     def _load_bdt_results_from_db(self) -> list:

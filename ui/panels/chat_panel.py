@@ -748,6 +748,10 @@ class ChatPanel(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._refresh_responsive_metrics()
+        if hasattr(self, "_history_scroll"):
+            bar = self._history_scroll.verticalScrollBar()
+            if bar.value() >= bar.maximum() - 8:
+                self._schedule_scroll_to_bottom()
 
     def eventFilter(self, obj, event):
         if obj is self.input and event.type() == QEvent.KeyPress:
@@ -2032,10 +2036,3 @@ class ChatPanel(QWidget):
     def _schedule_scroll_to_bottom(self):
         QTimer.singleShot(0, self._scroll_to_bottom)
         QTimer.singleShot(50, self._scroll_to_bottom)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, "_history_scroll"):
-            bar = self._history_scroll.verticalScrollBar()
-            if bar.value() >= bar.maximum() - 8:
-                self._schedule_scroll_to_bottom()

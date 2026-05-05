@@ -20,6 +20,7 @@ try:
         BDT_REQUIRED_PHOTO_COUNT,
         BDT_POWER_TIMING_TOLERANCE_MIN,
         BDT_COMPLETION_MINUTES,
+        BDT_SIZING_TOLERANCE_MINUTES,
         BDT_STRING_AMPERE_TOLERANCE_A,
     )
 except ImportError:
@@ -30,6 +31,7 @@ except ImportError:
         BDT_REQUIRED_PHOTO_COUNT,
         BDT_POWER_TIMING_TOLERANCE_MIN,
         BDT_COMPLETION_MINUTES,
+        BDT_SIZING_TOLERANCE_MINUTES,
         BDT_STRING_AMPERE_TOLERANCE_A,
     )
 
@@ -91,7 +93,7 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
         result.rules.append(_rule_5_start_ampere(bdt))
         result.rules.append(_rule_6_end_voltage(bdt, health_pct))
         result.rules.append(_rule_7_inverse_relationship(bdt))
-        result.rules.append(_rule_8_backup_time(bdt, health_pct))
+        result.rules.append(_rule_8_backup_time(bdt, health_pct, tolerance=tolerance))
         result.rules.append(_rule_9_discharge_current_tolerance(bdt))
     result.rules.append(_rule_10_door_alarm_match(bdt, alarm_df))
     result.rules.append(_rule_11_summary_checklist(bdt))
@@ -874,13 +876,17 @@ def _theoretical_backup_minutes(bdt: BDTData, health_pct: float) -> float | None
     return (capacity_wh / load_w) * 60  # convert hours to minutes
 
 
-def _rule_8_backup_time(bdt: BDTData, health_pct: float) -> RuleResult:
+def _rule_8_backup_time(bdt: BDTData, health_pct: float,
+                        tolerance: float = BDT_DEFAULT_TOLERANCE) -> RuleResult:
     """R8: Sizing-vs-actual discharge time consistency check (never N/A).
 
     Business rules:
     - The test target is capped at 180 minutes.
     - If theoretical duration is >180, accept only when actual discharge >=180.
-    - Otherwise (theoretical <=180), compare actual vs theoretical with ±15 min tolerance.
+    - Otherwise (theoretical <=180), compare actual vs theoretical with a
+      fractional tolerance window (``theoretical_mins * tolerance``), floored at
+      ``BDT_SIZING_TOLERANCE_MINUTES`` so very short tests never get tighter
+      than the historical default.
     """
     reported = float(bdt.discharge_minutes or 0.0)
     theoretical_mins = _theoretical_backup_minutes(bdt, health_pct)
@@ -911,15 +917,19 @@ def _rule_8_backup_time(bdt: BDTData, health_pct: float) -> RuleResult:
             detail=detail,
         )
 
-    # Normal branch: compare against theoretical target with fixed tolerance.
+    # Normal branch: compare against theoretical target with a configurable
+    # fractional tolerance, floored at the historical 15-min default so very
+    # short theoretical windows still get a reasonable allowance.
+    tol_min = max(theoretical_mins * tolerance, float(BDT_SIZING_TOLERANCE_MINUTES))
     delta = abs(theoretical_mins - reported)
-    passed = delta <= 15.0
+    passed = delta <= tol_min
     return RuleResult(
         rule_id="R8", rule_name="Sizing vs Actual",
         passed=passed,
         verdict="Accepted" if passed else "Rejected",
         detail=(f"Theoretical: {theoretical_mins:.0f} min, actual: {reported:.0f} min, "
-                f"difference: {delta:.1f} min (limit: 15 min)"),
+                f"difference: {delta:.1f} min (limit: {tol_min:.1f} min, "
+                f"{tolerance * 100:.0f}% of theoretical)"),
     )
 
 
