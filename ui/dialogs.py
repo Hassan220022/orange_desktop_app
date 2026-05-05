@@ -7,7 +7,7 @@ import pandas as pd
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
     QPushButton, QLineEdit, QCheckBox, QScrollArea, QWidget,
-    QTableWidget, QTableWidgetItem, QSpinBox,
+    QTableWidget, QTableWidgetItem, QSpinBox, QDoubleSpinBox,
     QFileDialog, QMessageBox, QAbstractItemView, QHeaderView, QComboBox,
 )
 from PyQt5.QtCore import Qt, pyqtSignal
@@ -550,35 +550,154 @@ class AppSettingsDialog(QDialog):
         }
 
 
-class BdtParametersDialog(QDialog):
-    """Edit active BDT validation parameters with inline explanations."""
+_TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
+    {
+        "key": "sizing_fractional_tolerance",
+        "label": "R8 sizing tolerance (% of theoretical)",
+        "suffix": " %",
+        "decimals": 1,
+        "step": 0.5,
+        "minimum": 0.0,
+        "maximum": 100.0,
+        "scale": 100.0,
+        "help": "Fractional window applied to the theoretical backup duration in Rule R8. "
+                "0.15 (15%) means actual discharge may differ from theoretical by up to "
+                "±15% before the test is rejected.",
+    },
+    {
+        "key": "sizing_minutes_floor",
+        "label": "R8 sizing minutes floor",
+        "suffix": " min",
+        "decimals": 1,
+        "step": 1.0,
+        "minimum": 0.0,
+        "maximum": 600.0,
+        "help": "Lower bound for the R8 tolerance window in minutes. Prevents very short "
+                "theoretical durations from getting an unreasonably tight allowance.",
+    },
+    {
+        "key": "completion_minutes",
+        "label": "R6 / R8 completion target",
+        "suffix": " min",
+        "decimals": 0,
+        "step": 5.0,
+        "minimum": 30.0,
+        "maximum": 600.0,
+        "help": "Discharge target a test must hit (or exceed) to be considered complete. "
+                "Used by Rules R6 and R8 as the cap.",
+    },
+    {
+        "key": "power_timing_min",
+        "label": "R2 power-alarm timing window",
+        "suffix": " min",
+        "decimals": 0,
+        "step": 1.0,
+        "minimum": 0.0,
+        "maximum": 240.0,
+        "help": "Window around the BDT start-time used in Rule R2 to find the matching "
+                "power alarm. Wider values are more forgiving of clock drift.",
+    },
+    {
+        "key": "string_ampere_a",
+        "label": "R3 rectifier-vs-string band",
+        "suffix": " A",
+        "decimals": 2,
+        "step": 0.1,
+        "minimum": 0.0,
+        "maximum": 100.0,
+        "help": "Maximum acceptable difference (in amps) between the rectifier reading and "
+                "the sum of string currents. Rule R3 rejects tests outside this band.",
+    },
+    {
+        "key": "discharge_current_a",
+        "label": "R9 discharge-current band",
+        "suffix": " A",
+        "decimals": 2,
+        "step": 0.1,
+        "minimum": 0.0,
+        "maximum": 50.0,
+        "help": "Maximum acceptable deviation (in amps) of any discharge-current reading "
+                "from the baseline reading. Rule R9 rejects tests outside this band.",
+    },
+    {
+        "key": "start_ampere_a",
+        "label": "R5 starting current threshold",
+        "suffix": " A",
+        "decimals": 2,
+        "step": 0.05,
+        "minimum": 0.0,
+        "maximum": 10.0,
+        "help": "Absolute starting I-Battery current threshold. Rule R5 rejects tests where "
+                "|I| equals or exceeds this value.",
+    },
+    {
+        "key": "end_voltage_min",
+        "label": "R6 end-voltage minimum",
+        "suffix": " V",
+        "decimals": 2,
+        "step": 0.5,
+        "minimum": 30.0,
+        "maximum": 70.0,
+        "help": "Lower bound of the acceptable end-of-test voltage range used by Rule R6.",
+    },
+    {
+        "key": "end_voltage_max",
+        "label": "R6 end-voltage maximum",
+        "suffix": " V",
+        "decimals": 2,
+        "step": 0.5,
+        "minimum": 30.0,
+        "maximum": 70.0,
+        "help": "Upper bound of the acceptable end-of-test voltage range used by Rule R6.",
+    },
+)
 
-    def __init__(self, *, health_pct: int, parent=None):
+
+class BdtParametersDialog(QDialog):
+    """Edit active BDT validation parameters and tolerances."""
+
+    def __init__(self, *, health_pct: int,
+                 tolerances: dict | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("BDT Validation Parameters")
-        self.setMinimumWidth(460)
+        self.setMinimumSize(520, 600)
         if parent:
             self.setStyleSheet(parent.styleSheet())
-        self._build(health_pct)
+        self._tol_spinboxes: dict[str, tuple[QDoubleSpinBox, float]] = {}
+        self._build(health_pct, tolerances or {})
 
-    def _build(self, health_pct: int):
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 16, 18, 16)
-        lay.setSpacing(12)
+    def _build(self, health_pct: int, tolerances: dict):
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(18, 16, 18, 16)
+        outer.setSpacing(12)
 
         intro = QLabel(
-            "These parameters affect the active BDT validation rules and their calculations."
+            "These parameters affect the active BDT validation rules and their calculations. "
+            "Hover over each field for an explanation."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color:#6c7086; font-size:12px; background:transparent;")
-        lay.addWidget(intro)
+        outer.addWidget(intro)
 
+        scroll = QScrollArea()
+        scroll.setObjectName("filter_list")
+        scroll.setWidgetResizable(True)
+        outer.addWidget(scroll, 1)
+
+        container = QWidget()
+        container.setObjectName("filter_list_inner")
+        scroll.setWidget(container)
+        lay = QVBoxLayout(container)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(12)
+
+        # --- Health card ----------------------------------------------------
         health_card = QFrame()
         health_card.setObjectName("workspace_card")
         health_lay = QVBoxLayout(health_card)
         health_lay.setContentsMargins(12, 12, 12, 12)
         health_lay.setSpacing(8)
-        health_title = QLabel("Health")
+        health_title = QLabel("Battery Health")
         health_title.setObjectName("workspace_card_title")
         health_lay.addWidget(health_title)
         self._spn_health = QSpinBox()
@@ -598,20 +717,99 @@ class BdtParametersDialog(QDialog):
         health_lay.addWidget(health_help)
         lay.addWidget(health_card)
 
+        # --- Tolerances card -----------------------------------------------
+        tol_card = QFrame()
+        tol_card.setObjectName("workspace_card")
+        tol_lay = QVBoxLayout(tol_card)
+        tol_lay.setContentsMargins(12, 12, 12, 12)
+        tol_lay.setSpacing(8)
+        tol_title = QLabel("Validation Tolerances")
+        tol_title.setObjectName("workspace_card_title")
+        tol_lay.addWidget(tol_title)
+        tol_help = QLabel(
+            "Each rule uses one of these thresholds to decide whether to accept, reject, or "
+            "flag a test for review. Defaults match the historical hardcoded values."
+        )
+        tol_help.setWordWrap(True)
+        tol_help.setStyleSheet("color:#6c7086; font-size:11px; background:transparent;")
+        tol_lay.addWidget(tol_help)
+        for spec in _TOLERANCE_FIELD_DEFS:
+            row = self._build_tolerance_row(spec, tolerances)
+            tol_lay.addLayout(row)
+        lay.addWidget(tol_card)
+        lay.addStretch(1)
+
         btn_row = QHBoxLayout()
         btn_row.addStretch()
+        btn_reset = QPushButton("Reset to defaults")
+        btn_reset.setObjectName("btn_clear")
+        btn_reset.clicked.connect(self._reset_defaults)
         btn_cancel = QPushButton("Cancel")
         btn_cancel.setObjectName("btn_clear")
         btn_cancel.clicked.connect(self.reject)
         btn_save = QPushButton("Save")
         btn_save.setObjectName("btn_search")
         btn_save.clicked.connect(self.accept)
+        btn_row.addWidget(btn_reset)
         btn_row.addWidget(btn_cancel)
         btn_row.addWidget(btn_save)
-        lay.addLayout(btn_row)
+        outer.addLayout(btn_row)
+
+    def _build_tolerance_row(self, spec: dict, tolerances: dict) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        label = QLabel(spec["label"])
+        label.setObjectName("filter_inline")
+        label.setWordWrap(True)
+        label.setMinimumWidth(220)
+        row.addWidget(label, 2)
+
+        spin = QDoubleSpinBox()
+        spin.setObjectName("filter_spin")
+        spin.setDecimals(int(spec.get("decimals", 2)))
+        spin.setSingleStep(float(spec.get("step", 0.1)))
+        spin.setMinimum(float(spec.get("minimum", 0.0)))
+        spin.setMaximum(float(spec.get("maximum", 1000.0)))
+        spin.setSuffix(spec.get("suffix", ""))
+        scale = float(spec.get("scale", 1.0))
+        raw_value = tolerances.get(spec["key"])
+        from_defaults = _BDTTolerances_default_value(spec["key"])
+        value = raw_value if raw_value is not None else from_defaults
+        try:
+            spin.setValue(float(value) * scale)
+        except (TypeError, ValueError):
+            spin.setValue(from_defaults * scale)
+        spin.setToolTip(spec["help"])
+        row.addWidget(spin, 1)
+        self._tol_spinboxes[spec["key"]] = (spin, scale)
+        return row
+
+    def _reset_defaults(self) -> None:
+        for spec in _TOLERANCE_FIELD_DEFS:
+            spin, scale = self._tol_spinboxes[spec["key"]]
+            spin.setValue(_BDTTolerances_default_value(spec["key"]) * scale)
 
     def get_values(self) -> int:
         return self._spn_health.value()
+
+    def get_tolerances(self) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for key, (spin, scale) in self._tol_spinboxes.items():
+            scale = scale if scale else 1.0
+            out[key] = float(spin.value()) / scale
+        return out
+
+
+def _BDTTolerances_default_value(key: str) -> float:
+    """Return the default value of a single field on ``BDTTolerances``."""
+    try:
+        from ..bdt.validator import BDTTolerances
+    except ImportError:
+        try:
+            from alarm_app.bdt.validator import BDTTolerances
+        except ImportError:
+            from bdt.validator import BDTTolerances
+    return float(getattr(BDTTolerances.defaults(), key))
 
 
 class AcceptedPmReportDialog(QDialog):

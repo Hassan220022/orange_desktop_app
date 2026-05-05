@@ -22,6 +22,10 @@ try:
         BDT_COMPLETION_MINUTES,
         BDT_SIZING_TOLERANCE_MINUTES,
         BDT_STRING_AMPERE_TOLERANCE_A,
+        BDT_DISCHARGE_CURRENT_TOLERANCE_A,
+        BDT_START_AMPERE_THRESHOLD_A,
+        BDT_END_VOLTAGE_MIN,
+        BDT_END_VOLTAGE_MAX,
     )
 except ImportError:
     from alarm_app.bdt.parser import BDTData
@@ -33,6 +37,10 @@ except ImportError:
         BDT_COMPLETION_MINUTES,
         BDT_SIZING_TOLERANCE_MINUTES,
         BDT_STRING_AMPERE_TOLERANCE_A,
+        BDT_DISCHARGE_CURRENT_TOLERANCE_A,
+        BDT_START_AMPERE_THRESHOLD_A,
+        BDT_END_VOLTAGE_MIN,
+        BDT_END_VOLTAGE_MAX,
     )
 
 
@@ -58,20 +66,80 @@ class ValidationResult:
     bdt_data: BDTData | None = None  # parsed source data for detail view
 
 
+@dataclass
+class BDTTolerances:
+    """User-configurable tolerance thresholds applied by the BDT validator.
+
+    Every numeric threshold a non-developer might want to relax or tighten
+    lives here so the UI can edit them and the validator can stay pure.
+    Fractional fields are dimensionless ratios; ``*_a`` are amps,
+    ``*_v`` are volts, and ``*_minutes``/``*_min`` are minutes.
+    """
+    sizing_fractional_tolerance: float = BDT_DEFAULT_TOLERANCE
+    sizing_minutes_floor: float = float(BDT_SIZING_TOLERANCE_MINUTES)
+    power_timing_min: float = float(BDT_POWER_TIMING_TOLERANCE_MIN)
+    string_ampere_a: float = float(BDT_STRING_AMPERE_TOLERANCE_A)
+    discharge_current_a: float = float(BDT_DISCHARGE_CURRENT_TOLERANCE_A)
+    start_ampere_a: float = float(BDT_START_AMPERE_THRESHOLD_A)
+    end_voltage_min: float = float(BDT_END_VOLTAGE_MIN)
+    end_voltage_max: float = float(BDT_END_VOLTAGE_MAX)
+    completion_minutes: float = float(BDT_COMPLETION_MINUTES)
+
+    @classmethod
+    def defaults(cls) -> "BDTTolerances":
+        return cls()
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "BDTTolerances":
+        """Build from a persisted settings dict, ignoring unknown keys and
+        falling back to defaults for missing/invalid entries."""
+        defaults = cls()
+        if not data:
+            return defaults
+        kwargs: dict[str, float] = {}
+        for fld in defaults.__dataclass_fields__:
+            if fld in data and data[fld] is not None:
+                try:
+                    kwargs[fld] = float(data[fld])
+                except (TypeError, ValueError):
+                    pass
+        return cls(**{**defaults.to_dict(), **kwargs})
+
+    def to_dict(self) -> dict[str, float]:
+        return {fld: getattr(self, fld) for fld in self.__dataclass_fields__}
+
+
 def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
-                 tolerance: float = BDT_DEFAULT_TOLERANCE,
+                 tolerance: float | None = None,
                  health_pct: float = BDT_DEFAULT_HEALTH_PCT,
-                 power_timing_tol: float | None = None) -> ValidationResult:
+                 power_timing_tol: float | None = None,
+                 tolerances: BDTTolerances | None = None) -> ValidationResult:
     """Validate a parsed BDT file against alarm data.
 
     Args:
         bdt: Parsed BDT data from bdt_parser.
         alarm_df: Loaded alarm DataFrame (may be None if no alarms loaded).
-        tolerance: Fractional tolerance for duration matching (0.15 = 15%).
+        tolerance: Legacy fractional tolerance for sizing-vs-actual (R8).
+            When ``tolerances`` is provided this argument is ignored.
+        health_pct: Battery health percentage applied to lead-acid sizing.
+        power_timing_tol: Legacy override for the R2 power-alarm timing
+            window (minutes). When ``tolerances`` is provided this argument
+            is ignored.
+        tolerances: Full bundle of user-configurable tolerance thresholds.
+            When omitted, defaults from ``BDTTolerances`` are used and
+            mixed with any legacy ``tolerance``/``power_timing_tol``
+            overrides for backwards compatibility.
 
     Returns:
         ValidationResult with per-rule verdicts and overall verdict.
     """
+    if tolerances is None:
+        tolerances = BDTTolerances.defaults()
+        if tolerance is not None:
+            tolerances.sizing_fractional_tolerance = float(tolerance)
+        if power_timing_tol is not None:
+            tolerances.power_timing_min = float(power_timing_tol)
+
     result = ValidationResult(
         filename=bdt.filename,
         site_code=bdt.site_code,
@@ -88,13 +156,18 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
     if battery_skip_reason:
         result.rules.extend(_skipped_battery_rules(battery_skip_reason))
     else:
-        result.rules.append(_rule_2_power_alarm_match(bdt, alarm_df, tol_override=power_timing_tol))
-        result.rules.append(_rule_3_string_vs_busbar(bdt))
-        result.rules.append(_rule_5_start_ampere(bdt))
-        result.rules.append(_rule_6_end_voltage(bdt, health_pct))
+        result.rules.append(
+            _rule_2_power_alarm_match(bdt, alarm_df,
+                                      tol_override=tolerances.power_timing_min))
+        result.rules.append(_rule_3_string_vs_busbar(bdt, tolerances=tolerances))
+        result.rules.append(_rule_5_start_ampere(bdt, tolerances=tolerances))
+        result.rules.append(
+            _rule_6_end_voltage(bdt, health_pct, tolerances=tolerances))
         result.rules.append(_rule_7_inverse_relationship(bdt))
-        result.rules.append(_rule_8_backup_time(bdt, health_pct, tolerance=tolerance))
-        result.rules.append(_rule_9_discharge_current_tolerance(bdt))
+        result.rules.append(
+            _rule_8_backup_time(bdt, health_pct, tolerances=tolerances))
+        result.rules.append(
+            _rule_9_discharge_current_tolerance(bdt, tolerances=tolerances))
     result.rules.append(_rule_10_door_alarm_match(bdt, alarm_df))
     result.rules.append(_rule_11_summary_checklist(bdt))
 
@@ -763,7 +836,8 @@ def _rule_2_power_alarm_match(bdt: BDTData,
 
 
 
-def _rule_5_start_ampere(bdt: BDTData) -> RuleResult:
+def _rule_5_start_ampere(bdt: BDTData,
+                         tolerances: "BDTTolerances | None" = None) -> RuleResult:
     """R5: Starting I-Battery ampere should be approximately 0A."""
     if bdt.ibat_before_test is None:
         return RuleResult(
@@ -772,18 +846,23 @@ def _rule_5_start_ampere(bdt: BDTData) -> RuleResult:
             detail="Starting I-Battery ampere not found in file",
         )
 
-    passed = abs(bdt.ibat_before_test) < 0.5
+    tol = tolerances or BDTTolerances.defaults()
+    threshold_a = float(tol.start_ampere_a)
+    passed = abs(bdt.ibat_before_test) < threshold_a
     return RuleResult(
         rule_id="R5", rule_name="Starting I-Battery ampere",
         passed=passed,
         verdict="Accepted" if passed else "Rejected",
         detail=(f"Starting I-Battery ampere: {bdt.ibat_before_test} A "
-                f"(approximate 0A threshold: |I| < 0.5A)"),
+                f"(approximate 0A threshold: |I| < {threshold_a:.2f}A)"),
     )
 
 
-def _rule_6_end_voltage(bdt: BDTData, health_pct: float) -> RuleResult:
-    """R6: Completion OR rule — discharge >=180 min OR end voltage 45–47 V."""
+def _rule_6_end_voltage(bdt: BDTData, health_pct: float,
+                        tolerances: "BDTTolerances | None" = None) -> RuleResult:
+    """R6: Completion OR rule — discharge meets the configured target OR end
+    voltage falls inside the configured ``[end_voltage_min, end_voltage_max]``
+    band."""
     if bdt.end_voltage is None:
         return RuleResult(
             rule_id="R6", rule_name="End Voltage Range",
@@ -791,15 +870,20 @@ def _rule_6_end_voltage(bdt: BDTData, health_pct: float) -> RuleResult:
             detail="End voltage not found in file",
         )
 
+    tol = tolerances or BDTTolerances.defaults()
+    completion_min = float(tol.completion_minutes)
+    v_min = float(tol.end_voltage_min)
+    v_max = float(tol.end_voltage_max)
+
     reported = bdt.discharge_minutes
-    in_voltage_range = 45.0 <= bdt.end_voltage <= 47.0
-    passed = reported >= 180 or in_voltage_range
+    in_voltage_range = v_min <= bdt.end_voltage <= v_max
+    passed = reported >= completion_min or in_voltage_range
     return RuleResult(
         rule_id="R6", rule_name="End Voltage Range",
         passed=passed,
         verdict="Accepted" if passed else "Rejected",
-        detail=(f"Discharge: {reported:.0f} min (target >=180) OR "
-                f"end voltage: {bdt.end_voltage}V (range: 45.0-47.0V)"),
+        detail=(f"Discharge: {reported:.0f} min (target >={completion_min:.0f}) OR "
+                f"end voltage: {bdt.end_voltage}V (range: {v_min:.1f}-{v_max:.1f}V)"),
     )
 
 
@@ -877,17 +961,26 @@ def _theoretical_backup_minutes(bdt: BDTData, health_pct: float) -> float | None
 
 
 def _rule_8_backup_time(bdt: BDTData, health_pct: float,
-                        tolerance: float = BDT_DEFAULT_TOLERANCE) -> RuleResult:
+                        tolerance: float | None = None,
+                        tolerances: "BDTTolerances | None" = None) -> RuleResult:
     """R8: Sizing-vs-actual discharge time consistency check (never N/A).
 
     Business rules:
-    - The test target is capped at 180 minutes.
-    - If theoretical duration is >180, accept only when actual discharge >=180.
-    - Otherwise (theoretical <=180), compare actual vs theoretical with a
-      fractional tolerance window (``theoretical_mins * tolerance``), floored at
-      ``BDT_SIZING_TOLERANCE_MINUTES`` so very short tests never get tighter
-      than the historical default.
+    - The test target is capped at the configured ``completion_minutes``.
+    - If theoretical duration is greater than that cap, accept only when
+      actual discharge meets it.
+    - Otherwise compare actual vs theoretical with a fractional window
+      (``theoretical_mins * sizing_fractional_tolerance``), floored at
+      ``sizing_minutes_floor`` so very short tests never get tighter than
+      the historical default.
     """
+    tol = tolerances or BDTTolerances.defaults()
+    fractional = (
+        float(tolerance) if tolerance is not None else float(tol.sizing_fractional_tolerance)
+    )
+    minutes_floor = float(tol.sizing_minutes_floor)
+    completion_min = float(tol.completion_minutes)
+
     reported = float(bdt.discharge_minutes or 0.0)
     theoretical_mins = _theoretical_backup_minutes(bdt, health_pct)
 
@@ -899,17 +992,17 @@ def _rule_8_backup_time(bdt: BDTData, health_pct: float,
                     "strings, or starting load readings)"),
         )
 
-    # Cap-driven branch: batteries theoretically needing >180 min are expected to
-    # hit/exceed the 180-min test cap.
-    if theoretical_mins > 180.0:
-        short_by = max(0.0, 180.0 - reported)
-        passed = reported >= 180.0
+    # Cap-driven branch: batteries theoretically needing more than the
+    # completion cap are expected to hit/exceed it.
+    if theoretical_mins > completion_min:
+        short_by = max(0.0, completion_min - reported)
+        passed = reported >= completion_min
         if passed:
-            detail = (f"Theoretical: {theoretical_mins:.0f} min (>180 cap), "
+            detail = (f"Theoretical: {theoretical_mins:.0f} min (>{completion_min:.0f} cap), "
                       f"actual: {reported:.0f} min (reached cap)")
         else:
-            detail = (f"Theoretical: {theoretical_mins:.0f} min (>180 cap), "
-                      f"actual: {reported:.0f} min, short by {short_by:.1f} min to 180")
+            detail = (f"Theoretical: {theoretical_mins:.0f} min (>{completion_min:.0f} cap), "
+                      f"actual: {reported:.0f} min, short by {short_by:.1f} min to {completion_min:.0f}")
         return RuleResult(
             rule_id="R8", rule_name="Sizing vs Actual",
             passed=passed,
@@ -918,9 +1011,9 @@ def _rule_8_backup_time(bdt: BDTData, health_pct: float,
         )
 
     # Normal branch: compare against theoretical target with a configurable
-    # fractional tolerance, floored at the historical 15-min default so very
-    # short theoretical windows still get a reasonable allowance.
-    tol_min = max(theoretical_mins * tolerance, float(BDT_SIZING_TOLERANCE_MINUTES))
+    # fractional tolerance, floored at the historical default so very short
+    # theoretical windows still get a reasonable allowance.
+    tol_min = max(theoretical_mins * fractional, minutes_floor)
     delta = abs(theoretical_mins - reported)
     passed = delta <= tol_min
     return RuleResult(
@@ -929,12 +1022,14 @@ def _rule_8_backup_time(bdt: BDTData, health_pct: float,
         verdict="Accepted" if passed else "Rejected",
         detail=(f"Theoretical: {theoretical_mins:.0f} min, actual: {reported:.0f} min, "
                 f"difference: {delta:.1f} min (limit: {tol_min:.1f} min, "
-                f"{tolerance * 100:.0f}% of theoretical)"),
+                f"{fractional * 100:.0f}% of theoretical)"),
     )
 
 
-def _rule_9_discharge_current_tolerance(bdt: BDTData) -> RuleResult:
-    """R9: Discharge current should stay within ±1A from baseline."""
+def _rule_9_discharge_current_tolerance(
+        bdt: BDTData,
+        tolerances: "BDTTolerances | None" = None) -> RuleResult:
+    """R9: Discharge current should stay within ±``discharge_current_a`` of baseline."""
     readings = [(label, a) for label, _, a in bdt.discharge_readings if a is not None]
     if len(readings) < 2:
         return RuleResult(
@@ -943,21 +1038,24 @@ def _rule_9_discharge_current_tolerance(bdt: BDTData) -> RuleResult:
             detail=f"Insufficient discharge current readings ({len(readings)}, need 2+)",
         )
 
+    tol = tolerances or BDTTolerances.defaults()
+    band = float(tol.discharge_current_a)
+
     baseline_label, baseline = readings[0]
     for label, current in readings[1:]:
         diff = abs(current - baseline)
-        if diff > 1.0:
+        if diff > band:
             return RuleResult(
                 rule_id="R9", rule_name="Discharge Current Tolerance",
                 passed=False, verdict="Rejected",
                 detail=(f"Baseline at {baseline_label}: {baseline:.2f}A; "
-                        f"{label}: {current:.2f}A (|Δ|={diff:.2f}A > 1.0A)"),
+                        f"{label}: {current:.2f}A (|Δ|={diff:.2f}A > {band:.2f}A)"),
             )
 
     return RuleResult(
         rule_id="R9", rule_name="Discharge Current Tolerance",
         passed=True, verdict="Accepted",
-        detail=f"All discharge currents stayed within ±1.0A from baseline ({baseline:.2f}A)",
+        detail=f"All discharge currents stayed within ±{band:.2f}A from baseline ({baseline:.2f}A)",
     )
 
 
@@ -1059,8 +1157,10 @@ def _rule_10_door_alarm_match(bdt: BDTData,
     )
 
 
-def _rule_3_string_vs_busbar(bdt: BDTData) -> RuleResult:
-    """R3: Rectifier amp minus summed string amps must stay between -3A and 0A."""
+def _rule_3_string_vs_busbar(bdt: BDTData,
+                             tolerances: "BDTTolerances | None" = None) -> RuleResult:
+    """R3: Rectifier amp minus summed string amps must stay within the
+    configured ampere band ``[-string_ampere_a, 0]``."""
     if not bdt.string_discharge_readings or not bdt.discharge_readings:
         return RuleResult(
             rule_id="R3", rule_name="String vs Bus Bar Ampere",
@@ -1068,7 +1168,8 @@ def _rule_3_string_vs_busbar(bdt: BDTData) -> RuleResult:
             detail="No per-string discharge data available",
         )
 
-    tolerance = BDT_STRING_AMPERE_TOLERANCE_A
+    tol = tolerances or BDTTolerances.defaults()
+    tolerance = float(tol.string_ampere_a)
     checked = 0
 
     # string_discharge_readings[0] is the "Before disconnecting" row,

@@ -119,7 +119,7 @@ def test_bdt_validation_thread_queries_targeted_alarm_subset(monkeypatch):
     )
     captured = {}
 
-    def fake_validate(bdt_data, alarm_df, tolerance, health_pct):
+    def fake_validate(bdt_data, alarm_df, tolerance, health_pct, *args, **kwargs):
         captured["alarm_df"] = alarm_df.copy()
         return SimpleNamespace(
             filename=bdt_data.filename,

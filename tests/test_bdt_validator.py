@@ -6,6 +6,7 @@ import pandas as pd
 
 from alarm_app.bdt.parser import BDTData, PhotoSlot
 from alarm_app.bdt.validator import (
+    BDTTolerances,
     _find_door_alarms,
     _rule_1_photos,
     _rule_2_power_alarm_match,
@@ -1264,3 +1265,168 @@ class TestR3StringVsBusbar:
         )
         r = _rule_3_string_vs_busbar(bdt)
         assert r.verdict == "Rejected"
+
+
+# ── User-configurable tolerance parameter tests ─────────────────────────
+
+
+class TestBDTTolerancesDataclass:
+    def test_defaults_match_constants(self):
+        tol = BDTTolerances.defaults()
+        assert tol.sizing_fractional_tolerance == 0.15
+        assert tol.sizing_minutes_floor == 15.0
+        assert tol.power_timing_min == 15.0
+        assert tol.string_ampere_a == 3.0
+        assert tol.discharge_current_a == 1.0
+        assert tol.start_ampere_a == 0.5
+        assert tol.end_voltage_min == 45.0
+        assert tol.end_voltage_max == 47.0
+        assert tol.completion_minutes == 180.0
+
+    def test_from_dict_overrides_defaults(self):
+        tol = BDTTolerances.from_dict(
+            {"discharge_current_a": 2.5, "string_ampere_a": "4.5"})
+        assert tol.discharge_current_a == 2.5
+        assert tol.string_ampere_a == 4.5
+        # untouched fields keep defaults
+        assert tol.sizing_fractional_tolerance == 0.15
+
+    def test_from_dict_ignores_unknown_keys_and_bad_types(self):
+        tol = BDTTolerances.from_dict(
+            {"unknown": 1.0, "discharge_current_a": "not-a-number", "start_ampere_a": None})
+        assert tol.discharge_current_a == 1.0  # invalid, falls back
+        assert tol.start_ampere_a == 0.5       # None ignored
+
+    def test_to_dict_round_trips(self):
+        tol = BDTTolerances(discharge_current_a=2.5, string_ampere_a=4.5)
+        roundtrip = BDTTolerances.from_dict(tol.to_dict())
+        assert roundtrip == tol
+
+    def test_from_dict_none_returns_defaults(self):
+        assert BDTTolerances.from_dict(None) == BDTTolerances.defaults()
+
+
+class TestR3ConfigurableStringAmpereTolerance:
+    def _build_bdt(self):
+        # rectifier=25.0, strings_sum=22.0 → diff=+3.0
+        return _make_bdt(
+            discharge_readings=[("30 Mins", 49.0, 25.0)],
+            string_discharge_readings=[
+                [(54.0, 0.0)],
+                [(49.0, 22.0)],
+            ],
+        )
+
+    def test_default_band_rejects_positive_diff(self):
+        # diff > 0 always rejects regardless of band magnitude (positive
+        # rectifier excess is structurally invalid, not a tolerance question)
+        r = _rule_3_string_vs_busbar(self._build_bdt())
+        assert r.verdict == "Rejected"
+
+    def test_widened_band_accepts_diff_within(self):
+        # rectifier=20.0, strings_sum=23.0 → diff=-3.0 (just inside default 3A)
+        bdt = _make_bdt(
+            discharge_readings=[("30 Mins", 49.0, 20.0)],
+            string_discharge_readings=[
+                [(54.0, 0.0)],
+                [(49.0, 23.0)],
+            ],
+        )
+        strict = _rule_3_string_vs_busbar(
+            bdt, tolerances=BDTTolerances(string_ampere_a=2.0))
+        loose = _rule_3_string_vs_busbar(
+            bdt, tolerances=BDTTolerances(string_ampere_a=5.0))
+        assert strict.verdict == "Rejected"
+        assert loose.verdict == "Accepted"
+
+
+class TestR5ConfigurableStartAmpereThreshold:
+    def test_threshold_widened_accepts_higher_current(self):
+        bdt = _make_bdt(ibat_before_test=0.9)
+        strict = _rule_5_start_ampere(
+            bdt, tolerances=BDTTolerances(start_ampere_a=0.5))
+        loose = _rule_5_start_ampere(
+            bdt, tolerances=BDTTolerances(start_ampere_a=1.0))
+        assert strict.verdict == "Rejected"
+        assert loose.verdict == "Accepted"
+
+
+class TestR6ConfigurableVoltageBandAndCompletion:
+    def test_widened_voltage_band_accepts(self):
+        bdt = _make_bdt(end_voltage=44.0, discharge_minutes=120.0)
+        strict = _rule_6_end_voltage(
+            bdt, health_pct=0.95,
+            tolerances=BDTTolerances(end_voltage_min=45.0, end_voltage_max=47.0))
+        loose = _rule_6_end_voltage(
+            bdt, health_pct=0.95,
+            tolerances=BDTTolerances(end_voltage_min=43.0, end_voltage_max=47.0))
+        assert strict.verdict == "Rejected"
+        assert loose.verdict == "Accepted"
+
+    def test_lowered_completion_minutes_accepts_short_test(self):
+        bdt = _make_bdt(end_voltage=40.0, discharge_minutes=100.0)
+        strict = _rule_6_end_voltage(
+            bdt, health_pct=0.95,
+            tolerances=BDTTolerances(completion_minutes=180.0))
+        loose = _rule_6_end_voltage(
+            bdt, health_pct=0.95,
+            tolerances=BDTTolerances(completion_minutes=90.0))
+        assert strict.verdict == "Rejected"
+        assert loose.verdict == "Accepted"
+
+
+class TestR9ConfigurableDischargeCurrentBand:
+    def test_widened_band_accepts_drift(self):
+        # baseline=25.0, follow-up=27.0 → drift = 2.0A
+        bdt = _make_bdt(
+            discharge_readings=[
+                ("Before", 53.0, 25.0),
+                ("30 Mins", 50.0, 27.0),
+            ],
+        )
+        strict = _rule_9_discharge_current_tolerance(
+            bdt, tolerances=BDTTolerances(discharge_current_a=1.0))
+        loose = _rule_9_discharge_current_tolerance(
+            bdt, tolerances=BDTTolerances(discharge_current_a=2.5))
+        assert strict.verdict == "Rejected"
+        assert loose.verdict == "Accepted"
+
+
+class TestValidateBdtPlumbsTolerances:
+    """End-to-end: validate_bdt should pass tolerances to rules."""
+
+    def test_tolerances_dict_overrides_legacy_args(self):
+        bdt = _make_bdt(
+            battery_brand="Lithium",
+            battery_ah=100.0, battery_voltage=48.0, num_strings=1,
+            start_voltage=48.0, start_ampere=40.0,
+            discharge_minutes=110.0,  # diff=40 vs theoretical=150
+            ibat_before_test=0.0,
+            end_voltage=46.0,
+        )
+        # Default fractional 0.15 → window 22.5 → diff=40 rejected
+        result_default = validate_bdt(bdt, alarm_df=None,
+                                       tolerances=BDTTolerances.defaults())
+        r8_default = next(r for r in result_default.rules if r.rule_id == "R8")
+        assert r8_default.verdict == "Rejected"
+
+        # Loosen via dataclass
+        result_loose = validate_bdt(
+            bdt, alarm_df=None,
+            tolerances=BDTTolerances(sizing_fractional_tolerance=0.30))
+        r8_loose = next(r for r in result_loose.rules if r.rule_id == "R8")
+        assert r8_loose.verdict == "Accepted"
+
+    def test_legacy_tolerance_arg_still_honoured(self):
+        bdt = _make_bdt(
+            battery_brand="Lithium",
+            battery_ah=100.0, battery_voltage=48.0, num_strings=1,
+            start_voltage=48.0, start_ampere=40.0,
+            discharge_minutes=110.0,
+            ibat_before_test=0.0,
+            end_voltage=46.0,
+        )
+        # Legacy positional tolerance=0.30 should still widen the window
+        result = validate_bdt(bdt, alarm_df=None, tolerance=0.30)
+        r8 = next(r for r in result.rules if r.rule_id == "R8")
+        assert r8.verdict == "Accepted"

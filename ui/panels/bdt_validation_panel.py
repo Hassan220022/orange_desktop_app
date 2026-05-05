@@ -27,7 +27,7 @@ try:
     )
     from ..threads import ExportThread, BDTValidationThread
     from ...bdt.parser import BDTData
-    from ...bdt.validator import ValidationResult, bdt_battery_status
+    from ...bdt.validator import ValidationResult, BDTTolerances, bdt_battery_status
     from ...bdt.export import build_bdt_export_sheets
     from ..dialogs import (
         AcceptedPmReportDialog,
@@ -51,7 +51,7 @@ except ImportError:
         )
         from alarm_app.ui.threads import ExportThread, BDTValidationThread
         from alarm_app.bdt.parser import BDTData
-        from alarm_app.bdt.validator import ValidationResult, bdt_battery_status
+        from alarm_app.bdt.validator import ValidationResult, BDTTolerances, bdt_battery_status
         from alarm_app.bdt.export import build_bdt_export_sheets
         from alarm_app.ui.dialogs import (
             AcceptedPmReportDialog,
@@ -74,7 +74,7 @@ except ImportError:
         )
         from ui.threads import ExportThread, BDTValidationThread
         from bdt.parser import BDTData
-        from bdt.validator import ValidationResult, bdt_battery_status
+        from bdt.validator import ValidationResult, BDTTolerances, bdt_battery_status
         from bdt.export import build_bdt_export_sheets
         from ui.dialogs import (
             AcceptedPmReportDialog,
@@ -428,6 +428,13 @@ class BdtValidationPanel(QWidget):
         health_pct = health_pct_value / 100.0
         self._viewer._last_bdt_health_pct = health_pct
 
+        try:
+            saved_state = state.load_state() or {}
+        except Exception:
+            saved_state = {}
+        tolerances = BDTTolerances.from_dict(saved_state.get("bdt_tolerances"))
+        self._viewer._last_bdt_tolerances = tolerances
+
         viewer._sbar.showMessage(
             f"Validating {len(bdt_files)} BDT file(s)\u2026")
         self._viewer._bdt_results = []
@@ -439,7 +446,12 @@ class BdtValidationPanel(QWidget):
         self._db_seed_results = viewer._load_bdt_results_from_db() if source_mode == "both" else []
 
         self._bdt_thread = BDTValidationThread(
-            bdt_files, None, 0.15, health_pct, skip_photos=viewer._skip_photos)
+            bdt_files, None,
+            tolerances.sizing_fractional_tolerance,
+            health_pct,
+            skip_photos=viewer._skip_photos,
+            tolerances=tolerances,
+        )
         self._bdt_thread.progress.connect(
             lambda v, m: (viewer._prog.setValue(v),
                           viewer._sbar.showMessage(m)))
@@ -744,13 +756,27 @@ class BdtValidationPanel(QWidget):
         )
 
     def _show_parameters_dialog(self):
+        try:
+            saved_state = state.load_state() or {}
+        except Exception:
+            saved_state = {}
+        saved_tolerances = saved_state.get("bdt_tolerances") or {}
         dlg = BdtParametersDialog(
             health_pct=self.spn_health.value(),
+            tolerances=saved_tolerances,
             parent=self,
         )
         if dlg.exec_() == QDialog.Accepted:
             health_pct = dlg.get_values()
             self.spn_health.setValue(health_pct)
+            tolerance_values = dlg.get_tolerances()
+            try:
+                saved_state = state.load_state() or {}
+                saved_state["bdt_tolerances"] = tolerance_values
+                state.save_state(saved_state)
+            except Exception:
+                pass
+            self._viewer._last_bdt_tolerances = BDTTolerances.from_dict(tolerance_values)
             self._refresh_parameter_summary()
 
     @staticmethod

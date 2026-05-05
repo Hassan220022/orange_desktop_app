@@ -52,7 +52,7 @@ class TestBDTValidationThreadFiltering:
         def fake_parse(fp, skip_photos=True):
             return bad if fp.endswith("bad.xlsx") else good
 
-        def fake_validate(bdt_data, alarm_df, tolerance, health_pct):
+        def fake_validate(bdt_data, alarm_df, tolerance, health_pct, *args, **kwargs):
             class _Rule:
                 rule_id = "R1"
                 verdict = "Accepted"
@@ -104,7 +104,7 @@ class TestBDTValidationThreadFiltering:
         def fake_parse(_fp, skip_photos=True):
             return partial
 
-        def fake_validate(bdt_data, alarm_df, tolerance, health_pct):
+        def fake_validate(bdt_data, alarm_df, tolerance, health_pct, *args, **kwargs):
             class _Rule:
                 rule_id = "R1"
                 verdict = "Accepted"
@@ -158,7 +158,7 @@ class TestBDTValidationThreadFiltering:
 
         observed = {}
 
-        def fake_validate(bdt_data, alarm_df, tolerance, health_pct):
+        def fake_validate(bdt_data, alarm_df, tolerance, health_pct, *args, **kwargs):
             observed["summary_data"] = dict(getattr(bdt_data, "summary_data", {}))
 
             class _Rule:

@@ -377,13 +377,15 @@ class BDTValidationThread(QThread):
     error    = pyqtSignal(str)
 
     def __init__(self, bdt_files: list[str], alarm_df,
-                 tolerance: float, health_pct: float, skip_photos: bool = False):
+                 tolerance: float, health_pct: float, skip_photos: bool = False,
+                 tolerances=None):
         super().__init__()
         self._files = bdt_files
         self._alarm_df = alarm_df
         self._tolerance = tolerance
         self._health_pct = health_pct
         self._skip_photos = skip_photos
+        self._tolerances = tolerances
         self._alarm_slice_cache: dict[tuple[str, str], pd.DataFrame] = {}
 
     @staticmethod
@@ -475,7 +477,8 @@ class BDTValidationThread(QThread):
                 alarm_df = self._load_alarm_df_for_bdt(bdt_data)
                 result = validate_bdt(
                     bdt_data, alarm_df,
-                    self._tolerance, self._health_pct)
+                    self._tolerance, self._health_pct,
+                    tolerances=self._tolerances)
                 return result, bdt_data
 
             with ThreadPoolExecutor(max_workers=workers) as pool:

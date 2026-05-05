@@ -95,15 +95,16 @@ BT_WIDTHS = {
 }
 
 # ── BDT validation constants ──────────────────────────────
-BDT_DEFAULT_TOLERANCE = 0.15   # 15%
-BDT_DEFAULT_HEALTH_PCT = 0.80  # 80% default battery health
-BDT_DISCHARGE_CURRENT_TOLERANCE_A = 1.0
-BDT_STRING_AMPERE_TOLERANCE_A = 3.0
-BDT_POWER_TIMING_TOLERANCE_MIN = 15
-BDT_COMPLETION_MINUTES = 180
-BDT_END_VOLTAGE_MIN = 45.0
-BDT_END_VOLTAGE_MAX = 47.0
-BDT_SIZING_TOLERANCE_MINUTES = 15
+BDT_DEFAULT_TOLERANCE = 0.15   # 15% — fractional sizing tolerance for R8
+BDT_DEFAULT_HEALTH_PCT = 0.80  # 80% default battery health (lead-acid)
+BDT_DISCHARGE_CURRENT_TOLERANCE_A = 1.0   # R9 — discharge current ±A from baseline
+BDT_STRING_AMPERE_TOLERANCE_A = 3.0       # R3 — rectifier-vs-strings amp band
+BDT_POWER_TIMING_TOLERANCE_MIN = 15       # R2 — power-alarm timing window (minutes)
+BDT_START_AMPERE_THRESHOLD_A = 0.5        # R5 — starting I-Battery |I| threshold
+BDT_COMPLETION_MINUTES = 180              # R6/R8 — discharge target ceiling (minutes)
+BDT_END_VOLTAGE_MIN = 45.0                # R6 — acceptable end voltage min (V)
+BDT_END_VOLTAGE_MAX = 47.0                # R6 — acceptable end voltage max (V)
+BDT_SIZING_TOLERANCE_MINUTES = 15         # R8 — minutes floor for sizing window
 BDT_LITHIUM_HEALTH_MIN = 0.95
 BDT_LITHIUM_HEALTH_MAX = 1.00
 BDT_SIZING_SKIP_MINUTES = 180
