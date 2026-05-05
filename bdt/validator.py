@@ -1013,16 +1013,21 @@ def _rule_8_backup_time(bdt: BDTData, health_pct: float,
     # Normal branch: compare against theoretical target with a configurable
     # fractional tolerance, floored at the historical default so very short
     # theoretical windows still get a reasonable allowance.
-    tol_min = max(theoretical_mins * fractional, minutes_floor)
+    fractional_window = theoretical_mins * fractional
+    tol_min = max(fractional_window, minutes_floor)
+    floor_won = minutes_floor > fractional_window
     delta = abs(theoretical_mins - reported)
     passed = delta <= tol_min
+    if floor_won:
+        explanation = f"{minutes_floor:.0f} min floor"
+    else:
+        explanation = f"{fractional * 100:.0f}% of theoretical"
     return RuleResult(
         rule_id="R8", rule_name="Sizing vs Actual",
         passed=passed,
         verdict="Accepted" if passed else "Rejected",
         detail=(f"Theoretical: {theoretical_mins:.0f} min, actual: {reported:.0f} min, "
-                f"difference: {delta:.1f} min (limit: {tol_min:.1f} min, "
-                f"{fractional * 100:.0f}% of theoretical)"),
+                f"difference: {delta:.1f} min (limit: {tol_min:.1f} min, {explanation})"),
     )
 
 

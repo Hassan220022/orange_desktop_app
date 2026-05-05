@@ -125,8 +125,10 @@ except ImportError:
 def _format_count_label(start: int, end: int, total: int) -> str:
     if total <= 0:
         return ""
-    range_text = f"{start}" if start == end else f"{start}-{end}"
-    return f"Showing  {range_text}  of  {total} records"
+    range_text = (
+        f"{start:,}" if start == end else f"{start:,}-{end:,}"
+    )
+    return f"Showing  {range_text}  of  {total:,} records"
 
 
 class AlarmViewer(QMainWindow):
@@ -1531,6 +1533,7 @@ class AlarmViewer(QMainWindow):
             view = self._apply_filters(self._full_df)
             self._populate(view)
             self._refresh_stats(view)
+            self._refresh_in_memory_count_label(view)
             self._sbar.showMessage("Alarms re-classified by alarm ID config")
             return
 
@@ -2232,6 +2235,25 @@ class AlarmViewer(QMainWindow):
             lbl_count.setText(_format_count_label(start, view_total, view_total))
         self._sbar.showMessage(f"{msg}; displaying in-memory results")
 
+    def _refresh_in_memory_count_label(self, view) -> None:
+        """Refresh ``_lbl_count`` for the in-memory ``_search`` /
+        ``_clear_filters`` / ``_reclassify_alarms`` paths.
+
+        ``_update_pagination_controls`` covers the DB-paginated mode and
+        ``_apply_loaded_alarm_dataframe`` covers the initial in-memory load,
+        so this helper exists purely so the three filter-mutation paths
+        always keep the label in sync with the visible row count.
+        """
+        lbl_count = getattr(self, "_lbl_count", None)
+        if lbl_count is None:
+            return
+        try:
+            n = int(len(view))
+        except TypeError:
+            n = 0
+        start = 1 if n else 0
+        lbl_count.setText(_format_count_label(start, n, n))
+
     def _load_bdt_results_from_db(self) -> list:
         try:
             try:
@@ -2379,6 +2401,7 @@ class AlarmViewer(QMainWindow):
 
         self._populate(df)
         self._refresh_stats(df)
+        self._refresh_in_memory_count_label(df)
         n = len(df)
 
         raw = self._edit_site.text().strip()
@@ -2434,6 +2457,7 @@ class AlarmViewer(QMainWindow):
                 df = df[df["_duration_secs"] >= self._spn_mindur.value() * 60]
             self._populate(df)
             self._refresh_stats(df)
+            self._refresh_in_memory_count_label(df)
         self._sbar.showMessage("Filters cleared")
 
     def _show_backup_times(self):

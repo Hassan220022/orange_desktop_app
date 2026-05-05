@@ -831,6 +831,9 @@ class TestR8SizingVsActual:
         )
         r = _rule_8_backup_time(bdt, health_pct=0.95)
         assert r.verdict == "Accepted"
+        # When the floor wins, detail should not claim a fractional window
+        assert "min floor" in r.detail
+        assert "% of theoretical" not in r.detail
 
     def test_tolerance_parameter_widens_window(self):
         # theoretical = 150 min; with tolerance=0.30, window = 45 min;
