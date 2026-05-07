@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import create_engine as _create_engine
 from sqlalchemy import event
@@ -19,7 +20,7 @@ def create_engine(url: str | None = None):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         url = f"sqlite:///{DB_PATH}"
 
-    engine_kwargs = {"echo": False}
+    engine_kwargs: dict[str, Any] = {"echo": False}
     if url.startswith("sqlite"):
         # Allow concurrent desktop/background writers a chance to finish instead
         # of immediately failing with "database is locked".

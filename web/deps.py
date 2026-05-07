@@ -1,5 +1,8 @@
 """FastAPI dependency injection."""
 
+from collections.abc import Generator
+
+from alarm_app.db.engine import create_engine, get_session_factory, init_db
 from sqlalchemy.orm import Session
 
 from alarm_app.db.engine import create_engine, get_session_factory, init_db
@@ -17,7 +20,7 @@ def get_engine():
     return _engine
 
 
-def get_db() -> Session:
+def get_db() -> Generator[Session, None, None]:
     engine = get_engine()
     global _SessionFactory
     if _SessionFactory is None:

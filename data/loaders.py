@@ -275,7 +275,7 @@ def _extract_summary_rows(file_path: str) -> list[dict[str, str]]:
 
 def _load_external_summary_lookup(bdt_files: list[str]) -> dict[str, dict]:
     """Build summary lookup maps keyed by (site, test_date) and by site."""
-    lookup = {"by_site_date": {}, "by_site": {}}
+    lookup: dict[str, dict] = {"by_site_date": {}, "by_site": {}}
     for path in _summary_candidate_files(bdt_files):
         for row in _extract_summary_rows(path):
             site_key = _summary_site_key(row.get("Short Code"))
