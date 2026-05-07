@@ -286,33 +286,6 @@ def test_run_validation_shows_intro_dialog_before_starting(monkeypatch):
     assert viewer._sbar.messages[-1] == ("BDT validation cancelled", 0)
 
 
-def test_show_rules_reference_dialog_passes_all_rules(monkeypatch):
-    calls = {}
-    panel = SimpleNamespace()
-
-    class _Dialog:
-        def __init__(self, *, rule_rows, parent=None):
-            calls["rule_rows"] = rule_rows
-            calls["parent"] = parent
-
-        def exec_(self):
-            calls["opened"] = True
-            return 1
-
-    monkeypatch.setattr(
-        "alarm_app.ui.panels.bdt_validation_panel.BdtRulesReferenceDialog",
-        _Dialog,
-    )
-
-    BdtValidationPanel._show_rules_reference_dialog(panel)
-
-    assert calls["parent"] is panel
-    assert calls["opened"] is True
-    assert len(calls["rule_rows"]) == 10
-    assert calls["rule_rows"][0][0] == "R1"
-    assert calls["rule_rows"][-1][0] == "R11"
-
-
 def test_distinct_bdt_values_uses_cached_row_maps():
     results = [
         _result("CCC003", "2026-04-21", "Accepted", "c.xlsx"),

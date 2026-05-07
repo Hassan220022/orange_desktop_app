@@ -124,18 +124,6 @@ BDT_RULES = [
     ("R11", "Summary Checklist"),
 ]
 BDT_RULE_NAME_BY_CODE = dict(BDT_RULES)
-BDT_RULE_EXPLANATIONS = {
-    "R1": "Checks whether the BDT file contains the required evidence photos for the rectifier and battery setup.",
-    "R2": "Verifies that the power-cut alarm sequence matches the BDT start time and discharge duration using Power and Down alarm timing.",
-    "R3": "Compares the bus-bar ampere against the summed string amperes to make sure the string current distribution is believable.",
-    "R5": "Ensures the starting I-Battery current is approximately zero before the discharge test begins.",
-    "R6": "Checks that the test finished at an acceptable rectifier end-voltage range or reached the required completion duration.",
-    "R7": "Confirms that voltage and current follow the expected inverse trend during the discharge process.",
-    "R8": "Compares the measured discharge duration against the theoretical backup time calculated from battery size, strings, and load.",
-    "R9": "Checks that discharge current stays within the allowed tolerance instead of drifting abnormally during the test.",
-    "R10": "Requires a matching door alarm during the BDT test window for the same site, so the physical intervention is reflected in the alarm history.",
-    "R11": "Cross-checks the parsed BDT values against the summary/checklist fields to detect inconsistencies between sheets.",
-}
 
 
 def format_bdt_rule_label(rule_code: str, rule_name: str | None = None) -> str:

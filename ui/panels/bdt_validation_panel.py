@@ -22,7 +22,6 @@ try:
         BDT_RESULT_HEADERS,
         BDT_RESULT_WIDTHS,
         BDT_RULES,
-        BDT_RULE_EXPLANATIONS,
         format_bdt_rule_label,
     )
     from ..threads import ExportThread, BDTValidationThread
@@ -46,7 +45,6 @@ except ImportError:
             BDT_RESULT_HEADERS,
             BDT_RESULT_WIDTHS,
             BDT_RULES,
-            BDT_RULE_EXPLANATIONS,
             format_bdt_rule_label,
         )
         from alarm_app.ui.threads import ExportThread, BDTValidationThread
@@ -69,7 +67,6 @@ except ImportError:
             BDT_RESULT_HEADERS,
             BDT_RESULT_WIDTHS,
             BDT_RULES,
-            BDT_RULE_EXPLANATIONS,
             format_bdt_rule_label,
         )
         from ui.threads import ExportThread, BDTValidationThread
@@ -584,16 +581,6 @@ class BdtValidationPanel(QWidget):
         self._pm_accept_export_thread.error.connect(self._on_pm_accept_export_error)
         self._pm_accept_export_thread.start()
 
-    def _show_rules_reference_dialog(self):
-        dialog = BdtRulesReferenceDialog(
-            rule_rows=[
-                (rule_code, rule_name, BDT_RULE_EXPLANATIONS.get(rule_code, rule_name))
-                for rule_code, rule_name in BDT_RULES
-            ],
-            parent=self,
-        )
-        dialog.exec_()
-
     def _on_pm_accept_export_done(self, fp: str):
         self.btn_pm_accept_report.setEnabled(True)
         self._viewer._prog.setVisible(False)
@@ -778,6 +765,19 @@ class BdtValidationPanel(QWidget):
                 pass
             self._viewer._last_bdt_tolerances = BDTTolerances.from_dict(tolerance_values)
             self._refresh_parameter_summary()
+
+    def _show_rules_reference_dialog(self):
+        try:
+            saved_state = state.load_state() or {}
+        except Exception:
+            saved_state = {}
+        tolerances = BDTTolerances.from_dict(saved_state.get("bdt_tolerances"))
+        dialog = BdtRulesReferenceDialog(
+            tolerances=tolerances,
+            health_pct=int(self.spn_health.value()),
+            parent=self,
+        )
+        dialog.exec_()
 
     @staticmethod
     def _result_identity(res) -> tuple[str, str, str]:

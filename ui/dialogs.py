@@ -564,9 +564,9 @@ _TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
         "minimum": 0.0,
         "maximum": 100.0,
         "scale": 100.0,
-        "help": "Fractional window applied to the theoretical backup duration in Rule R8. "
-                "0.15 (15%) means actual discharge may differ from theoretical by up to "
-                "±15% before the test is rejected.",
+        "help_template": "Rule R8 checks if the battery lasted as long as expected. "
+                         "It currently allows the actual test time to be {value}% shorter or longer "
+                         "than expected before R8 fails.",
     },
     {
         "key": "sizing_minutes_floor",
@@ -576,8 +576,9 @@ _TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
         "step": 1.0,
         "minimum": 0.0,
         "maximum": 600.0,
-        "help": "Lower bound for the R8 tolerance window in minutes. Prevents very short "
-                "theoretical durations from getting an unreasonably tight allowance.",
+        "help_template": "Smallest difference in minutes that Rule R8 will allow. "
+                         "Currently {value} min — stops small batteries from being judged "
+                         "too strictly when the expected time is short.",
     },
     {
         "key": "completion_minutes",
@@ -587,8 +588,8 @@ _TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
         "step": 5.0,
         "minimum": 30.0,
         "maximum": 600.0,
-        "help": "Discharge target a test must hit (or exceed) to be considered complete. "
-                "Used by Rules R6 and R8 as the cap.",
+        "help_template": "How many minutes a battery must run to count as a complete test. "
+                         "Currently {value} min. Rules R6 and R8 both use this number.",
     },
     {
         "key": "power_timing_min",
@@ -598,8 +599,9 @@ _TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
         "step": 1.0,
         "minimum": 0.0,
         "maximum": 240.0,
-        "help": "Window around the BDT start-time used in Rule R2 to find the matching "
-                "power alarm. Wider values are more forgiving of clock drift.",
+        "help_template": "How many minutes the power-cut alarm can be off from the test start time "
+                         "and still match. Currently {value} min — bigger values forgive "
+                         "clock differences between the site and the alarm system.",
     },
     {
         "key": "string_ampere_a",
@@ -609,8 +611,8 @@ _TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
         "step": 0.1,
         "minimum": 0.0,
         "maximum": 100.0,
-        "help": "Maximum acceptable difference (in amps) between the rectifier reading and "
-                "the sum of string currents. Rule R3 rejects tests outside this band.",
+        "help_template": "Largest gap allowed between the main rectifier reading and the total "
+                         "of all string readings. Currently {value} A — anything bigger fails Rule R3.",
     },
     {
         "key": "discharge_current_a",
@@ -620,8 +622,8 @@ _TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
         "step": 0.1,
         "minimum": 0.0,
         "maximum": 50.0,
-        "help": "Maximum acceptable deviation (in amps) of any discharge-current reading "
-                "from the baseline reading. Rule R9 rejects tests outside this band.",
+        "help_template": "Largest swing allowed during the test compared to the first reading. "
+                         "Currently {value} A — if a later reading drifts more than this, Rule R9 fails.",
     },
     {
         "key": "start_ampere_a",
@@ -631,8 +633,9 @@ _TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
         "step": 0.05,
         "minimum": 0.0,
         "maximum": 10.0,
-        "help": "Absolute starting I-Battery current threshold. Rule R5 rejects tests where "
-                "|I| equals or exceeds this value.",
+        "help_template": "Largest starting battery current that is still acceptable. "
+                         "Currently {value} A — if the battery is already drawing or pushing more current "
+                         "than this before the rectifier is unplugged, Rule R5 fails.",
     },
     {
         "key": "end_voltage_min",
@@ -642,7 +645,8 @@ _TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
         "step": 0.5,
         "minimum": 30.0,
         "maximum": 70.0,
-        "help": "Lower bound of the acceptable end-of-test voltage range used by Rule R6.",
+        "help_template": "Lowest voltage that Rule R6 accepts at the end of the test. "
+                         "Currently {value} V.",
     },
     {
         "key": "end_voltage_max",
@@ -652,9 +656,34 @@ _TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
         "step": 0.5,
         "minimum": 30.0,
         "maximum": 70.0,
-        "help": "Upper bound of the acceptable end-of-test voltage range used by Rule R6.",
+        "help_template": "Highest voltage that Rule R6 accepts at the end of the test. "
+                         "Currently {value} V.",
     },
 )
+
+
+def _format_spinbox_value(value: float, decimals: int) -> str:
+    """Format ``value`` with the same precision the spinbox displays.
+
+    Trailing zeros after the decimal point are trimmed so the help text
+    reads naturally (``15`` instead of ``15.0``) while still honouring
+    the field's configured decimals when the value isn't a round number.
+    """
+    if decimals <= 0:
+        return f"{value:.0f}"
+    formatted = f"{value:.{decimals}f}"
+    if "." in formatted:
+        formatted = formatted.rstrip("0").rstrip(".")
+    return formatted or "0"
+
+
+def _render_tolerance_help(spec: dict, value: float) -> str:
+    """Build the live tooltip text for a tolerance spinbox."""
+    template = spec.get("help_template") or spec.get("help") or ""
+    if "{value}" not in template:
+        return template
+    decimals = int(spec.get("decimals", 2))
+    return template.format(value=_format_spinbox_value(float(value), decimals))
 
 
 class BdtParametersDialog(QDialog):
@@ -676,8 +705,8 @@ class BdtParametersDialog(QDialog):
         outer.setSpacing(12)
 
         intro = QLabel(
-            "These parameters affect the active BDT validation rules and their calculations. "
-            "Hover over each field for an explanation."
+            "These settings control how strict each BDT validation rule is. "
+            "Hover any field to see what it does."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet("color:#6c7086; font-size:12px; background:transparent;")
@@ -710,15 +739,12 @@ class BdtParametersDialog(QDialog):
         self._spn_health.setSuffix(" %")
         self._spn_health.setObjectName("filter_spin")
         health_lay.addWidget(self._spn_health)
-        health_help = QLabel(
-            "Assumed usable battery efficiency for lead-acid sizing checks. This is used when "
-            "estimating theoretical backup time for Rule R8. Example: 80% means the app treats "
-            "the battery as delivering 80% of nominal capacity. Lithium batteries are handled "
-            "differently and do not use the same reduction."
-        )
-        health_help.setWordWrap(True)
-        health_help.setStyleSheet("color:#6c7086; font-size:11px; background:transparent;")
-        health_lay.addWidget(health_help)
+        self._lbl_health_help = QLabel()
+        self._lbl_health_help.setWordWrap(True)
+        self._lbl_health_help.setStyleSheet("color:#6c7086; font-size:11px; background:transparent;")
+        health_lay.addWidget(self._lbl_health_help)
+        self._refresh_health_help(self._spn_health.value())
+        self._spn_health.valueChanged.connect(self._refresh_health_help)
         lay.addWidget(health_card)
 
         # --- Tolerances card -----------------------------------------------
@@ -731,8 +757,8 @@ class BdtParametersDialog(QDialog):
         tol_title.setObjectName("workspace_card_title")
         tol_lay.addWidget(tol_title)
         tol_help = QLabel(
-            "Each rule uses one of these thresholds to decide whether to accept, reject, or "
-            "flag a test for review. Defaults match the historical hardcoded values."
+            "Each rule uses one of these limits to accept, reject, or flag a test for review. "
+            "The defaults match the values built into the app."
         )
         tol_help.setWordWrap(True)
         tol_help.setStyleSheet("color:#6c7086; font-size:11px; background:transparent;")
@@ -744,14 +770,6 @@ class BdtParametersDialog(QDialog):
         lay.addStretch(1)
 
         btn_row = QHBoxLayout()
-        btn_explain = QPushButton("Explain rules")
-        btn_explain.setObjectName("btn_dir")
-        btn_explain.setToolTip(
-            "Open the BDT Validation Rules reference to see what each "
-            "tolerance affects and how each rule is calculated."
-        )
-        btn_explain.clicked.connect(self._show_rules_reference)
-        btn_row.addWidget(btn_explain)
         btn_row.addStretch()
         btn_reset = QPushButton("Reset to defaults")
         btn_reset.setObjectName("btn_clear")
@@ -766,10 +784,6 @@ class BdtParametersDialog(QDialog):
         btn_row.addWidget(btn_cancel)
         btn_row.addWidget(btn_save)
         outer.addLayout(btn_row)
-
-    def _show_rules_reference(self):
-        dlg = BdtRulesReferenceDialog(parent=self)
-        dlg.exec_()
 
     def _build_tolerance_row(self, spec: dict, tolerances: dict) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -795,7 +809,12 @@ class BdtParametersDialog(QDialog):
             spin.setValue(float(value) * scale)
         except (TypeError, ValueError):
             spin.setValue(from_defaults * scale)
-        spin.setToolTip(spec["help"])
+
+        def _refresh_tooltip(v: float, target=spin, field=spec) -> None:
+            target.setToolTip(_render_tolerance_help(field, v))
+
+        _refresh_tooltip(spin.value())
+        spin.valueChanged.connect(_refresh_tooltip)
         row.addWidget(spin, 1)
         self._tol_spinboxes[spec["key"]] = (spin, scale)
         return row
@@ -804,6 +823,14 @@ class BdtParametersDialog(QDialog):
         for spec in _TOLERANCE_FIELD_DEFS:
             spin, scale = self._tol_spinboxes[spec["key"]]
             spin.setValue(_BDTTolerances_default_value(spec["key"]) * scale)
+
+    def _refresh_health_help(self, value: int) -> None:
+        self._lbl_health_help.setText(
+            f"Used in Rule R8 to estimate how long a lead-acid battery should last. "
+            f"Currently {int(value)}% means the app treats the battery as delivering "
+            f"{int(value)} percent of its rated capacity. "
+            f"Lithium batteries are checked a different way and ignore this number."
+        )
 
     def get_values(self) -> int:
         return self._spn_health.value()
@@ -1070,10 +1097,16 @@ class BdtValidationIntroDialog(QDialog):
 
 
 class BdtRulesReferenceDialog(QDialog):
-    """Reference dialog that explains each BDT validation rule."""
+    """Plain-language reference for every BDT validation rule.
 
-    def __init__(self, *, rule_rows: list[tuple[str, str, str]] | None = None,
-                 parent=None):
+    Layout: rule list on the left, scrollable HTML body on the right.
+    Use Ctrl+F inside the body to search the full reference. All numeric
+    thresholds shown in the body come from the user's saved
+    :class:`BDTTolerances` bundle and the live battery-health setting,
+    so the dialog always matches the current configuration.
+    """
+
+    def __init__(self, *, tolerances, health_pct: int, parent=None):
         super().__init__(parent)
         self.setWindowTitle("BDT Validation Rules")
         self.setMinimumWidth(880)
@@ -1081,41 +1114,38 @@ class BdtRulesReferenceDialog(QDialog):
         self._theme_mode = _resolved_parent_theme_mode(parent)
         if parent:
             self.setStyleSheet(parent.styleSheet())
-        self._build(rule_rows or [])
+        self._build(tolerances=tolerances, health_pct=health_pct)
 
     def _label_style(self, role: str) -> str:
         if self._theme_mode == "light":
             palette = {
                 "intro": "color:#4c4f69; font-size:13px; font-weight:600; background:transparent;",
                 "summary": "color:#7c7f93; font-size:12px; background:transparent;",
-                "body": "color:#5c5f77; font-size:12px; background:transparent;",
             }
         else:
             palette = {
                 "intro": "color:#cdd6f4; font-size:13px; font-weight:600; background:transparent;",
                 "summary": "color:#6c7086; font-size:12px; background:transparent;",
-                "body": "color:#cdd6f4; font-size:12px; background:transparent;",
             }
         return palette[role]
 
-    def _build(self, rule_rows: list[tuple[str, str, str]]):
+    def _build(self, *, tolerances, health_pct: int):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 16)
         lay.setSpacing(12)
 
         intro = QLabel(
-            "Read what each BDT validation rule checks, what inputs it uses, "
-            "and exactly how it's calculated. Use the rule list on the left "
-            "to jump directly to a rule; press Ctrl+F inside the panel to "
-            "search the full reference."
+            "Each BDT file goes through a series of checks. Use the list on "
+            "the left to jump to a rule, or press Ctrl+F inside the panel on "
+            "the right to search the full reference."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet(self._label_style("intro"))
         lay.addWidget(intro)
 
         summary = QLabel(
-            "User-editable thresholds appear under Settings \u2192 BDT "
-            "Validation Parameters \u2192 Validation Tolerances."
+            "All numbers below come from your current settings. To change them, "
+            "close this window and click Open Parameters."
         )
         summary.setWordWrap(True)
         summary.setStyleSheet(self._label_style("summary"))
@@ -1127,30 +1157,20 @@ class BdtRulesReferenceDialog(QDialog):
         nav = QListWidget()
         nav.setObjectName("rules_reference_nav")
         nav.setUniformItemSizes(True)
-        nav.setMinimumWidth(180)
-        nav.setMaximumWidth(220)
-
-        # Build navigator from the canonical rule_docs ordering. The
-        # ``rule_rows`` argument is preserved for backwards compatibility
-        # with callers that wanted to drive labels themselves: when its
-        # entries match a known rule key we use their friendlier name,
-        # otherwise we fall back to the title baked into rule_docs.
-        external_titles = {code: name for code, name, _desc in (rule_rows or [])}
+        nav.setMinimumWidth(200)
+        nav.setMaximumWidth(240)
 
         nav_keys: list[str] = []
-        for key, default_title, _html in iter_rule_docs():
-            if key in external_titles:
-                title = f"{key} \u2014 {external_titles[key]}"
-            else:
-                title = default_title
+        for key, title, _html in iter_rule_docs(tolerances=tolerances,
+                                                health_pct=health_pct):
             QListWidgetItem(title, nav)
             nav_keys.append(key)
 
         browser = QTextBrowser()
         browser.setOpenExternalLinks(False)
         browser.setOpenLinks(False)
-        browser.setHtml(full_rules_html())
-        # Soft monochrome styling that respects the dialog's theme.
+        browser.setHtml(full_rules_html(tolerances=tolerances,
+                                        health_pct=health_pct))
         if self._theme_mode == "light":
             browser.setStyleSheet(
                 "QTextBrowser { background:#ffffff; color:#4c4f69; "
@@ -1175,7 +1195,7 @@ class BdtRulesReferenceDialog(QDialog):
         splitter.addWidget(browser)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([200, 560])
+        splitter.setSizes([220, 600])
         lay.addWidget(splitter, 1)
 
         self._nav = nav
