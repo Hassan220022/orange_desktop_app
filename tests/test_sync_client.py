@@ -2,12 +2,12 @@
 
 import json
 import urllib.error
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import patch, MagicMock
 
-from alarm_app.data.sync_client import http_send_batch
 from alarm_app.data.sync import TransientSyncError
+from alarm_app.data.sync_client import http_send_batch
 
 
 def _make_request(events=None):

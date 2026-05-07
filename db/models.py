@@ -1,8 +1,18 @@
 """SQLAlchemy ORM models — all tables for alarm_viewer."""
 
 from sqlalchemy import (
-    Column, Integer, BigInteger, Float, String, Text, Boolean,
-    DateTime, Date, ForeignKey, UniqueConstraint, func,
+    BigInteger,
+    Boolean,
+    Column,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import DeclarativeBase, relationship
 

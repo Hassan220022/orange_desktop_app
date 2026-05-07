@@ -13,7 +13,7 @@ from alarm_app.bdt.validator import _find_door_alarms
 from alarm_app.core.backup_time import compute_backup_times_for_query
 from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
 from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
-from alarm_app.ui.threads import BDTValidationThread, BackupTimeThread
+from alarm_app.ui.threads import BackupTimeThread, BDTValidationThread
 
 
 @pytest.fixture(autouse=True)

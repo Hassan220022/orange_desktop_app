@@ -7,8 +7,10 @@ Run `python tests/generate_golden.py /path/to/data` first.
 Mark: @pytest.mark.golden -- skipped when fixtures don't exist.
 """
 import json
-import pytest
 from pathlib import Path
+
+import pytest
+
 from alarm_app.constants import BDT_RULES
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "golden"

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Any
-
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 FREE_MODELS_ROUTER = "openrouter/free"

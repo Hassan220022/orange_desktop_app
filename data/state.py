@@ -20,8 +20,12 @@ import pandas as pd
 
 from alarm_app.db.engine import (
     create_engine as _create_engine,
-    init_db as _init_db,
+)
+from alarm_app.db.engine import (
     get_session_factory as _get_session_factory,
+)
+from alarm_app.db.engine import (
+    init_db as _init_db,
 )
 
 STATE_DIR  = Path.home() / ".alarm_viewer"
@@ -75,6 +79,7 @@ def _load_alarm_dataframe_from_sqlite() -> pd.DataFrame | None:
     """Best-effort legacy fallback: load alarms from SQLite alarm_records."""
     try:
         from sqlalchemy import inspect as sa_inspect
+
         from alarm_app.db.repos.alarm_repo import load_alarms_as_df as _load_alarm_df
     except Exception:
         return None

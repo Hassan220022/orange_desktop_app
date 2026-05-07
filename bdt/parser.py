@@ -6,8 +6,8 @@ Data is extracted by known cell positions (row, col) based on the standard
 BDT template.
 """
 
-import logging
 import hashlib
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -288,7 +288,7 @@ def _parse_battery_info(max_column, cell_fn, data: BDTData, layout: dict | None 
     _VOLTAGE_BROAD_KEYWORDS = ("nominal voltage", "battery voltage")
     _AH_BROAD_KEYWORDS = ("ampere hour", "battery capacity", "ampere-hour")
     scan_col_end = min(max(max_column, 9), 16)
-    
+
     if not brand_raw or voltage_raw is None or ah_raw is None or strings_raw is None:
         for r in range(1, 151):
             for c in range(1, scan_col_end + 1):
@@ -473,16 +473,16 @@ def _detect_layout_family(cell_fn, max_row: int, max_col: int, sheet_name: str |
     """
     reasons: list[str] = []
     all_sheet_names = all_sheet_names or []
-    
+
     # Summary/aggregate exclusion check (FR-001)
     normalized_sheets = [str(s).strip().lower() for s in all_sheet_names]
     has_bdt_sheet = any("bdt" in s for s in normalized_sheets)
     has_summary = any("summary" in s for s in normalized_sheets)
-    
+
     if all_sheet_names and not has_bdt_sheet and has_summary:
         reasons.append("summary_only_workbook")
         return "SUMMARY_EXCLUDED", "high", reasons
-    
+
     # Layout C detection
     if sheet_name and str(sheet_name).strip() == "BDT sheet":
         has_power_alarm = any("power alarm" in s.lower() for s in all_sheet_names)
@@ -493,7 +493,7 @@ def _detect_layout_family(cell_fn, max_row: int, max_col: int, sheet_name: str |
             return "C", "high", reasons
         reasons.append("sheet_name_bdt_sheet_fallback")
         return "C", "medium", reasons
-    
+
     # Layout B2 detection
     if sheet_name:
         sheet_norm = str(sheet_name).strip()
@@ -502,33 +502,33 @@ def _detect_layout_family(cell_fn, max_row: int, max_col: int, sheet_name: str |
             reasons.append(f"sheet_name_{sheet_norm}")
             reasons.append("layout_b2_family")
             return "B2", "high", reasons
-    
+
     # Layout B1 detection
     if sheet_name and str(sheet_name).strip() == "Rectifier 1":
         reasons.append("sheet_name_rectifier_1")
         return "B1", "high", reasons
-    
+
     # Layout A detection
     if max_col < 12:
         reasons.append("max_col_lt_12")
         return "UNKNOWN", "low", reasons
-    
+
     candidate_a = _safe_str(cell_fn(4, 12))
     if candidate_a and _extract_site_code_token(candidate_a):
         reasons.append("site_code_at_l4")
         return "A", "high", reasons
-    
+
     if max_col >= 20:
         date_val = cell_fn(3, 20)
         if _parse_test_date(date_val, "") is not None:
             reasons.append("valid_date_at_t3")
             return "A", "high", reasons
-    
+
     rectifier_a = _safe_str(cell_fn(13, 12))
     if rectifier_a:
         reasons.append("rectifier_brand_at_l13")
         return "A", "medium", reasons
-    
+
     reasons.append("no_layout_a_signals")
     return "UNKNOWN", "low", reasons
 
@@ -555,7 +555,7 @@ def _resolve_bdt_sheet_name(sheet_names: list[str],
     normalized_sheets = [str(s).strip().lower() for s in sheet_names]
     has_bdt_sheet = any("bdt" in s for s in normalized_sheets)
     has_summary = any("summary" in s for s in normalized_sheets)
-    
+
     if not has_bdt_sheet and has_summary:
         logger.debug("Summary-only workbook detected (no BDT sheet), excluding from parsing")
         return None
@@ -773,7 +773,7 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
     # Detect layout for coordinate selection
     layout = _detect_layout(cell, max_row, max_col, sheet_name=bdt_sheet_name)
     data.core_layout = "Layout A" if layout is _LAYOUT_A else "Layout B"
-    
+
     # Detect layout family for metadata (FR-001)
     family, confidence, reasons = _detect_layout_family(
         cell, max_row, max_col, sheet_name=bdt_sheet_name, all_sheet_names=all_sheet_names
@@ -782,7 +782,7 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
     data.detection_confidence = confidence
     data.detection_reasons = reasons
     data.parser_mode = "fast_family"
-    
+
     # Skip parsing for summary-only workbooks (FR-001)
     if family == "SUMMARY_EXCLUDED":
         data.errors.append("Summary/aggregate workbook excluded from BDT validation")
@@ -1427,8 +1427,8 @@ def _extract_photo_slots_layout(file_path: str) -> tuple[list[PhotoSlot], int, s
     Returns (list_of_PhotoSlot, total_media_count, photo_layout_id, required_count,
              mapping_confidence, detection_mode, categories_found).
     """
-    import zipfile
     import xml.etree.ElementTree as ET
+    import zipfile
 
     ns_xdr = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
     ns_a = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -1622,7 +1622,7 @@ def _extract_photo_slots_layout(file_path: str) -> tuple[list[PhotoSlot], int, s
             ))
 
         wb.close()
-        
+
         # Extract category metadata (FR-003, FR-004)
         categories_found: list[str] = []
         for slot in slots:
@@ -1630,15 +1630,15 @@ def _extract_photo_slots_layout(file_path: str) -> tuple[list[PhotoSlot], int, s
                 cat = slot.category.lower()
                 if cat not in categories_found:
                     categories_found.append(cat)
-        
+
         # Determine mapping confidence based on anchor-to-slot mapping success
         filled_slots = sum(1 for s in slots if s.image_data)
         mapping_confidence = "high" if filled_slots >= required_photo_count else "medium"
         if filled_slots == 0:
             mapping_confidence = "low"
-        
+
         detection_mode = "normal"  # Could be "fallback" if we used non-standard mapping
-        
+
         return slots, total_media, photo_layout_id, required_photo_count, mapping_confidence, detection_mode, categories_found
 
     finally:

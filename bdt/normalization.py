@@ -2,7 +2,6 @@
 
 import re
 
-
 _CATEGORY_KEYWORDS = {
     "rectifier": (
         "rectifier",
@@ -71,7 +70,7 @@ def resolve_section_category(header_text, nearby_texts) -> str:
     if not merged:
         return "other"
 
-    scores = {name: 0 for name in _CATEGORY_KEYWORDS}
+    scores = dict.fromkeys(_CATEGORY_KEYWORDS, 0)
     for category, keywords in _CATEGORY_KEYWORDS.items():
         for keyword in keywords:
             if keyword in merged:

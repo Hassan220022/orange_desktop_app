@@ -1,14 +1,20 @@
 """Tests for db/models.py — verify table creation and constraints."""
 import datetime
+
 import pytest
 from sqlalchemy import inspect
-from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
 from alarm_app.db.engine import create_engine, init_db
 from alarm_app.db.models import (
-    UploadedFile, AlarmRecord, BDTTest, BDTPhoto, BlobAsset,
-    PMValidationRun, PMRuleResult, PMRuleCatalog, PMParameterSet,
-    UIState, SyncOutboxEvent,
+    AlarmRecord,
+    BDTTest,
+    PMParameterSet,
+    PMValidationRun,
+    SyncOutboxEvent,
+    UIState,
+    UploadedFile,
 )
 
 

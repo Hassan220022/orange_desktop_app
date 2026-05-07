@@ -1,9 +1,9 @@
 from datetime import date, datetime
 from types import SimpleNamespace
 
-from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
-from alarm_app.ui.dialogs import ColumnFilterPopup
 from alarm_app.constants import BDT_RESULT_HEADERS
+from alarm_app.ui.dialogs import ColumnFilterPopup
+from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
 
 
 class _FakeTable:

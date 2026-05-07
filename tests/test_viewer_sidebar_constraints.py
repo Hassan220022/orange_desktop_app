@@ -1,8 +1,8 @@
-from types import SimpleNamespace
 from datetime import date
+from types import SimpleNamespace
 
-from alarm_app.ui.viewer import AlarmViewer
 from alarm_app.data.alarm_store import AlarmQuery
+from alarm_app.ui.viewer import AlarmViewer
 
 
 class _Stack:

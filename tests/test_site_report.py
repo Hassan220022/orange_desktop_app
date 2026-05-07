@@ -1,6 +1,7 @@
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
-from types import SimpleNamespace
 
 from alarm_app.data.site_report import (
     build_pm_accept_report,

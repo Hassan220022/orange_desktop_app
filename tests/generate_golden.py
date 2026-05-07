@@ -10,20 +10,19 @@ Run this ONCE before any storage migration to lock current behavior.
 """
 import json
 import sys
+from datetime import date, datetime
 from pathlib import Path
-from datetime import datetime, date
 
 import pandas as pd
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from alarm_app.data.loaders import discover_alarm_files, parse_alarm_file, deduplicate_alarm_rows
-from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
+from alarm_app.bdt.parser import parse_bdt_file
+from alarm_app.bdt.validator import RuleResult, ValidationResult, validate_bdt
 from alarm_app.core.backup_time import compute_backup_times
-from alarm_app.core.filters import compute_date_mask, parse_manual_days
-from alarm_app.bdt.parser import parse_bdt_file, load_bdt_photos, BDTData
-from alarm_app.bdt.validator import validate_bdt, ValidationResult, RuleResult
+from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
+from alarm_app.data.loaders import deduplicate_alarm_rows, discover_alarm_files, parse_alarm_file
 
 GOLDEN_DIR = Path(__file__).parent / "fixtures" / "golden"
 
@@ -140,7 +139,7 @@ def generate(directory: str):
     if isinstance(bt_result, tuple):
         bt_df, bt_err = bt_result
     else:
-        bt_df, bt_err = bt_result, None
+        bt_df, _bt_err = bt_result, None
     bt_summary = _df_summary(bt_df) if bt_df is not None and not bt_df.empty else {"row_count": 0}
     with open(GOLDEN_DIR / "backup_times_summary.json", "w") as f:
         json.dump(bt_summary, f, indent=2)
@@ -149,7 +148,7 @@ def generate(directory: str):
     print("Finding and validating BDT files...")
     bdt_results = []
     import os
-    for root, dirs, files in os.walk(directory):
+    for root, _dirs, files in os.walk(directory):
         for fname in files:
             if fname.lower().endswith((".xlsx", ".xls")) and "bdt" in fname.lower():
                 fpath = os.path.join(root, fname)

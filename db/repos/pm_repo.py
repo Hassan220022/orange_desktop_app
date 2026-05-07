@@ -2,15 +2,19 @@
 
 import json
 import logging
-from sqlalchemy.orm import Session
+
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 _log = logging.getLogger(__name__)
-from alarm_app.db.models import (
-    PMValidationRun, PMRuleResult, PMRuleCatalog, PMParameterSet,
-)
-from alarm_app.db.hashing import compute_canonical_json_sha256
 from alarm_app.constants import BDT_RULE_NAME_BY_CODE
+from alarm_app.db.hashing import compute_canonical_json_sha256
+from alarm_app.db.models import (
+    PMParameterSet,
+    PMRuleCatalog,
+    PMRuleResult,
+    PMValidationRun,
+)
 
 
 def get_or_create_rule_catalog(session: Session) -> dict[str, int]:
@@ -36,8 +40,9 @@ def get_or_create_rule_catalog(session: Session) -> dict[str, int]:
 
 def seed_rule_versions(session: Session, code_ref: str = "alarm_app.bdt.validator") -> None:
     """Seed initial rule versions for R1-R11. Idempotent."""
-    from alarm_app.db.models import PMRuleVersion
     from datetime import datetime
+
+    from alarm_app.db.models import PMRuleVersion
 
     catalog = get_or_create_rule_catalog(session)
 
@@ -152,9 +157,9 @@ def load_all_validation_results(session: Session) -> list:
     Reconstructs the same objects the BDTValidationThread produces,
     so the UI can display them without re-running validation.
     """
-    from alarm_app.db.models import BDTTest, UploadedFile
-    from alarm_app.bdt.validator import ValidationResult, RuleResult
     from alarm_app.bdt.parser import BDTData
+    from alarm_app.bdt.validator import RuleResult, ValidationResult
+    from alarm_app.db.models import BDTTest, UploadedFile
 
     # Build rule_id -> rule_code map
     catalog_rows = session.query(PMRuleCatalog).all()
@@ -175,8 +180,9 @@ def load_all_validation_results(session: Session) -> list:
         uploaded_file = session.get(UploadedFile, bdt_db.file_id) if bdt_db.file_id else None
 
         # Reconstruct BDTData with fields from DB
-        from alarm_app.bdt.parser import PhotoSlot
         from pathlib import Path
+
+        from alarm_app.bdt.parser import PhotoSlot
 
         # Rebuild photo_slots from DB photos + blob storage
         photo_slots = []

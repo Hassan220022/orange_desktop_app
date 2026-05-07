@@ -6,8 +6,7 @@ import pandas as pd
 
 import alarm_app.llm_tools.openrouter_agent as openrouter_agent_mod
 from alarm_app.llm_tools.mcp_server import AlarmViewerMcpServer
-from alarm_app.llm_tools.openrouter_agent import OpenRouterAgent, _chat_message
-from alarm_app.llm_tools.openrouter_agent import OpenRouterToolSupportError
+from alarm_app.llm_tools.openrouter_agent import OpenRouterAgent, OpenRouterToolSupportError, _chat_message
 from alarm_app.llm_tools.openrouter_models import (
     FREE_MODELS_ROUTER,
     fetch_free_tool_models,

@@ -90,10 +90,7 @@ class FilterState:
             manual_days=manual_days,
             invalid_manual_days=invalid_days,
             both_pd=viewer._both_pd_active,
-            col_filters={
-                col: allowed
-                for col, allowed in viewer._col_filters.items()
-            },
+            col_filters=dict(viewer._col_filters.items()),
             sort_by=sort_by,
             sort_desc=sort_desc,
             site_scope_keys=viewer._uploaded_site_keys or None,
@@ -113,9 +110,7 @@ class FilterState:
             date_to=self.date_to,
             manual_days=list(self.manual_days) if self.manual_days is not None else None,
             both_pd=self.both_pd,
-            col_filters={
-                col: allowed for col, allowed in self.col_filters.items()
-            },
+            col_filters=dict(self.col_filters.items()),
             sort_by=self.sort_by,
             sort_desc=self.sort_desc,
             limit=self.limit,

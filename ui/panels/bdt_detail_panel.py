@@ -7,24 +7,36 @@ import re
 from datetime import datetime
 
 import pandas as pd
-
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QFrame, QSplitter, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QSizePolicy,
-    QDialog, QScrollArea, QGridLayout, QComboBox,
-    QStylePainter, QStyleOptionButton, QStyle,
-)
 from PyQt5.QtCore import Qt, QTimer, QUrl
-from PyQt5.QtGui import QColor, QPixmap, QDesktopServices
+from PyQt5.QtGui import QColor, QDesktopServices, QPixmap
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QStyle,
+    QStyleOptionButton,
+    QStylePainter,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
-from alarm_app.ui.flow_layout import FlowLayout
 from alarm_app.bdt.parser import BDTData, load_bdt_photos
 from alarm_app.bdt.photo_auth import verify_photo_slots
 from alarm_app.bdt.validator import ValidationResult
-from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
-from alarm_app.data import state
 from alarm_app.constants import format_bdt_rule_label
+from alarm_app.data import state
+from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
+from alarm_app.ui.flow_layout import FlowLayout
 
 
 class _VerticalExpandButton(QPushButton):
@@ -575,7 +587,7 @@ class BdtDetailPanel(QWidget):
                 "photo_count":       str(bdt.photo_count),
             }
         else:
-            vals = {k: "--" for k in self._bdt_info_labels}
+            vals = dict.fromkeys(self._bdt_info_labels, "--")
 
         for key, lbl in self._bdt_info_labels.items():
             lbl.setText(vals.get(key, "--"))
@@ -715,11 +727,13 @@ class BdtDetailPanel(QWidget):
         self._bdt_history_label.setText("—  no previous test history found")
         if bdt and bdt.site_code:
             try:
+                from datetime import date as date_type
+
                 from alarm_app.bdt.history import (
-                    load_previous_test, compare_tests,
+                    compare_tests,
+                    load_previous_test,
                     load_second_most_recent_test,
                 )
-                from datetime import date as date_type, datetime as datetime_type
                 test_date = None
                 if bdt.test_date:
                     test_date = (bdt.test_date.date()
@@ -1485,7 +1499,7 @@ class BdtDetailPanel(QWidget):
         return "other"
 
     def _build_compare_category_summary(self, slots) -> dict[str, int]:
-        summary = {cat: 0 for cat in sorted(self._COMPARE_KEY_CATEGORIES)}
+        summary = dict.fromkeys(sorted(self._COMPARE_KEY_CATEGORIES), 0)
         for slot in slots:
             cat = self._slot_category(slot)
             if cat in summary and self._slot_has_image(slot):

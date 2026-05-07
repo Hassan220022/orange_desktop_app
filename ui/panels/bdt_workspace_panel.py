@@ -2,6 +2,7 @@
 BdtWorkspacePanel — VS Code-style sidebar for the test validation workspace.
 """
 
+from PyQt5.QtCore import QEvent, Qt
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -16,7 +17,6 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PyQt5.QtCore import QEvent, Qt
 
 
 class BdtWorkspacePanel(QWidget):

@@ -23,7 +23,6 @@ from alarm_app.bdt.validator import (
     validate_bdt,
 )
 
-
 # ── Helpers ─────────────────────────────────────────────────────────────
 
 def _slot(
@@ -34,45 +33,45 @@ def _slot(
     slot = PhotoSlot(label=label, image_data=image_data)
     if category is not None:
         # Parser provides this field in production; attach dynamically for tests.
-        setattr(slot, "category", category)
+        slot.category = category
     return slot
 
 
 def _make_bdt(**kwargs) -> BDTData:
-    defaults = dict(
-        file_path="tests/fixtures/test.xlsx",
-        filename="test.xlsx",
-        site_code="SITE001",
-        site_name="Test Site",
-        test_date=datetime(2026, 1, 15),
-        time_in="08:00",
-        time_out="10:00",
-        discharge_readings=[
+    defaults = {
+        "file_path": "tests/fixtures/test.xlsx",
+        "filename": "test.xlsx",
+        "site_code": "SITE001",
+        "site_name": "Test Site",
+        "test_date": datetime(2026, 1, 15),
+        "time_in": "08:00",
+        "time_out": "10:00",
+        "discharge_readings": [
             ("30 min", 52.0, 30.0),
             ("60 min", 51.0, 30.5),
             ("90 min", 50.0, 30.8),
             ("120 min", 46.0, 31.0),
         ],
-        start_voltage=48.0,
-        start_ampere=40.0,
-        end_voltage=46.0,
-        end_ampere=31.0,
-        discharge_minutes=120.0,
-        ibat_before_test=0.2,
-        battery_brand="Narada",
-        battery_ah=100.0,
-        battery_voltage=48.0,
-        num_strings=1,
-        photo_count=2,
-        photo_slots=[],
-        photos_deferred=False,
-        errors=[],
-        summary_data={},
-        num_batteries=None,
-        num_modules=None,
-        rectifier_brand="",
-        pld_value="",
-    )
+        "start_voltage": 48.0,
+        "start_ampere": 40.0,
+        "end_voltage": 46.0,
+        "end_ampere": 31.0,
+        "discharge_minutes": 120.0,
+        "ibat_before_test": 0.2,
+        "battery_brand": "Narada",
+        "battery_ah": 100.0,
+        "battery_voltage": 48.0,
+        "num_strings": 1,
+        "photo_count": 2,
+        "photo_slots": [],
+        "photos_deferred": False,
+        "errors": [],
+        "summary_data": {},
+        "num_batteries": None,
+        "num_modules": None,
+        "rectifier_brand": "",
+        "pld_value": "",
+    }
     defaults.update(kwargs)
     return BDTData(**defaults)
 

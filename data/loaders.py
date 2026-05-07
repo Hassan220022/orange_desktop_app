@@ -11,17 +11,14 @@ Optimisations:
  - datetime conversion uses format= hint when possible.
 """
 
-import os
 import hashlib
 import json
+import os
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 
-from alarm_app.constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
-from alarm_app.core.duration import duration_to_secs as _duration_to_secs
-from alarm_app.core.duration import secs_to_hhmmss as _secs_to_hhmmss
-from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
+from alarm_app.constants import ALL_INTERNAL_COLS, SCHEMA_1_MAP, SCHEMA_2_MAP
 
 _EXTS = frozenset((".csv", ".xlsx", ".xls"))
 _ENCODINGS = ("utf-8-sig", "latin-1")          # utf-8-sig covers plain utf-8 too

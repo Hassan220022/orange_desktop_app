@@ -1,11 +1,29 @@
 [tool.ruff]
 target-version = "py39"
+line-length = 140
+exclude = ["bdt/vendor_synthid/**"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
+ignore = [
+    "B008",   # FastAPI Depends() in argument defaults is idiomatic
+    "E402",   # logger between import blocks is intentional for module-level _log
+    "E702",   # multiple statements on one line (semicolons) used intentionally for compact widget creation
+    "E741",   # ambiguous variable names like 'l' for layout objects
+    "N802",   # Qt override methods like resizeEvent must match Qt naming
+    "N803",   # Qt override parameters like `event` match Qt convention
+    "N805",   # nested class methods may use non-standard first arg (e.g. self_thread)
+    "N806",   # Qt/PyQt5 naming conventions
+    "N815",   # Qt PascalCase method names
+    "N999",   # Qt module names
+]
 
 [tool.ruff.lint.isort]
-known-first-party = ["core", "data", "db", "web", "llm_tools"]
+known-first-party = ["alarm_app", "core", "data", "db", "web", "llm_tools", "bdt", "ui", "runtime"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["I001", "F401"]
+"styles.py" = ["E501"]
 
 [tool.mypy]
 ignore_missing_imports = true

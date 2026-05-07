@@ -1,6 +1,7 @@
 """Database seeding -- runs on first launch to populate reference data."""
 
 from sqlalchemy.orm import Session
+
 from alarm_app.db.repos.pm_repo import get_or_create_rule_catalog, seed_rule_versions
 
 

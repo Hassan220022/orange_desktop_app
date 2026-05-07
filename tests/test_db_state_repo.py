@@ -1,8 +1,9 @@
 """Tests for db/repos/state_repo.py."""
 import pytest
 from sqlalchemy.orm import Session
+
 from alarm_app.db.engine import create_engine, init_db
-from alarm_app.db.repos.state_repo import save_state, load_state, get_value, set_value
+from alarm_app.db.repos.state_repo import get_value, load_state, save_state, set_value
 
 
 @pytest.fixture

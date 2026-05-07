@@ -1,10 +1,14 @@
 """Tests for db/repos/sync_repo.py."""
 import pytest
 from sqlalchemy.orm import Session
+
 from alarm_app.db.engine import create_engine, init_db
 from alarm_app.db.repos.sync_repo import (
-    append_outbox_event, load_pending_outbox,
-    mark_outbox_synced, save_sync_checkpoint, load_sync_checkpoint,
+    append_outbox_event,
+    load_pending_outbox,
+    load_sync_checkpoint,
+    mark_outbox_synced,
+    save_sync_checkpoint,
 )
 
 

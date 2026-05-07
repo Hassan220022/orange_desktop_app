@@ -1,13 +1,14 @@
 """FastAPI application factory."""
 
 import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-_log = logging.getLogger(__name__)
-
 from .config import CORS_ORIGINS
 from .schemas import HealthResponse
+
+_log = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -22,7 +23,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    from .routers import sync, alarms, pm
+    from .routers import alarms, pm, sync
     app.include_router(sync.router)
     app.include_router(alarms.router)
     app.include_router(pm.router)

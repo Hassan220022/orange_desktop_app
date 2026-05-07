@@ -6,12 +6,11 @@ operations and raw SQL instead of ORM objects for bulk insert/load.
 
 import hashlib
 import logging
-import math
 
 import pandas as pd
 from sqlalchemy.orm import Session
-from alarm_app.db.models import AlarmRecord
-from alarm_app.db.hashing import ALARM_HASH_COLS, _canonical_value
+
+from alarm_app.db.hashing import ALARM_HASH_COLS
 
 _log = logging.getLogger(__name__)
 

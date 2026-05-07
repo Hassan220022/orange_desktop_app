@@ -10,7 +10,6 @@ Console output is WARNING+ only to avoid flooding the terminal.
 """
 
 import logging
-import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 

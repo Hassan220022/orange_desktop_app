@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 DEFAULT_APP_VERSION = "0.1.8"
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")

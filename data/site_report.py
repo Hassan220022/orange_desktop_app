@@ -9,7 +9,6 @@ from typing import Any
 
 import pandas as pd
 
-
 _SITE_ID_HEADER_ALIASES: dict[str, int] = {
     "siteid": 110,
     "sitecode": 100,
@@ -694,7 +693,7 @@ def build_pm_accept_report(
         alarm_work = alarm_work.dropna(subset=["occurred_on"])
 
     col_map = _resolve_columns(out.columns, _PM_ACCEPT_REPORT_COLUMNS)
-    for canonical, actual in col_map.items():
+    for _canonical, actual in col_map.items():
         out[actual] = ""
 
     for idx, row in out.iterrows():

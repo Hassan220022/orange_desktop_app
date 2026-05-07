@@ -7,37 +7,50 @@ import re
 from datetime import datetime
 
 import pandas as pd
-
-from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel,
-    QFrame, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QSizePolicy, QMessageBox,
-    QFileDialog, QComboBox, QApplication, QDialog,
-)
-from PyQt5.QtCore import Qt, pyqtSignal, QSignalBlocker
+from PyQt5.QtCore import QSignalBlocker, Qt, pyqtSignal
 from PyQt5.QtGui import QColor
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
+from alarm_app.bdt.export import build_bdt_export_sheets
+from alarm_app.bdt.parser import BDTData
+from alarm_app.bdt.validator import BDTTolerances, ValidationResult, bdt_battery_status
 from alarm_app.constants import (
     BDT_RESULT_HEADERS,
     BDT_RESULT_WIDTHS,
-    BDT_RULES,
     format_bdt_rule_label,
-)
-from alarm_app.ui.threads import ExportThread, BDTValidationThread
-from alarm_app.bdt.parser import BDTData
-from alarm_app.bdt.validator import ValidationResult, BDTTolerances, bdt_battery_status
-from alarm_app.bdt.export import build_bdt_export_sheets
-from alarm_app.ui.dialogs import (
-    AcceptedPmReportDialog,
-    BdtRulesReferenceDialog,
-    BdtValidationIntroDialog,
-    BdtParametersDialog,
-    ColumnFilterPopup,
-    DailyReviewReportDialog,
 )
 from alarm_app.data import state
 from alarm_app.data.alarm_store import AlarmQuery, distinct_values, query_alarms
-from alarm_app.data.site_report import read_pm_accept_sheet, build_pm_accept_report
+from alarm_app.data.site_report import build_pm_accept_report, read_pm_accept_sheet
+from alarm_app.ui.dialogs import (
+    AcceptedPmReportDialog,
+    BdtParametersDialog,
+    BdtRulesReferenceDialog,
+    BdtValidationIntroDialog,
+    ColumnFilterPopup,
+    DailyReviewReportDialog,
+)
+from alarm_app.ui.threads import BDTValidationThread, ExportThread
 
 
 class BdtValidationPanel(QWidget):

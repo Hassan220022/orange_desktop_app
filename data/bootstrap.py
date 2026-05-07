@@ -1,11 +1,13 @@
 """Bootstrap backfill -- queue outbox events for existing local data."""
 
 import logging
+
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import Session
 
 _log = logging.getLogger(__name__)
 
+from alarm_app.data.state import get_or_create_device_id
 from alarm_app.db.models import (
     AlarmRecord,
     BDTTest,
@@ -13,7 +15,6 @@ from alarm_app.db.models import (
     SyncOutboxEvent,
 )
 from alarm_app.db.repos.sync_repo import append_outbox_event as _repo_append
-from alarm_app.data.state import get_or_create_device_id
 
 
 def _already_synced_entity_ids(session: Session, entity_type: str) -> set[str]:

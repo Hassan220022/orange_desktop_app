@@ -10,14 +10,14 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from PyQt5.QtWidgets import (
-        QLineEdit,
+        QCheckBox,
+        QComboBox,
+        QDateEdit,
         QLabel,
+        QLineEdit,
         QListWidget,
         QPushButton,
-        QComboBox,
-        QCheckBox,
         QSpinBox,
-        QDateEdit,
     )
 
 
@@ -26,44 +26,44 @@ class UIBridge:
     """Typed widget references extracted from UI panels."""
 
     # ── From LeftPanel ──
-    edit_dir: "QLineEdit"
-    lbl_file_count: "QLabel"
-    file_list: "QListWidget"
-    btn_load: "QPushButton"
-    cmb_alarm_source: "QComboBox"
-    lbl_loaded: "QLabel"
+    edit_dir: QLineEdit
+    lbl_file_count: QLabel
+    file_list: QListWidget
+    btn_load: QPushButton
+    cmb_alarm_source: QComboBox
+    lbl_loaded: QLabel
     stats: dict
 
     # ── From BdtWorkspacePanel ──
-    edit_bdt_dir: "QLineEdit"
-    lbl_bdt_file_count: "QLabel"
-    bdt_file_list: "QListWidget"
+    edit_bdt_dir: QLineEdit
+    lbl_bdt_file_count: QLabel
+    bdt_file_list: QListWidget
 
     # ── From SearchPanel ──
-    edit_site: "QLineEdit"
-    cb_cat: "QComboBox"
-    cb_net: "QComboBox"
-    cb_vnd: "QComboBox"
-    chk_mindur: "QCheckBox"
-    spn_mindur: "QSpinBox"
-    chk_date: "QCheckBox"
-    chk_date_range: "QCheckBox"
-    d_from: "QDateEdit"
-    d_to: "QDateEdit"
-    lbl_from: "QLabel"
-    lbl_to: "QLabel"
+    edit_site: QLineEdit
+    cb_cat: QComboBox
+    cb_net: QComboBox
+    cb_vnd: QComboBox
+    chk_mindur: QCheckBox
+    spn_mindur: QSpinBox
+    chk_date: QCheckBox
+    chk_date_range: QCheckBox
+    d_from: QDateEdit
+    d_to: QDateEdit
+    lbl_from: QLabel
+    lbl_to: QLabel
     date_quick_widgets: list
-    chk_date_days: "QCheckBox"
-    lbl_day: "QLabel"
-    d_day: "QDateEdit"
-    btn_add_day: "QPushButton"
-    edit_days: "QLineEdit"
-    btn_clear_days: "QPushButton"
-    btn_export: "QPushButton"
-    btn_backup: "QPushButton"
-    btn_site_sheet: "QPushButton"
-    btn_site_report: "QPushButton"
-    btn_both: "QPushButton"
+    chk_date_days: QCheckBox
+    lbl_day: QLabel
+    d_day: QDateEdit
+    btn_add_day: QPushButton
+    edit_days: QLineEdit
+    btn_clear_days: QPushButton
+    btn_export: QPushButton
+    btn_backup: QPushButton
+    btn_site_sheet: QPushButton
+    btn_site_report: QPushButton
+    btn_both: QPushButton
 
     @classmethod
     def from_panels(cls, left_panel, search_panel, bdt_sidebar):

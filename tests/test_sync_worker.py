@@ -136,7 +136,7 @@ def test_process_once_retries_transient_failure_with_exponential_backoff(tmp_pat
 
 def test_process_once_resumes_from_checkpoint_cursor(tmp_path, monkeypatch):
     _isolate_state_paths(tmp_path, monkeypatch)
-    e1 = _append_event("cp-1", "2026-04-08T09:00:00", "cp-batch-1")
+    _append_event("cp-1", "2026-04-08T09:00:00", "cp-batch-1")
     e2 = _append_event("cp-2", "2026-04-08T09:01:00", "cp-batch-2")
     e3 = _append_event("cp-3", "2026-04-08T09:02:00", "cp-batch-3")
     state_mod.save_sync_checkpoint(e2["event_id"])

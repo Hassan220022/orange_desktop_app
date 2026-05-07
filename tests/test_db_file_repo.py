@@ -1,8 +1,9 @@
 """Tests for db/repos/file_repo.py."""
 import pytest
 from sqlalchemy.orm import Session
+
 from alarm_app.db.engine import create_engine, init_db
-from alarm_app.db.repos.file_repo import file_exists, register_file, get_file_by_hash
+from alarm_app.db.repos.file_repo import file_exists, get_file_by_hash, register_file
 
 
 @pytest.fixture

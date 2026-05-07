@@ -9,7 +9,6 @@ from typing import Any, Callable
 
 from alarm_app.data import state
 
-
 SyncSender = Callable[[dict], dict]
 
 

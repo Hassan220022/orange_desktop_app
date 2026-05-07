@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
-from datetime import date, datetime, timedelta, timezone
 import base64
 import json
-from pathlib import Path
 import re
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -30,14 +30,13 @@ from alarm_app.db.models import (
     BDTPhoto,
     BDTTest,
     BlobAsset,
-    UploadedFile,
     PMRuleCatalog,
     PMRuleResult,
     PMValidationRun,
+    UploadedFile,
 )
 from alarm_app.db.repos import blob_repo
 from alarm_app.db.repos.pm_repo import load_all_validation_results
-
 
 MAX_QUERY_LIMIT = 500
 MAX_BLOB_BYTES = 5 * 1024 * 1024
@@ -223,7 +222,7 @@ class LocalDataService:
             return fn()
         except Exception:
             if last_error is not None:
-                raise last_error
+                raise last_error from None
             raise
 
     def query_alarms(self, **kwargs) -> dict[str, Any]:
@@ -292,7 +291,7 @@ class LocalDataService:
 
             working = working.sort_values("_backup_td", ascending=False).reset_index(drop=True)
             grouped_rows: list[dict[str, Any]] = []
-            for site_id, group in working.groupby("site_id", sort=False):
+            for _site_id, group in working.groupby("site_id", sort=False):
                 top = group.iloc[0]
                 backup_td = top["_backup_td"]
                 grouped_rows.append({

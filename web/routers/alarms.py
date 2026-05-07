@@ -1,14 +1,15 @@
 """Alarm upsert endpoint."""
 
 import logging
+
+import pandas as pd
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-import pandas as pd
-
-_log = logging.getLogger(__name__)
 
 from ..deps import get_db
 from ..schemas import AlarmBatchRequest, AlarmBatchResponse
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/alarms", tags=["alarms"])
 

@@ -4,8 +4,10 @@ import json
 import logging
 from datetime import datetime
 from uuid import uuid4
+
 from sqlalchemy.orm import Session
-from alarm_app.db.models import SyncOutboxEvent, SyncCheckpoint
+
+from alarm_app.db.models import SyncCheckpoint, SyncOutboxEvent
 
 _log = logging.getLogger(__name__)
 

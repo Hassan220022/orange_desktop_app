@@ -1,13 +1,14 @@
 """Sync batch endpoint -- receives events from desktop sync worker."""
 
 import logging
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-_log = logging.getLogger(__name__)
-
 from ..deps import get_db
 from ..schemas import SyncBatchRequest, SyncBatchResponse, SyncEventResult
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/sync", tags=["sync"])
 

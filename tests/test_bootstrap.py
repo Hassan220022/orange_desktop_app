@@ -1,24 +1,22 @@
 """Tests for data/bootstrap.py — bootstrap backfill of outbox events."""
 
-import pytest
 from datetime import date
 
+import pytest
 from sqlalchemy.orm import Session
 
-from alarm_app.db.engine import create_engine, init_db
-from alarm_app.db.models import (
-    AlarmRecord,
-    BDTTest,
-    BlobAsset,
-    PMValidationRun,
-    PMParameterSet,
-    SyncOutboxEvent,
-)
 from alarm_app.data.bootstrap import (
     bootstrap_alarm_records,
     bootstrap_bdt_tests,
     bootstrap_validation_runs,
     run_bootstrap,
+)
+from alarm_app.db.engine import create_engine, init_db
+from alarm_app.db.models import (
+    AlarmRecord,
+    BDTTest,
+    PMValidationRun,
+    SyncOutboxEvent,
 )
 
 

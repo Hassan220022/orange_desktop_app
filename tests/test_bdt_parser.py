@@ -6,13 +6,10 @@ Does NOT import PyQt5.
 """
 
 import datetime
-import math
 import sys
-from dataclasses import fields
 from unittest.mock import MagicMock, patch
 
-import pytest
-
+from alarm_app.bdt.models import Section, SectionImage, WorkbookParseManifest
 from alarm_app.bdt.parser import (
     BDTData,
     PhotoSlot,
@@ -26,7 +23,6 @@ from alarm_app.bdt.parser import (
     load_bdt_photos,
     parse_bdt_file,
 )
-from alarm_app.bdt.models import Section, SectionImage, WorkbookParseManifest
 
 
 def test_photo_extraction_uses_structural_only():
@@ -96,7 +92,7 @@ class _FakeOOXMLPackageVariableBytes(_FakeOOXMLPackage):
 
     def read_media(self, _media_path: str):
         self._read_count += 1
-        return f"img-bytes-{self._read_count}".encode("utf-8")
+        return f"img-bytes-{self._read_count}".encode()
 
 
 def test_structural_dedupe_keeps_same_media_across_different_sections():

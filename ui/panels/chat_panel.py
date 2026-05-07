@@ -5,26 +5,26 @@ from __future__ import annotations
 import html
 import json
 import re
-from datetime import datetime
 import uuid
+from datetime import datetime
 from pathlib import Path
 
-from PyQt5.QtCore import QDate, QEvent, QThread, QTimer, Qt, QUrl, pyqtSignal
+from PyQt5.QtCore import QDate, QEvent, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices, QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QComboBox,
-    QDialogButtonBox,
-    QFrame,
-    QFileDialog,
-    QGridLayout,
-    QHBoxLayout,
-    QHeaderView,
     QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFrame,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -40,7 +40,6 @@ from PyQt5.QtWidgets import (
 )
 
 from alarm_app.constants import DISPLAY_COLUMNS
-from alarm_app.ui.flow_layout import FlowLayout
 from alarm_app.llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message
 from alarm_app.llm_tools.openrouter_models import (
     FALLBACK_FREE_MODELS,
@@ -48,7 +47,7 @@ from alarm_app.llm_tools.openrouter_models import (
     fetch_free_tool_models,
     normalize_free_model_id,
 )
-
+from alarm_app.ui.flow_layout import FlowLayout
 
 _BULLET_RE = re.compile(r"^\s*(?:[-*•])\s+(.*)$")
 _NUMBERED_RE = re.compile(r"^\s*\d+\.\s+(.*)$")

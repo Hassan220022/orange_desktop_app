@@ -14,7 +14,6 @@ fixture files. Tests cover:
   - fallback path (no slot objects, only photo_count integer)
 """
 
-import pytest
 
 from alarm_app.bdt.parser import BDTData, PhotoSlot
 from alarm_app.bdt.validator import _rule_1_photos
@@ -30,13 +29,13 @@ def _slot(category: str, filled: bool = True) -> PhotoSlot:
 
 
 def _bdt(**kwargs) -> BDTData:
-    defaults = dict(
-        filename="test.xlsx",
-        photo_slots=[],
-        photo_count=0,
-        required_photo_count=6,
-        photos_deferred=False,
-    )
+    defaults = {
+        "filename": "test.xlsx",
+        "photo_slots": [],
+        "photo_count": 0,
+        "required_photo_count": 6,
+        "photos_deferred": False,
+    }
     defaults.update(kwargs)
     return BDTData(**defaults)
 

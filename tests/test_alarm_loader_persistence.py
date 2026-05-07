@@ -1,7 +1,5 @@
-from pathlib import Path
 
 import pandas as pd
-import pytest
 
 from alarm_app.ui import threads
 

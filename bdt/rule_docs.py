@@ -11,7 +11,7 @@ the user has saved.
 """
 from __future__ import annotations
 
-from typing import Iterator
+from collections.abc import Iterator
 
 from alarm_app.bdt.validator import BDTTolerances
 from alarm_app.constants import BDT_DEFAULT_HEALTH_PCT

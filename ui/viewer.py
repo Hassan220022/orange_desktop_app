@@ -13,53 +13,73 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-
+from PyQt5.QtCore import QDate, Qt, QThread
+from PyQt5.QtGui import QColor, QFont, QKeySequence
 from PyQt5.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLineEdit, QLabel, QTableView, QFileDialog,
-    QDateEdit, QGroupBox, QSplitter, QStatusBar, QComboBox,
-    QMessageBox, QFrame, QHeaderView, QAbstractItemView,
-    QProgressBar, QListWidget, QListWidgetItem,
-    QCheckBox, QSpinBox, QMenu, QAction, QApplication,
-    QDialog, QScrollArea, QStackedWidget, QTabWidget, QTableWidget, QTableWidgetItem, QShortcut,
-    QGridLayout, QSizePolicy,
+    QAbstractItemView,
+    QAction,
+    QApplication,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QListWidgetItem,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QShortcut,
+    QSizePolicy,
+    QSplitter,
+    QStackedWidget,
+    QStatusBar,
+    QTableView,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt5.QtCore import Qt, QDate, QThread, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QKeySequence, QTextCharFormat
 
-from alarm_app.constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
-                                 COL_WIDTHS, DISPLAY_COLUMNS,
-                                 BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
-from alarm_app.styles import STYLE, STYLE_DARK, STYLE_LIGHT
-from alarm_app.ui.model import AlarmTableModel
-from alarm_app.ui.filter_state import FilterState
-from alarm_app.ui.state_manager import StateManager
-from alarm_app.ui.threads import (LoaderThread, ExportThread,
-                                  BDTValidationThread, BackupTimeThread)
-from alarm_app.ui.dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
-                                  AlarmIdConfigDialog, BackupTimeDialog,
-                                  FeatureFlagDialog, AppSettingsDialog)
-from alarm_app.ui.bridge import UIBridge
-from alarm_app.ui.panels.search_panel import SearchPanel
-from alarm_app.ui.panels.left_panel import LeftPanel
-from alarm_app.ui.panels.bdt_workspace_panel import BdtWorkspacePanel
-from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
-from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
-from alarm_app.ui.panels.chat_panel import ChatPanel
-from alarm_app.core.filters import compute_date_mask, parse_manual_days
+from alarm_app.constants import (
+    ALL_INTERNAL_COLS,
+    APP_NAME,
+    APP_VERSION,
+    COL_WIDTHS,
+    DISPLAY_COLUMNS,
+)
 from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
+from alarm_app.core.filters import compute_date_mask, parse_manual_days
+from alarm_app.data import alarm_store, state
 from alarm_app.data.loaders import discover_alarm_files
-from alarm_app.data import alarm_store
-from alarm_app.data import state
-from alarm_app.data.sync import LocalSyncWorker
 from alarm_app.data.site_report import (
-    read_site_sheet,
     build_site_alarm_report,
     collect_site_sheet_keys,
+    read_site_sheet,
 )
-from alarm_app.bdt.parser import parse_bdt_file, BDTData, load_bdt_photos
-from alarm_app.bdt.validator import validate_bdt, ValidationResult
-from alarm_app.bdt.export import build_bdt_export_sheets
+from alarm_app.data.sync import LocalSyncWorker
+from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
+from alarm_app.ui.bridge import UIBridge
+from alarm_app.ui.dialogs import (
+    AlarmIdConfigDialog,
+    AppSettingsDialog,
+    BackupTimeDialog,
+    ColumnFilterPopup,
+    DailyReviewReportDialog,
+    FeatureFlagDialog,
+)
+from alarm_app.ui.filter_state import FilterState
+from alarm_app.ui.model import AlarmTableModel
+from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
+from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
+from alarm_app.ui.panels.bdt_workspace_panel import BdtWorkspacePanel
+from alarm_app.ui.panels.chat_panel import ChatPanel
+from alarm_app.ui.panels.left_panel import LeftPanel
+from alarm_app.ui.panels.search_panel import SearchPanel
+from alarm_app.ui.state_manager import StateManager
+from alarm_app.ui.threads import BackupTimeThread, ExportThread, LoaderThread
 
 _log = logging.getLogger(__name__)
 
@@ -629,7 +649,6 @@ class AlarmViewer(QMainWindow):
     def _run_bootstrap_if_enabled(self):
         if not self._sync_flags.get("bootstrap_on"):
             return
-        from PyQt5.QtCore import QThread
 
         class _BootstrapThread(QThread):
             def run(self_thread):
@@ -637,8 +656,8 @@ class AlarmViewer(QMainWindow):
                     from alarm_app.data.bootstrap import run_bootstrap
                     from alarm_app.db.engine import (
                         create_engine,
-                        init_db,
                         get_session_factory,
+                        init_db,
                     )
 
                     engine = create_engine()
@@ -689,20 +708,20 @@ class AlarmViewer(QMainWindow):
         if mode == "auto":
             mode = self._detect_os_theme()
         if mode == "dark":
-            return dict(
-                bg="#1a1a2a", border="#2a2a3e", text="#cdd6f4",
-                muted="#6c7086", warn="#fab387", blue="#89b4fa",
-                green="#a6e3a1", red="#f38ba8",
-                stay_bg="#1a2744", stay_border="#2a4070", stay_hover="#1f3258",
-                exit_bg="#3d1e2c", exit_border="#5a2030", exit_hover="#4d2838",
-            )
-        return dict(
-            bg="#e6e9ef", border="#ccd0da", text="#4c4f69",
-            muted="#6c6f85", warn="#fe640b", blue="#1e66f5",
-            green="#40a02b", red="#d20f39",
-            stay_bg="#d5e0fc", stay_border="#a8bff8", stay_hover="#c0d0fa",
-            exit_bg="#f5d5da", exit_border="#e8a0b0", exit_hover="#f0c0c8",
-        )
+            return {
+                "bg": "#1a1a2a", "border": "#2a2a3e", "text": "#cdd6f4",
+                "muted": "#6c7086", "warn": "#fab387", "blue": "#89b4fa",
+                "green": "#a6e3a1", "red": "#f38ba8",
+                "stay_bg": "#1a2744", "stay_border": "#2a4070", "stay_hover": "#1f3258",
+                "exit_bg": "#3d1e2c", "exit_border": "#5a2030", "exit_hover": "#4d2838",
+            }
+        return {
+            "bg": "#e6e9ef", "border": "#ccd0da", "text": "#4c4f69",
+            "muted": "#6c6f85", "warn": "#fe640b", "blue": "#1e66f5",
+            "green": "#40a02b", "red": "#d20f39",
+            "stay_bg": "#d5e0fc", "stay_border": "#a8bff8", "stay_hover": "#c0d0fa",
+            "exit_bg": "#f5d5da", "exit_border": "#e8a0b0", "exit_hover": "#f0c0c8",
+        }
 
     def _iter_background_threads(self):
         panel_bdt_thread = getattr(self._bdt_validation_panel, "_bdt_thread", None)
@@ -1961,7 +1980,9 @@ class AlarmViewer(QMainWindow):
 
     def _load_bdt_results_from_db(self) -> list:
         try:
-            from alarm_app.db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
+            from alarm_app.db.engine import create_engine as _ce
+            from alarm_app.db.engine import get_session_factory as _gsf
+            from alarm_app.db.engine import init_db as _idb
             from alarm_app.db.repos.pm_repo import load_all_validation_results
             engine = _ce()
             _idb(engine)
@@ -1980,7 +2001,7 @@ class AlarmViewer(QMainWindow):
             if vr.site_code and vr.bdt_data is not None:
                 key = vr.site_code.strip().upper()
                 self._bdt_by_site.setdefault(key, []).append(vr.bdt_data)
-        for key, items in self._bdt_by_site.items():
+        for _key, items in self._bdt_by_site.items():
             items.sort(key=lambda b: getattr(b, "test_date", None) or datetime.min, reverse=True)
         if hasattr(self, "_bdt_validation_panel"):
             self._bdt_validation_panel.set_results(results)

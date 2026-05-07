@@ -1,10 +1,12 @@
 """Tests for photo persistence service."""
-import pytest
 from dataclasses import dataclass
 from datetime import date
+
+import pytest
 from sqlalchemy.orm import Session
+
 from alarm_app.db.engine import create_engine, init_db
-from alarm_app.db.models import BDTTest, BDTPhoto, BlobAsset
+from alarm_app.db.models import BDTPhoto, BlobAsset
 from alarm_app.db.repos.bdt_repo import save_bdt_test
 
 

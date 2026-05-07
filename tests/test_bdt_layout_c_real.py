@@ -3,9 +3,10 @@ Tests for Layout C (BDT sheet) parsing against the real 0167DE production file.
 
 Skipped automatically when the file is not present on disk.
 """
-import pytest
 import os
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

@@ -5,7 +5,6 @@ Tests deterministic family detection (A, B1, B2, C, SUMMARY_EXCLUDED, UNKNOWN)
 and coordinate strategy by family.
 """
 
-import pytest
 from alarm_app.bdt.parser import _detect_layout_family
 
 
@@ -141,7 +140,7 @@ class TestLayoutFamilyDetection:
     def test_coordinate_strategy_a_uses_layout_a_coords(self):
         """Family A and B2 use Layout A coordinate baseline."""
         cell_fn = self._mock_cell_fn({(4, 12): "0483DE"})
-        from alarm_app.bdt.parser import _detect_layout, _LAYOUT_A
+        from alarm_app.bdt.parser import _LAYOUT_A, _detect_layout
         layout = _detect_layout(
             cell_fn, max_row=100, max_col=20, sheet_name="BDT"
         )
@@ -150,7 +149,7 @@ class TestLayoutFamilyDetection:
     def test_coordinate_strategy_b1_uses_layout_b_coords(self):
         """Family B1 uses Layout B coordinate baseline."""
         cell_fn = self._mock_cell_fn({})
-        from alarm_app.bdt.parser import _detect_layout, _LAYOUT_B
+        from alarm_app.bdt.parser import _LAYOUT_B, _detect_layout
         layout = _detect_layout(
             cell_fn, max_row=100, max_col=15, sheet_name="Rectifier 1"
         )
@@ -159,7 +158,7 @@ class TestLayoutFamilyDetection:
     def test_coordinate_strategy_c_uses_layout_b_with_fallback(self):
         """Family C uses Layout B coordinates (will rely on fallback scanning)."""
         cell_fn = self._mock_cell_fn({})
-        from alarm_app.bdt.parser import _detect_layout, _LAYOUT_B
+        from alarm_app.bdt.parser import _LAYOUT_B, _detect_layout
         layout = _detect_layout(
             cell_fn, max_row=100, max_col=15, sheet_name="BDT sheet"
         )

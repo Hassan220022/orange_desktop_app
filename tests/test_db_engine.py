@@ -1,5 +1,4 @@
 """Tests for db/engine.py."""
-import pytest
 from sqlalchemy import text
 
 

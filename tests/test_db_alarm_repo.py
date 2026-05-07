@@ -1,11 +1,16 @@
 """Tests for db/repos/alarm_repo.py."""
-import pytest
-import pandas as pd
 from datetime import datetime
+
+import pandas as pd
+import pytest
 from sqlalchemy.orm import Session
+
 from alarm_app.db.engine import create_engine, init_db
 from alarm_app.db.repos.alarm_repo import (
-    bulk_upsert_alarms, load_alarms_as_df, count_alarms, _sqlite_max_multi_rows,
+    _sqlite_max_multi_rows,
+    bulk_upsert_alarms,
+    count_alarms,
+    load_alarms_as_df,
 )
 from alarm_app.db.repos.file_repo import register_file
 

@@ -4,8 +4,6 @@ import json
 import urllib.error
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 class TestFetchAlarms:
     def test_returns_dataframe_on_success(self):

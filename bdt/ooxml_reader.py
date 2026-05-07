@@ -80,7 +80,7 @@ class OOXMLPackage:
         self.file_path = file_path
         self._zip: zipfile.ZipFile | None = None
 
-    def __enter__(self) -> "OOXMLPackage":
+    def __enter__(self) -> OOXMLPackage:
         self._zip = zipfile.ZipFile(self.file_path, "r")
         return self
 

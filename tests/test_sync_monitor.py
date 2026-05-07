@@ -3,9 +3,9 @@
 import pytest
 from sqlalchemy.orm import Session
 
+from alarm_app.data.sync_monitor import outbox_stats
 from alarm_app.db.engine import create_engine, init_db
 from alarm_app.db.repos.sync_repo import append_outbox_event
-from alarm_app.data.sync_monitor import outbox_stats
 
 
 @pytest.fixture

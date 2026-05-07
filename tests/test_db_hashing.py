@@ -1,11 +1,15 @@
 """Tests for db/hashing.py."""
-import pytest
+from datetime import date, datetime
+
 import pandas as pd
-from datetime import datetime, date
+
 from alarm_app.db.hashing import (
-    compute_file_sha256, compute_row_hash, compute_image_sha256,
-    compute_bdt_content_hash, compute_canonical_json_sha256,
     _canonical_value,
+    compute_bdt_content_hash,
+    compute_canonical_json_sha256,
+    compute_file_sha256,
+    compute_image_sha256,
+    compute_row_hash,
 )
 
 

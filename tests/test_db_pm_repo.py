@@ -1,12 +1,16 @@
 """Tests for db/repos/pm_repo.py."""
-import pytest
 from datetime import date
+
+import pytest
 from sqlalchemy.orm import Session
-from alarm_app.db.engine import create_engine, init_db
-from alarm_app.db.models import BDTTest, PMValidationRun, UploadedFile
+
 from alarm_app.constants import BDT_RULES
+from alarm_app.db.engine import create_engine, init_db
+from alarm_app.db.models import BDTTest, UploadedFile
 from alarm_app.db.repos.pm_repo import (
-    save_validation_run, get_or_create_rule_catalog, load_all_validation_results,
+    get_or_create_rule_catalog,
+    load_all_validation_results,
+    save_validation_run,
 )
 
 

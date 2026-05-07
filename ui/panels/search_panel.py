@@ -2,12 +2,22 @@
 SearchPanel — command-console-style filter panel extracted from AlarmViewer.
 """
 
+from PyQt5.QtCore import QDate, Qt
+from PyQt5.QtGui import QColor, QTextCharFormat
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLineEdit, QLabel,
-    QDateEdit, QComboBox, QFrame, QCheckBox, QSpinBox, QSizePolicy,
+    QCheckBox,
+    QComboBox,
+    QDateEdit,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
-from PyQt5.QtCore import Qt, QDate
-from PyQt5.QtGui import QColor, QFont, QTextCharFormat
 
 from alarm_app.ui.flow_layout import FlowLayout
 

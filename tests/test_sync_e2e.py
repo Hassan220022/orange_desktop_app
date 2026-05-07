@@ -7,12 +7,12 @@ and the real API router.
 
 import json
 from io import BytesIO
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from alarm_app.data.sync import LocalSyncWorker, _extract_synced_event_ids
+from alarm_app.data.sync import _extract_synced_event_ids
 from alarm_app.data.sync_client import http_send_batch
 
 

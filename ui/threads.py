@@ -10,24 +10,25 @@ from threading import Thread
 from uuid import uuid4
 
 import pandas as pd
-
 from PyQt5.QtCore import QThread, pyqtSignal
 
-from alarm_app.constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
 from alarm_app.core.backup_time import compute_backup_times, compute_backup_times_for_query
+from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
 from alarm_app.core.duration import duration_to_secs as _duration_to_secs
 from alarm_app.core.duration import secs_to_hhmmss as _secs_to_hhmmss
-from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
 from alarm_app.data import loaders as _loaders
+from alarm_app.data import state
 from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
 from alarm_app.data.loaders import (
-    parse_alarm_file,
     deduplicate_alarm_rows,
+    parse_alarm_file,
 )
-from alarm_app.data import state
-from alarm_app.db.engine import create_engine as _db_create_engine, init_db as _db_init_db, get_session_factory as _db_get_session_factory
+from alarm_app.db.engine import create_engine as _db_create_engine
+from alarm_app.db.engine import get_session_factory as _db_get_session_factory
+from alarm_app.db.engine import init_db as _db_init_db
 from alarm_app.db.hashing import compute_file_sha256
-from alarm_app.db.repos.file_repo import file_exists as _file_exists, register_file as _register_file
+from alarm_app.db.repos.file_repo import file_exists as _file_exists
+from alarm_app.db.repos.file_repo import register_file as _register_file
 
 _log = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ class LoaderThread(QThread):
     def run(self):
         try:
             dfs: list[pd.DataFrame] = []
-            total = len(self.file_infos)
+            len(self.file_infos)
             file_paths = [info.get("path", "") for info in self.file_infos if info.get("path")]
 
             # Open a thread-local DB session for dedup checks.
@@ -407,9 +408,10 @@ class BDTValidationThread(QThread):
         return subset
 
     def run(self):
+        from datetime import datetime
+
         from alarm_app.bdt.parser import parse_bdt_file
         from alarm_app.bdt.validator import validate_bdt
-        from datetime import datetime
 
         try:
             total = len(self._files)

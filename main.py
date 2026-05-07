@@ -5,12 +5,11 @@ Thin entry point.  All logic lives in the alarm_app package.
 Starts the FastAPI backend in a child process and shuts it down on exit.
 """
 
-import atexit
 import argparse
+import atexit
 import logging
 import multiprocessing
 import os
-import signal
 import sys
 import types
 from pathlib import Path
@@ -34,24 +33,24 @@ _ensure_alarm_app_alias()
 
 try:
     from .constants import APP_NAME, APP_VERSION
-    from .runtime.env import load_local_env
-    from .runtime.bootstrap import bootstrap_local_runtime
-    from .ui.viewer import AlarmViewer
     from .logging_config import setup_logging
+    from .runtime.bootstrap import bootstrap_local_runtime
+    from .runtime.env import load_local_env
+    from .ui.viewer import AlarmViewer
 except ImportError:
     try:
         from alarm_app.constants import APP_NAME, APP_VERSION
-        from alarm_app.runtime.env import load_local_env
-        from alarm_app.runtime.bootstrap import bootstrap_local_runtime
-        from alarm_app.ui.viewer import AlarmViewer
         from alarm_app.logging_config import setup_logging
+        from alarm_app.runtime.bootstrap import bootstrap_local_runtime
+        from alarm_app.runtime.env import load_local_env
+        from alarm_app.ui.viewer import AlarmViewer
     except ImportError:
         # PyInstaller flat-bundle: package root is on sys.path directly
         from constants import APP_NAME, APP_VERSION  # type: ignore[no-redef]
-        from runtime.env import load_local_env  # type: ignore[no-redef]
-        from runtime.bootstrap import bootstrap_local_runtime  # type: ignore[no-redef]
-        from ui.viewer import AlarmViewer  # type: ignore[no-redef]
         from logging_config import setup_logging  # type: ignore[no-redef]
+        from runtime.bootstrap import bootstrap_local_runtime  # type: ignore[no-redef]
+        from runtime.env import load_local_env  # type: ignore[no-redef]
+        from ui.viewer import AlarmViewer  # type: ignore[no-redef]
 
 _log = logging.getLogger(__name__)
 
@@ -162,9 +161,9 @@ def main(argv: list[str] | None = None):
             print("OPENROUTER_API_KEY is required", file=sys.stderr)
             return 2
         try:
-            from alarm_app.llm_tools.openrouter_agent import OpenRouterAgent, DEFAULT_MODEL
+            from alarm_app.llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent
         except ImportError:
-            from llm_tools.openrouter_agent import OpenRouterAgent, DEFAULT_MODEL  # type: ignore[no-redef]
+            from llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent  # type: ignore[no-redef]
         model = args.openrouter_model or DEFAULT_MODEL
         prompt = " ".join(args.ask).strip()
         print(OpenRouterAgent(api_key=api_key, model=model).ask(prompt))

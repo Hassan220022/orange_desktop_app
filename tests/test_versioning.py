@@ -1,4 +1,3 @@
-from pathlib import Path
 
 from alarm_app.versioning import get_app_version
 

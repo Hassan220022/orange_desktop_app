@@ -12,11 +12,10 @@ fixture once production files are available.
 import pytest
 
 from alarm_app.bdt.parser import (
-    _select_photo_layout,
-    _anchor_to_slot,
     _PHOTO_LAYOUTS,
+    _anchor_to_slot,
+    _select_photo_layout,
 )
-
 
 # ── _select_photo_layout unit tests ───────────────────────────────────────────
 
@@ -183,14 +182,15 @@ class TestRealEmbeddedImages:
     def real_bdt(self):
         """Parse the real 3938CA production file with embedded images."""
         from pathlib import Path
+
         from alarm_app.bdt.parser import parse_bdt_file
-        
+
         fixtures_dir = Path(__file__).parent / "fixtures"
         bdt_file = fixtures_dir / "bdt_real_3938ca.xlsx"
-        
+
         if not bdt_file.exists():
             pytest.skip(f"Production fixture not found: {bdt_file}")
-        
+
         return parse_bdt_file(str(bdt_file), skip_photos=False)
 
     def test_real_file_has_valid_site_code(self, real_bdt):
@@ -206,7 +206,7 @@ class TestRealEmbeddedImages:
         """Real file should have embedded JPEG images in photo slots."""
         filled_slots = [s for s in real_bdt.photo_slots if s.image_data]
         assert len(filled_slots) > 0, "Real file should have embedded images"
-        
+
         # Verify at least one image has JPEG magic bytes
         jpeg_magic = b"\xff\xd8\xff"
         has_jpeg = any(s.image_data and s.image_data.startswith(jpeg_magic) for s in filled_slots)

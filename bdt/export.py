@@ -14,14 +14,13 @@ from typing import Any
 import pandas as pd
 
 from alarm_app.constants import (
-    BDT_RULES,
-    BDT_RULE_NAME_BY_CODE,
     BDT_PM_SUMMARY_HEADERS,
+    BDT_RULE_NAME_BY_CODE,
+    BDT_RULES,
     BDT_SUMMARY_EXPORT_HEADERS,
     BDT_SUMMARY_SHEET_NAME,
     format_bdt_rule_label,
 )
-
 
 _EMPTY_VALUES = {"", "none", "nan", "null", "-", "--", "unknown"}
 _SUMMARY_EMPTY_VALUES = _EMPTY_VALUES | {"na", "n/a"}

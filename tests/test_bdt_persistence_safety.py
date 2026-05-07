@@ -8,9 +8,9 @@ Tests verify:
 - Function calls match actual repo function signatures
 """
 
-import pytest
 import inspect
-from alarm_app.bdt.history import save_validation_batch, persist_photo_jobs
+
+from alarm_app.bdt.history import persist_photo_jobs, save_validation_batch
 
 
 class TestSaveValidationBatchIsolation:
@@ -20,16 +20,16 @@ class TestSaveValidationBatchIsolation:
         """Verify savepoint-per-item isolation is implemented in code."""
         import alarm_app.bdt.history as history_module
         source = inspect.getsource(history_module.save_validation_batch)
-        
+
         # Verify begin_nested is used for savepoint isolation
         assert "begin_nested" in source, "save_validation_batch should use begin_nested for savepoint isolation"
-        
+
         # Verify IntegrityError is caught per item (not at batch level)
         assert "IntegrityError" in source, "save_validation_batch should catch IntegrityError"
-        
+
         # Verify the pattern of try/except inside the loop
         assert "for item in items:" in source, "save_validation_batch should iterate over items"
-        
+
     def test_function_signature_correct(self):
         """Verify save_validation_batch has correct signature."""
         sig = inspect.signature(save_validation_batch)
@@ -38,7 +38,7 @@ class TestSaveValidationBatchIsolation:
         assert "alarm_df" in params
         assert "params" in params
         assert "validator_code_ref" in params
-        
+
     def test_no_autocommit_parameter_in_calls(self):
         """Verify autocommit is only used on save_validation_run, not save_bdt_test."""
         import alarm_app.bdt.history as history_module
@@ -53,12 +53,12 @@ class TestSaveValidationBatchIsolation:
         # save_validation_run must disable internal commit for batch savepoint flow.
         assert "autocommit=False" in source, \
             "save_validation_run should be called with autocommit=False in batch mode"
-        
+
     def test_bdt_data_converted_to_dict(self):
         """Verify bdt_data is converted to bdt_dict before calling save_bdt_test."""
         import alarm_app.bdt.history as history_module
         source = inspect.getsource(history_module.save_validation_batch)
-        
+
         # Verify _build_bdt_dict is called to convert BDTData to dict
         assert "_build_bdt_dict" in source, "BDTData should be converted to dict using _build_bdt_dict"
 
@@ -70,13 +70,13 @@ class TestPersistPhotoJobsIsolation:
         """Verify savepoint-per-job isolation is implemented in code."""
         import alarm_app.bdt.history as history_module
         source = inspect.getsource(history_module.persist_photo_jobs)
-        
+
         # Verify begin_nested is used for savepoint isolation
         assert "begin_nested" in source, "persist_photo_jobs should use begin_nested for savepoint isolation"
-        
+
         # Verify the pattern of try/except inside the loop
         assert "for job in photo_jobs:" in source, "persist_photo_jobs should iterate over jobs"
-        
+
     def test_function_signature_correct(self):
         """Verify persist_photo_jobs has correct signature."""
         sig = inspect.signature(persist_photo_jobs)
@@ -90,7 +90,7 @@ class TestOutboxEmissionTiming:
         """Verify outbox emission happens only after run_payloads are returned."""
         import alarm_app.bdt.history as history_module
         source = inspect.getsource(history_module.save_validation_batch)
-        
+
         # Verify photo_jobs are only queued after pm_run is successfully persisted
         assert "if pm_run is not None:" in source, "photo_jobs should only be queued after pm_run success"
         assert "photo_jobs.append" in source, "photo_jobs should be queued"

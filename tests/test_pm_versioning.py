@@ -1,13 +1,17 @@
 """Tests for PM rule versioning and seeding."""
-import pytest
 from datetime import date
+
+import pytest
 from sqlalchemy.orm import Session
-from alarm_app.db.engine import create_engine, init_db
-from alarm_app.db.models import PMRuleVersion, BDTTest
+
 from alarm_app.constants import BDT_RULES
+from alarm_app.db.engine import create_engine, init_db
+from alarm_app.db.models import BDTTest, PMRuleVersion
 from alarm_app.db.repos.pm_repo import (
-    get_or_create_rule_catalog, seed_rule_versions,
-    get_or_create_parameter_set, save_validation_run, load_validation_history,
+    get_or_create_parameter_set,
+    load_validation_history,
+    save_validation_run,
+    seed_rule_versions,
 )
 
 

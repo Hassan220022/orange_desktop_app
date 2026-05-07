@@ -13,10 +13,9 @@ from typing import Any, Callable
 
 from alarm_app.runtime.env import load_local_env
 
+from .openrouter_models import FREE_MODELS_ROUTER, normalize_free_model_id
 from .service import LocalDataService
 from .tools import dispatch_tool, tool_definitions_for_openrouter
-from .openrouter_models import FREE_MODELS_ROUTER, normalize_free_model_id
-
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = FREE_MODELS_ROUTER

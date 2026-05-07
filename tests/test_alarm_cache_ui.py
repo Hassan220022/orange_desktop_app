@@ -246,7 +246,7 @@ def test_build_alarm_query_maps_ui_state():
     assert query.vendor == "Huawei"
     assert query.network_type == "4G"
     assert query.min_duration_secs == 900
-    assert set(pd.Timestamp(day).date() for day in query.manual_days) == {
+    assert {pd.Timestamp(day).date() for day in query.manual_days} == {
         pd.Timestamp("2026-04-02").date(),
         pd.Timestamp("2026-04-04").date(),
     }

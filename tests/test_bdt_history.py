@@ -1,26 +1,23 @@
 """Tests for alarm_app.bdt_history -- storage and comparison of BDT test records."""
 
-import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 import pytest
 from sqlalchemy.exc import OperationalError
-from alarm_app.constants import BDT_RULES
 
 from alarm_app.bdt.history import (
     BDTTestRecord,
-    BDTComparison,
-    save_test_record,
-    load_previous_test,
     compare_tests,
-    save_validation_run,
-    save_validation_batch,
     compute_alarm_input_sha256,
-    HISTORY_DIR,
+    load_previous_test,
+    save_test_record,
+    save_validation_batch,
+    save_validation_run,
 )
+from alarm_app.constants import BDT_RULES
 
 
 @dataclass
@@ -104,13 +101,13 @@ class TestSaveAndLoad:
 class TestCompareTests:
 
     def _make_previous(self, **overrides):
-        defaults = dict(
-            site_code="0167DE", test_date="2025-06-15", file_path="/old.xlsx",
-            battery_brand="Lithium", battery_ah=100, battery_voltage=48,
-            num_strings=2, num_batteries=2, num_modules=3,
-            rectifier_brand="Delta 2", overall_verdict="Accepted",
-            saved_at="2025-06-15T00:00:00",
-        )
+        defaults = {
+            "site_code": "0167DE", "test_date": "2025-06-15", "file_path": "/old.xlsx",
+            "battery_brand": "Lithium", "battery_ah": 100, "battery_voltage": 48,
+            "num_strings": 2, "num_batteries": 2, "num_modules": 3,
+            "rectifier_brand": "Delta 2", "overall_verdict": "Accepted",
+            "saved_at": "2025-06-15T00:00:00",
+        }
         defaults.update(overrides)
         return BDTTestRecord(**defaults)
 

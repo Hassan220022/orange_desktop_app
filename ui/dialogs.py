@@ -3,21 +3,38 @@
 from datetime import datetime
 
 import pandas as pd
-
-from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
-    QPushButton, QLineEdit, QCheckBox, QScrollArea, QWidget,
-    QTableWidget, QTableWidgetItem, QSpinBox, QDoubleSpinBox,
-    QFileDialog, QMessageBox, QAbstractItemView, QHeaderView, QComboBox,
-    QSplitter, QListWidget, QListWidgetItem, QTextBrowser,
-)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
+from PyQt5.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
 
+from alarm_app.bdt.rule_docs import full_rules_html, iter_rule_docs
 from alarm_app.constants import BT_HEADERS, BT_WIDTHS
 from alarm_app.core.backup_time import fmt_td as _fmt_td
 from alarm_app.data import state
-from alarm_app.bdt.rule_docs import full_rules_html, iter_rule_docs
 
 
 def _resolved_parent_theme_mode(parent) -> str:

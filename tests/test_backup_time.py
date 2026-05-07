@@ -1,7 +1,6 @@
 """Tests for backup_time.compute_backup_times()."""
 
 import pandas as pd
-import pytest
 
 from alarm_app.core.backup_time import compute_backup_times
 

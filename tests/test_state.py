@@ -1,8 +1,5 @@
 """Tests for state persistence (state.py)."""
 
-import json
-import os
-from pathlib import Path
 
 import pandas as pd
 import pytest

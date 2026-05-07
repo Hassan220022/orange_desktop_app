@@ -1,13 +1,14 @@
 """PM validation endpoints."""
 
 import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-_log = logging.getLogger(__name__)
-
 from ..deps import get_db
 from ..schemas import PMRunResponse
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/pm", tags=["pm"])
 

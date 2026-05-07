@@ -1,13 +1,14 @@
 """Load and stress tests for the DB layer."""
-import pytest
-import pandas as pd
 from datetime import datetime, timedelta
+
+import pandas as pd
+import pytest
 from sqlalchemy.orm import Session
+
 from alarm_app.db.engine import create_engine, init_db
-from alarm_app.db.repos.alarm_repo import bulk_upsert_alarms, load_alarms_as_df, count_alarms
-from alarm_app.db.repos.file_repo import register_file, file_exists
+from alarm_app.db.repos.alarm_repo import bulk_upsert_alarms, count_alarms, load_alarms_as_df
+from alarm_app.db.repos.file_repo import file_exists, register_file
 from alarm_app.db.repos.sync_repo import append_outbox_event, load_pending_outbox
-from alarm_app.db.hashing import compute_row_hash
 
 
 @pytest.fixture

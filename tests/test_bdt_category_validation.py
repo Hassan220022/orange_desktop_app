@@ -5,10 +5,8 @@ Tests that R1 uses category-based validation as primary rule,
 with rectifier + batteries as required categories.
 """
 
-import pytest
-from dataclasses import dataclass
-from alarm_app.bdt.validator import _rule_1_photos, RuleResult
 from alarm_app.bdt.parser import BDTData, PhotoSlot
+from alarm_app.bdt.validator import _rule_1_photos
 
 
 class TestCategoryBasedValidation:
@@ -139,7 +137,7 @@ class TestCategoryMappingConfidence:
         """High confidence when filled slots >= required count."""
         from alarm_app.bdt.parser import BDTData, PhotoSlot
         slots = [PhotoSlot(label=f"Slot {i}", image_data=b"test", category="rectifier") for i in range(16)]
-        bdt = BDTData(photo_slots=slots, required_photo_count=16)
+        BDTData(photo_slots=slots, required_photo_count=16)
         # This would be set by _extract_photo_slots
         filled = sum(1 for s in slots if s.image_data)
         confidence = "high" if filled >= 16 else "medium"
@@ -149,7 +147,7 @@ class TestCategoryMappingConfidence:
         """Medium confidence when filled slots < required count but > 0."""
         from alarm_app.bdt.parser import BDTData, PhotoSlot
         slots = [PhotoSlot(label=f"Slot {i}", image_data=b"test", category="rectifier") for i in range(10)]
-        bdt = BDTData(photo_slots=slots, required_photo_count=16)
+        BDTData(photo_slots=slots, required_photo_count=16)
         filled = sum(1 for s in slots if s.image_data)
         confidence = "high" if filled >= 16 else "medium"
         assert confidence == "medium"
@@ -158,7 +156,7 @@ class TestCategoryMappingConfidence:
         """Low confidence when no photos filled."""
         from alarm_app.bdt.parser import BDTData, PhotoSlot
         slots = [PhotoSlot(label=f"Slot {i}", image_data=None, category="rectifier") for i in range(16)]
-        bdt = BDTData(photo_slots=slots, required_photo_count=16)
+        BDTData(photo_slots=slots, required_photo_count=16)
         filled = sum(1 for s in slots if s.image_data)
         confidence = "high" if filled >= 16 else "medium" if filled > 0 else "low"
         assert confidence == "low"

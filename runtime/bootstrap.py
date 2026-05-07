@@ -10,8 +10,8 @@ from pathlib import Path
 
 
 def bootstrap_local_runtime() -> dict[str, str]:
-    from alarm_app.data import state as state_mod
     from alarm_app.data import alarm_store
+    from alarm_app.data import state as state_mod
     from alarm_app.db import engine as db_engine
     from alarm_app.db.repos import blob_repo
     from alarm_app.logging_config import LOG_DIR

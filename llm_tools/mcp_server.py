@@ -9,7 +9,6 @@ from typing import Any
 from .service import LocalDataService
 from .tools import dispatch_tool, tool_definitions_for_mcp
 
-
 SERVER_INFO = {"name": "alarm-viewer-local-data", "version": "0.1.0"}
 
 

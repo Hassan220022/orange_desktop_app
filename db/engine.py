@@ -3,8 +3,9 @@
 import logging
 from pathlib import Path
 
-from sqlalchemy import create_engine as _create_engine, event
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import create_engine as _create_engine
+from sqlalchemy import event
+from sqlalchemy.orm import Session, sessionmaker
 
 _log = logging.getLogger(__name__)
 

@@ -1,7 +1,8 @@
 """FastAPI dependency injection."""
 
 from sqlalchemy.orm import Session
-from alarm_app.db.engine import create_engine, init_db, get_session_factory
+
+from alarm_app.db.engine import create_engine, get_session_factory, init_db
 
 _engine = None
 _SessionFactory = None

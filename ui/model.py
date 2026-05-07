@@ -8,11 +8,10 @@ Optimisations vs naive approach:
  • Sort converts only the target column once (not the whole DF stringified).
 """
 
-import pandas as pd
 import numpy as np
-
-from PyQt5.QtCore import Qt, QAbstractTableModel, QModelIndex
-from PyQt5.QtGui import QColor, QBrush
+import pandas as pd
+from PyQt5.QtCore import QAbstractTableModel, QModelIndex, Qt
+from PyQt5.QtGui import QBrush, QColor
 
 from alarm_app.constants import DISPLAY_COLUMNS
 

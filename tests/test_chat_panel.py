@@ -6,10 +6,10 @@ from alarm_app.ui.panels.chat_panel import (
     _json_output_text,
     _normalize_message_text,
     _output_paths,
-    _photo_group_summary,
     _parse_markdown_blocks,
-    _set_combo_text,
+    _photo_group_summary,
     _rows_preview_limit,
+    _set_combo_text,
 )
 
 

@@ -11,8 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from alarm_app.bdt.parser import parse_bdt_file, _detect_layout, _LAYOUT_A, _LAYOUT_B
-
+from alarm_app.bdt.parser import _LAYOUT_A, _LAYOUT_B, _detect_layout, parse_bdt_file
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 

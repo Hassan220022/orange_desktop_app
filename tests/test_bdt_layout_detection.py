@@ -11,12 +11,12 @@ Tests multi-layout support for:
 import pytest
 
 from alarm_app.bdt.parser import (
-    _resolve_bdt_sheet_name,
-    _detect_layout,
-    _detect_layout_family,
     _LAYOUT_A,
     _LAYOUT_B,
     _LAYOUT_C,
+    _detect_layout,
+    _detect_layout_family,
+    _resolve_bdt_sheet_name,
 )
 
 
@@ -110,7 +110,7 @@ class TestResolveBDTSheetName:
 class TestDetectLayout:
     """Test layout detection for all layout variants."""
 
-    def _mock_cell_fn(self, site_code_at_l4: str = "", date_at_t3: str = "", 
+    def _mock_cell_fn(self, site_code_at_l4: str = "", date_at_t3: str = "",
                       rectifier_at_l13: str = "", max_col: int = 32):
         """Create a mock cell function for layout detection tests."""
         cells = {}
@@ -251,16 +251,17 @@ class TestRealWorkbookIntegration:
     def test_layout_a_real_file_parses_correctly(self):
         """Test Layout A file (BDT sheet, A1:AF132) parses correctly."""
         from pathlib import Path
+
         from alarm_app.bdt.parser import parse_bdt_file
-        
+
         fixtures_dir = Path(__file__).parent / "fixtures"
         layout_a_file = fixtures_dir / "bdt_real_3938ca.xlsx"
-        
+
         if not layout_a_file.exists():
             pytest.skip(f"Layout A fixture not found: {layout_a_file}")
-        
+
         bdt = parse_bdt_file(str(layout_a_file), skip_photos=True)
-        
+
         # Should detect as Layout A
         assert bdt.core_layout == "Layout A"
         # Should have extracted basic fields
@@ -269,16 +270,17 @@ class TestRealWorkbookIntegration:
     def test_layout_b1_real_file_parses_correctly(self):
         """Test Layout B1 file (Rectifier 1 sheet, A1:AC132) parses correctly."""
         from pathlib import Path
+
         from alarm_app.bdt.parser import parse_bdt_file
-        
+
         fixtures_dir = Path(__file__).parent / "fixtures"
         layout_b1_file = fixtures_dir / "layout_b1_rectifier_1.xlsx"
-        
+
         if not layout_b1_file.exists():
             pytest.skip(f"Layout B1 fixture not found: {layout_b1_file}")
-        
+
         bdt = parse_bdt_file(str(layout_b1_file), skip_photos=True)
-        
+
         # Should detect as Layout B
         assert bdt.core_layout == "Layout B"
         # Should have extracted basic fields
@@ -287,16 +289,17 @@ class TestRealWorkbookIntegration:
     def test_layout_b2_real_file_parses_correctly(self):
         """Test Layout B2 file (Rec1/Rec2 sheets, Layout A coordinates) parses correctly."""
         from pathlib import Path
+
         from alarm_app.bdt.parser import parse_bdt_file
-        
+
         fixtures_dir = Path(__file__).parent / "fixtures"
         layout_b2_file = fixtures_dir / "layout_b2_rec1.xlsx"
-        
+
         if not layout_b2_file.exists():
             pytest.skip(f"Layout B2 fixture not found: {layout_b2_file}")
-        
+
         bdt = parse_bdt_file(str(layout_b2_file), skip_photos=True)
-        
+
         # Should detect as Layout A (Rec1/Rec2 use Layout A coordinates)
         assert bdt.core_layout == "Layout A"
         # Should have extracted basic fields
@@ -305,16 +308,17 @@ class TestRealWorkbookIntegration:
     def test_layout_c_real_file_parses_correctly(self):
         """Test Layout C file (test_pms multi-sheet) parses correctly with fallbacks."""
         from pathlib import Path
+
         from alarm_app.bdt.parser import parse_bdt_file
-        
+
         fixtures_dir = Path(__file__).parent / "fixtures"
         layout_c_file = fixtures_dir / "layout_c_test_pms.xlsx"
-        
+
         if not layout_c_file.exists():
             pytest.skip(f"Layout C fixture not found: {layout_c_file}")
-        
+
         bdt = parse_bdt_file(str(layout_c_file), skip_photos=True)
-        
+
         # Layout C uses fallback scanning, may detect as Layout B
         # Should still extract basic fields via fallbacks
         assert bdt.site_code or bdt.site_name or bdt.test_date
@@ -322,12 +326,13 @@ class TestRealWorkbookIntegration:
     def test_production_layout_a_file_from_data_dir(self):
         """Test real Layout A file from data directory."""
         from pathlib import Path
+
         from alarm_app.bdt.parser import parse_bdt_file
-        
+
         real_file = "/Users/mikawi/Developer/orange/data/2024_pm_tests/BDTs/U_S_3938CA_BOLAKDAKROR27_3938CA_BDT.XLSX"
         if not Path(real_file).exists():
             pytest.skip(f"Real file not available in this environment: {real_file}")
-        
+
         try:
             bdt = parse_bdt_file(real_file, skip_photos=True)
             assert bdt.core_layout == "Layout A"
@@ -339,12 +344,13 @@ class TestRealWorkbookIntegration:
     def test_production_layout_b1_file_from_data_dir(self):
         """Test real Layout B1 file from data directory."""
         from pathlib import Path
+
         from alarm_app.bdt.parser import parse_bdt_file
-        
+
         real_file = "/Users/mikawi/Developer/orange/data/2024_pm_tests/W1/W1_2024_BDT/W1_2024_BDT/UP-RS-RD-REP 1_3225UP_ BDT.xlsx"
         if not Path(real_file).exists():
             pytest.skip(f"Real file not available in this environment: {real_file}")
-        
+
         try:
             bdt = parse_bdt_file(real_file, skip_photos=True)
             assert bdt.core_layout == "Layout B"
@@ -355,12 +361,13 @@ class TestRealWorkbookIntegration:
     def test_production_layout_c_file_from_data_dir(self):
         """Test real Layout C file from data directory."""
         from pathlib import Path
+
         from alarm_app.bdt.parser import parse_bdt_file
-        
+
         real_file = "/Users/mikawi/Developer/orange/data/test_pms/BDT_ Lithium (DK-MANS-SADATBSC _0167DE BDT Test Date (11-1-2026).xlsx"
         if not Path(real_file).exists():
             pytest.skip(f"Real file not available in this environment: {real_file}")
-        
+
         try:
             bdt = parse_bdt_file(real_file, skip_photos=True)
             # Layout C uses fallback scanning, should still extract data
@@ -376,14 +383,14 @@ class TestRegressionBehavior:
         """Regression: Layout B2 must use Layout A coordinates, not Layout B."""
         # Layout B2 (Rec1/Rec2) uses Layout A coordinate system
         # This test ensures the parser doesn't incorrectly use Layout B coordinates
-        from alarm_app.bdt.parser import _detect_layout, _LAYOUT_A
-        
+        from alarm_app.bdt.parser import _LAYOUT_A, _detect_layout
+
         # Mock cell function with Layout A signals
         def cell_fn(row, col):
             if row == 4 and col == 12:
                 return "0482SI"  # Site code at Layout A position
             return ""
-        
+
         layout = _detect_layout(cell_fn, max_row=132, max_col=32, sheet_name="Rec1")
         assert layout is _LAYOUT_A, "Rec1 should use Layout A coordinates"
 
@@ -391,37 +398,37 @@ class TestRegressionBehavior:
         """Regression: Layout B1 must use Layout B coordinates, not Layout A."""
         # Layout B1 (Rectifier 1) uses Layout B coordinate system
         # This test ensures the parser doesn't incorrectly use Layout A coordinates
-        from alarm_app.bdt.parser import _detect_layout, _LAYOUT_B
-        
+        from alarm_app.bdt.parser import _LAYOUT_B, _detect_layout
+
         # Mock cell function with Layout A signals (should be ignored for Rectifier 1)
         def cell_fn(row, col):
             if row == 4 and col == 12:
                 return "0482SI"  # Site code at Layout A position
             return ""
-        
+
         layout = _detect_layout(cell_fn, max_row=132, max_col=32, sheet_name="Rectifier 1")
         assert layout is _LAYOUT_B, "Rectifier 1 should use Layout B coordinates"
 
     def test_standard_bdt_sheet_still_detects_as_layout_a(self):
         """Regression: Standard BDT sheet must still detect as Layout A."""
-        from alarm_app.bdt.parser import _detect_layout, _LAYOUT_A
-        
+        from alarm_app.bdt.parser import _LAYOUT_A, _detect_layout
+
         def cell_fn(row, col):
             if row == 4 and col == 12:
                 return "0482SI"
             return ""
-        
+
         layout = _detect_layout(cell_fn, max_row=132, max_col=32, sheet_name="BDT")
         assert layout is _LAYOUT_A
 
     def test_power_source_extracted_from_both_layouts(self):
         """Regression: power_source must be extracted from both Layout A and Layout B."""
         from alarm_app.bdt.parser import _LAYOUT_A, _LAYOUT_B
-        
+
         # Layout A: power_source at L11 (row 11, col 12)
         assert "power_source" in _LAYOUT_A
         assert _LAYOUT_A["power_source"] == (11, 12)
-        
+
         # Layout B: power_source at I11 (row 11, col 9)
         assert "power_source" in _LAYOUT_B
         assert _LAYOUT_B["power_source"] == (11, 9)

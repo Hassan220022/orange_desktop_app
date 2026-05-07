@@ -5,19 +5,18 @@ Persists BDT validation results per site to detect equipment changes
 between consecutive PM visits (battery type, count, rectifier, modules).
 """
 
-import json
 import hashlib
+import json
 import logging
 import time
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from uuid import uuid5, NAMESPACE_URL
+from uuid import NAMESPACE_URL, uuid5
 
 import pandas as pd
 
 from alarm_app.constants import APP_VERSION, BDT_RULES
-
 
 HISTORY_DIR = Path.home() / ".alarm_viewer" / "bdt_history"
 PM_RUNS_DIR = HISTORY_DIR / "_pm_runs"
@@ -34,8 +33,12 @@ def _get_session():
     if _engine is None:
         from alarm_app.db.engine import (
             create_engine as _create_engine,
-            init_db as _init_db,
+        )
+        from alarm_app.db.engine import (
             get_session_factory as _get_session_factory,
+        )
+        from alarm_app.db.engine import (
+            init_db as _init_db,
         )
         _engine = _create_engine()
         _init_db(_engine, include_alarm_records=False)
@@ -522,9 +525,13 @@ def save_validation_batch(
 
     from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
     from alarm_app.db.repos.pm_repo import (
-        save_validation_run as _save_pm_run,
         get_or_create_parameter_set as _get_or_create_parameter_set,
+    )
+    from alarm_app.db.repos.pm_repo import (
         get_or_create_rule_catalog as _get_or_create_rule_catalog,
+    )
+    from alarm_app.db.repos.pm_repo import (
+        save_validation_run as _save_pm_run,
     )
 
     params = params or {}
@@ -533,7 +540,8 @@ def save_validation_batch(
     run_payloads: list[dict] = []
     photo_jobs: list[dict] = []
     failed_items: list[dict] = []
-    from sqlalchemy.exc import IntegrityError as _IntegrityError, OperationalError as _OperationalError
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
+    from sqlalchemy.exc import OperationalError as _OperationalError
 
     session = _get_session()
     try:

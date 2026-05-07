@@ -2,7 +2,9 @@
 
 import json
 import logging
+
 from sqlalchemy.orm import Session
+
 from alarm_app.db.models import UIState
 
 _log = logging.getLogger(__name__)

@@ -5,29 +5,28 @@ Every test is self-contained with synthetic data.
 """
 
 import datetime
-import math
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-import pytest
-from unittest.mock import patch
+
+from alarm_app.constants import (
+    ALL_INTERNAL_COLS,
+    SCHEMA_1_MAP,
+    SCHEMA_2_MAP,
+)
+from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
 
 # We import only the pure helpers and functions, not the QThread classes.
 # The module-level import of PyQt5 inside parsers.py is unavoidable, but
 # we only exercise functions that never touch Qt.
 from alarm_app.core.duration import duration_to_secs, secs_to_hhmmss
-from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
 from alarm_app.data.loaders import (
     _is_alarm_header,
     _load_external_summary_lookup,
     _match_external_summary_row,
-    parse_alarm_file,
     deduplicate_alarm_rows,
-)
-from alarm_app.constants import (
-    ALL_INTERNAL_COLS,
-    SCHEMA_1_MAP,
-    SCHEMA_2_MAP,
+    parse_alarm_file,
 )
 
 
