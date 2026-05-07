@@ -1861,7 +1861,7 @@ class ChatPanel(QWidget):
         label.setTextFormat(Qt.RichText)
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         label.setText(text)
         return label
 
@@ -1946,7 +1946,7 @@ class ChatPanel(QWidget):
         bubble.setMaximumWidth(self._message_bubble_width(self.width(), role_key))
         bubble.setSizePolicy(
             QSizePolicy.Preferred,
-            QSizePolicy.Preferred,
+            QSizePolicy.MinimumExpanding,
         )
         bubble_layout = QVBoxLayout(bubble)
         bubble_layout.setContentsMargins(12, 10, 12, 10)
@@ -1986,8 +1986,9 @@ class ChatPanel(QWidget):
     def _message_actions_widget(self, role: str, text: str) -> QWidget:
         frame = QFrame()
         frame.setObjectName("tool_detail")
-        row = FlowLayout(frame, hspacing=4, vspacing=4)
+        row = QHBoxLayout(frame)
         row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
 
         btn_copy = _make_assistant_button("Copy", minimum_width=52)
         btn_copy.clicked.connect(lambda _checked=False, t=text: self._copy_text(t))
