@@ -1025,11 +1025,11 @@ class AlarmViewer(QMainWindow):
             query = replace(query, network_type="All")
 
         if exclude_columns:
-            query.col_filters = {
+            query = replace(query, col_filters={
                 col: allowed
                 for col, allowed in self._col_filters.items()
                 if col not in exclude_columns
-            }
+            })
 
         if ignore_sort:
             query = replace(query, sort_by=None, sort_desc=False)

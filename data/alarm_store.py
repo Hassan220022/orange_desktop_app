@@ -181,7 +181,12 @@ def _range_end_exclusive(value: date | datetime | None) -> datetime | None:
 
 
 def _load_alarm_ids() -> dict[str, list[str]]:
-    from alarm_app.data import state as _state
+    try:
+        from alarm_app.data import state as _state
+    except ImportError:
+        _state = None
+    if _state is None:
+        return {"power": [], "down": [], "door": []}
     try:
         data = _state.load_alarm_ids()
     except Exception:

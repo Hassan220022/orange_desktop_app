@@ -729,7 +729,9 @@ class BdtValidationPanel(QWidget):
                 saved_state["bdt_tolerances"] = tolerance_values
                 state.save_state(saved_state)
             except Exception:
-                pass
+                import logging
+                _log = logging.getLogger(__name__)
+                _log.warning("Failed to persist BDT tolerances", exc_info=True)
             self._viewer._last_bdt_tolerances = BDTTolerances.from_dict(tolerance_values)
             self._refresh_parameter_summary()
 

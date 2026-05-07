@@ -115,7 +115,6 @@ class LoaderThread(QThread):
     def run(self):
         try:
             dfs: list[pd.DataFrame] = []
-            len(self.file_infos)
             file_paths = [info.get("path", "") for info in self.file_infos if info.get("path")]
 
             # Open a thread-local DB session for dedup checks.

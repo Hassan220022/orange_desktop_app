@@ -10,6 +10,8 @@ _log = logging.getLogger(__name__)
 
 from alarm_app.data.sync import TransientSyncError
 
+# Development-only: defaults to localhost for local testing.
+# Set ALARM_SYNC_URL env var to override for production.
 BACKEND_URL = os.environ.get("ALARM_SYNC_URL", "http://127.0.0.1:8787")
 
 

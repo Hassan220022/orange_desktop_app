@@ -30,10 +30,10 @@ build-macos-installer:
 	cd scripts && ./build_macos_installer.sh
 
 lint:
-	ruff check .
+	cd .. && python -m ruff check alarm_app/
 
 typecheck:
-	mypy --ignore-missing-imports --no-strict-optional core/ data/ db/ web/ llm_tools/
+	cd .. && python -m mypy --ignore-missing-imports alarm_app/core/ alarm_app/data/ alarm_app/db/ alarm_app/web/ alarm_app/llm_tools/
 
 test:
-	pytest tests/ -x
+	cd .. && python -m pytest alarm_app/tests/ -x

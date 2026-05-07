@@ -52,7 +52,11 @@ def main():
 
     # Find BDT files from test_pms
     test_pms_dir = data_dir / "test_pms"
-    bdt_files = list(test_pms_dir.glob("*.xlsx"))
+    if not test_pms_dir.exists():
+        print(f"Directory not found: {test_pms_dir}")
+        bdt_files = []
+    else:
+        bdt_files = sorted(test_pms_dir.glob("*.xlsx"))
 
     # Also check 2024_pm_tests
     w1_dir = data_dir / "2024_pm_tests" / "W1" / "W1_2024_BDT" / "W1_2024_BDT"

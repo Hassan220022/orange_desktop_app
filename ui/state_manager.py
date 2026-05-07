@@ -18,7 +18,7 @@ class StateManager:
 
         col_filters_json = {}
         for col, vals in viewer._col_filters.items():
-            col_filters_json[col] = sorted(vals) if vals is not None else None
+            col_filters_json[col] = sorted(vals, key=str) if vals is not None else None
 
         geo = viewer.geometry()
         file_paths = [info["path"] for info in viewer._file_infos]
@@ -57,7 +57,7 @@ class StateManager:
             "ui_zoom_pct": viewer._app_zoom_pct,
             "theme_mode": viewer._theme_mode,
             "skip_photos": viewer._skip_photos,
-            "openrouter_api_key": viewer._openrouter_api_key,
+            # API keys are never persisted in plaintext; caller handles _openrouter_api_key separately
             "chat_model": viewer._chat_panel.model() if hasattr(viewer, "_chat_panel") else "",
             "chat_state": viewer._chat_panel.chat_state() if hasattr(viewer, "_chat_panel") else {},
             "assistant_open": bool(getattr(viewer, "_assistant_open", True)),
@@ -81,7 +81,6 @@ class StateManager:
             viewer._theme_mode = s["theme_mode"]
             viewer._update_theme_button_label()
         viewer._skip_photos = bool(s.get("skip_photos", viewer._skip_photos))
-        viewer._openrouter_api_key = str(s.get("openrouter_api_key") or "")
         if hasattr(viewer, "_chat_panel"):
             viewer._chat_panel.refresh_settings()
         if "chat_model" in s and hasattr(viewer, "_chat_panel"):
@@ -173,10 +172,14 @@ class StateManager:
                 "padding:7px 16px; font-weight:700; font-size:12px; "
                 "min-width:72px; }")
 
-        # Column filters — convert lists back to sets
+        # Column filters — convert lists back to sets; JSON roundtrips int keys to str
         cf = s.get("col_filters", {})
         for col, vals in cf.items():
-            viewer._col_filters[col] = set(vals) if vals is not None else None
+            try:
+                resolved_col = int(col)
+            except (ValueError, TypeError):
+                resolved_col = col
+            viewer._col_filters[resolved_col] = set(vals) if vals is not None else None
 
         # Stash sort info for after data loads
         viewer._pending_sort_col = s.get("sort_column")

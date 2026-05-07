@@ -859,7 +859,7 @@ def _rule_6_end_voltage(bdt: BDTData, health_pct: float,
     v_min = float(tol.end_voltage_min)
     v_max = float(tol.end_voltage_max)
 
-    reported = bdt.discharge_minutes
+    reported = float(bdt.discharge_minutes or 0.0)
     in_voltage_range = v_min <= bdt.end_voltage <= v_max
     passed = reported >= completion_min or in_voltage_range
     return RuleResult(

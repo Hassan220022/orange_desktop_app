@@ -90,10 +90,10 @@ class FilterState:
             manual_days=manual_days,
             invalid_manual_days=invalid_days,
             both_pd=viewer._both_pd_active,
-            col_filters=dict(viewer._col_filters.items()),
+            col_filters={k: set(v) if v is not None else v for k, v in viewer._col_filters.items()},
             sort_by=sort_by,
             sort_desc=sort_desc,
-            site_scope_keys=viewer._uploaded_site_keys or None,
+            site_scope_keys=viewer._uploaded_site_keys if viewer._uploaded_site_keys is not None else None,
         )
 
     def to_alarm_query(self):
