@@ -19,6 +19,12 @@ __pycache__/
 *.csv
 *.xls
 *.db
+# Allow test fixtures to be tracked
+!tests/fixtures/*.xlsx
+!tests/fixtures/*.csv
+!tests/fixtures/*.xls
+!tests/fixtures/*.py
+!tests/fixtures/*.jsonl
 
 # ── Local runtime/generated app data ──────────────────────────
 bdt_storage/
