@@ -7,7 +7,6 @@ Starts the FastAPI backend in a child process and shuts it down on exit.
 
 import argparse
 import atexit
-import builtins
 import logging
 import multiprocessing
 import os
@@ -28,26 +27,6 @@ def _ensure_alarm_app_alias() -> None:
     pkg = types.ModuleType("alarm_app")
     pkg.__path__ = [str(package_root)]  # type: ignore[attr-defined]
     sys.modules["alarm_app"] = pkg
-
-    # In PyInstaller frozen bundles, modules are stored flat (without the
-    # alarm_app prefix) in a custom archive.  The filesystem-based namespace
-    # package approach fails because the archive is not on disk.  Instead,
-    # hook builtins.__import__ to transparently redirect alarm_app.<name>
-    # imports to their flat counterparts, which PyInstaller's FrozenImporter
-    # can resolve from the archive.
-    if getattr(sys, "_MEIPASS", None):
-        _original_import = builtins.__import__
-
-        def _frozen_alarm_import(name, *args, **kwargs):
-            if name.startswith("alarm_app."):
-                flat = name[len("alarm_app."):]
-                try:
-                    return _original_import(flat, *args, **kwargs)
-                except ImportError:
-                    pass
-            return _original_import(name, *args, **kwargs)
-
-        builtins.__import__ = _frozen_alarm_import
 
 
 _ensure_alarm_app_alias()

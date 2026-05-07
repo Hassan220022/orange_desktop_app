@@ -60,15 +60,19 @@ hiddenimports = [
     "llm_tools",
     "runtime",
 ]
-hiddenimports += collect_submodules("alarm_app.core")
-hiddenimports += collect_submodules("alarm_app.data")
-hiddenimports += collect_submodules("alarm_app.db.repos")
-hiddenimports += collect_submodules("alarm_app.bdt")
-hiddenimports += collect_submodules("alarm_app.ui")
-hiddenimports += collect_submodules("alarm_app.web")
-hiddenimports += collect_submodules("alarm_app.llm_tools")
-hiddenimports += collect_submodules("alarm_app.runtime")
-hiddenimports += collect_submodules("alarm_app.bdt.vendor_synthid")
+hiddenimports += collect_submodules("core")
+hiddenimports += collect_submodules("data")
+hiddenimports += collect_submodules("db")
+hiddenimports += collect_submodules("db.repos")
+hiddenimports += collect_submodules("bdt")
+hiddenimports += collect_submodules("ui")
+hiddenimports += collect_submodules("ui.panels")
+hiddenimports += collect_submodules("web")
+hiddenimports += collect_submodules("web.routers")
+hiddenimports += collect_submodules("llm_tools")
+hiddenimports += collect_submodules("runtime")
+hiddenimports += collect_submodules("bdt.vendor_synthid")
+
 
 
 a = Analysis(
@@ -79,7 +83,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=["scripts/pyi_rth_alarm_app.py"],
     excludes=[],
     noarchive=False,
 )
