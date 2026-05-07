@@ -28,26 +28,35 @@ def _ensure_alarm_app_alias() -> None:
     pkg.__path__ = [str(package_root)]  # type: ignore[attr-defined]
     sys.modules["alarm_app"] = pkg
 
-    # In PyInstaller frozen bundles, flat modules need to be aliased under
-    # the alarm_app namespace so that `from alarm_app.core.classify import ...`
-    # resolves correctly.  Without this, PyInstaller's custom import system
-    # cannot resolve the fake namespace package to the collected flat modules.
+    # In PyInstaller frozen bundles, flat modules are stored without the
+    # alarm_app prefix.  Register a meta-path finder that redirects
+    # `alarm_app.<flat>` imports to the corresponding flat module.
     if getattr(sys, "_MEIPASS", None):
-        for name, mod in list(sys.modules.items()):
-            # Skip private, already-namespaced, nested, and stdlib modules
-            if (
-                name.startswith("_")
-                or "." in name
-                or "alarm_app" in name
-                or name in sys.builtin_module_names
-                or name == "__main__"
-            ):
-                continue
-            alias = f"alarm_app.{name}"
-            try:
-                sys.modules[alias] = mod
-            except Exception:
-                pass
+        import importlib.abc
+        import importlib.machinery
+
+        class _AlarmNamespaceFinder(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path, target=None):
+                if not fullname.startswith("alarm_app."):
+                    return None
+                flat_name = fullname[len("alarm_app."):]
+                # Check if flat module is already loaded
+                if flat_name in sys.modules:
+                    mod = sys.modules[flat_name]
+                    sys.modules.setdefault(fullname, mod)
+                    return mod.__spec__
+                # Try to find via regular import machinery
+                try:
+                    spec = importlib.machinery.PathFinder.find_spec(
+                        flat_name, sys.path
+                    )
+                    if spec is not None:
+                        return spec
+                except Exception:
+                    pass
+                return None
+
+        sys.meta_path.insert(0, _AlarmNamespaceFinder())
 
 
 _ensure_alarm_app_alias()
