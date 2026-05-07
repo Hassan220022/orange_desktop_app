@@ -19,43 +19,43 @@ def _register_alarm_app_namespace():
     pkg.__path__ = []
     sys.modules["alarm_app"] = pkg
 
-    # PyInstaller exposes its Table of Contents via the pyimod02_importers
-    # module which records all frozen module names.  This is the canonical
-    # source of truth for what was collected into the bundle.
+    # PyInstaller's FrozenImporter.toc maps every collected module name
+    # (including submodules like core.classify) to archive locations.
+    # Walk it and alias each one under alarm_app.xxx so that
+    # ``from alarm_app.core.classify import X`` resolves correctly.
     try:
         import pyimod02_importers
-        toc = getattr(pyimod02_importers, "FrozenImporter", None)
-        if toc is not None:
-            toc = getattr(toc, "toc", None) or getattr(toc, "_toc", None)
+        importer = getattr(pyimod02_importers, "FrozenImporter", None)
+        toc = getattr(importer, "toc", None) if importer is not None else None
     except ImportError:
         toc = None
 
     if toc is not None and isinstance(toc, dict):
-        # toc maps module names to archive positions — alias them all
-        names = list(toc.keys())
+        module_names = list(toc.keys())
     else:
         # Fallback: eagerly import a known set of top-level modules
-        names = [
+        module_names = [
             "logging_config", "versioning", "constants", "styles",
             "core", "data", "db", "bdt", "ui", "web", "llm_tools",
             "runtime",
         ]
 
-    for mod_name in names:
-        # Only alias top-level entries; dotted submodules are handled
-        # by Python's regular import mechanism via the aliased parents.
-        if "." in mod_name:
-            continue
+    for mod_name in module_names:
         try:
             __import__(mod_name)
         except ImportError:
+            pass
+
+    # Alias every loaded module under alarm_app, including submodules.
+    # e.g. core.classify → alarm_app.core.classify
+    for name in sorted(sys.modules.keys()):
+        if name.startswith(("_", "alarm_app")):
             continue
-        mod = sys.modules.get(mod_name)
-        if mod is None:
+        if name in sys.builtin_module_names:
             continue
-        alias = f"alarm_app.{mod_name}"
+        alias = f"alarm_app.{name}"
         if alias not in sys.modules:
-            sys.modules[alias] = mod
+            sys.modules[alias] = sys.modules[name]
 
 
 _register_alarm_app_namespace()
