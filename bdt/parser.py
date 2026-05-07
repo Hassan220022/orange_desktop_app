@@ -476,7 +476,7 @@ def _detect_layout_family(cell_fn, max_row: int, max_col: int, sheet_name: str |
 
     # Summary/aggregate exclusion check (FR-001)
     normalized_sheets = [str(s).strip().lower() for s in all_sheet_names]
-    _BDT_SHEET_VARIANTS = frozenset({"bdt", "rec", "rectifier", "discharge", "battery test"})
+    _BDT_SHEET_VARIANTS = frozenset({"bdt", "rectifier", "discharge", "battery test"})
     has_bdt_sheet = any(any(variant in s.lower() for variant in _BDT_SHEET_VARIANTS) for s in all_sheet_names)
     has_summary = any("summary" in s for s in normalized_sheets)
 
@@ -554,7 +554,7 @@ def _resolve_bdt_sheet_name(sheet_names: list[str],
     # Summary/aggregate exclusion check (FR-001)
     # If only Summary sheet exists (or Summary + Config/Power Alarm without BDT), exclude early
     normalized_sheets = [str(s).strip().lower() for s in sheet_names]
-    _BDT_SHEET_VARIANTS = frozenset({"bdt", "rec", "rectifier", "discharge", "battery test"})
+    _BDT_SHEET_VARIANTS = frozenset({"bdt", "rectifier", "discharge", "battery test"})
     has_bdt_sheet = any(any(variant in s.lower() for variant in _BDT_SHEET_VARIANTS) for s in sheet_names)
     has_summary = any("summary" in s for s in normalized_sheets)
 
