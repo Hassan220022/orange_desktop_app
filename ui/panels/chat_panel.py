@@ -9,7 +9,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from PyQt5.QtCore import QDate, QEvent, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import QDate, QEvent, QSize, QSizeF, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices, QPainter, QPixmap, QTextDocument
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -1932,7 +1932,7 @@ class ChatPanel(QWidget):
         margins = self.input.contentsMargins()
         doc_margin = doc.documentMargin() * 2
         frame_width = self.input.frameWidth() * 2
-        doc.setPageSize(self.input.viewport().size())
+        doc.setPageSize(QSizeF(self.input.viewport().size()))
         height = doc.size().height()
         target = max(40, min(int(height + margins.top() + margins.bottom() + doc_margin + frame_width + 4), 160))
         if abs(self.input.height() - target) > 4:
