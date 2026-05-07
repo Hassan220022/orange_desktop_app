@@ -2,7 +2,10 @@
 Constants — schema maps, display columns, app metadata.
 """
 
-from alarm_app.versioning import get_app_version
+try:
+    from alarm_app.versioning import get_app_version
+except ImportError:
+    from versioning import get_app_version  # type: ignore[no-redef]  # PyInstaller flat bundle
 
 APP_NAME    = "Alarm Viewer"
 APP_VERSION = get_app_version()
