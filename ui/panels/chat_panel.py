@@ -365,7 +365,7 @@ def _make_assistant_button(text: str, *, minimum_width: int = 0) -> QPushButton:
     button.setObjectName("assistant_chip")
     button.setCursor(Qt.PointingHandCursor)
     button.setMinimumHeight(max(32, button.fontMetrics().height() + 14))
-    button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
     if minimum_width:
         button.setMinimumWidth(minimum_width)
     return button
@@ -624,6 +624,7 @@ class ChatPanel(QWidget):
         self.edit_model = QComboBox()
         self.edit_model.setObjectName("chat_model")
         self.edit_model.setMinimumWidth(0)
+        self.edit_model.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self.edit_model.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._populate_model_options(list(FALLBACK_FREE_MODELS))
         self.edit_model.currentIndexChanged.connect(self._sync_model)
@@ -1294,7 +1295,7 @@ class ChatPanel(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
 
         # Primary action: Copy (always shown)
-        btn_copy = _make_assistant_button("Copy")
+        btn_copy = _make_assistant_button("Copy", minimum_width=52)
         btn_copy.clicked.connect(lambda _checked=False, payload=result: self._copy_text(_json_output_text(payload)))
         row.addWidget(btn_copy)
 
@@ -1944,7 +1945,7 @@ class ChatPanel(QWidget):
         bubble.setObjectName(bubble_name)
         bubble.setMaximumWidth(self._message_bubble_width(self.width(), role_key))
         bubble.setSizePolicy(
-            QSizePolicy.Maximum if role_key == "you" else QSizePolicy.Expanding,
+            QSizePolicy.Preferred,
             QSizePolicy.Preferred,
         )
         bubble_layout = QVBoxLayout(bubble)
@@ -1966,8 +1967,8 @@ class ChatPanel(QWidget):
         self._append_blocks(bubble_layout, normalized)
 
         footer = QHBoxLayout()
-        footer.setContentsMargins(0, 2, 0, 0)
-        footer.setSpacing(0)
+        footer.setContentsMargins(0, 4, 0, 0)
+        footer.setSpacing(4)
         footer.addStretch(1)
         footer.addWidget(self._message_actions_widget(role, normalized))
         bubble_layout.addLayout(footer)
@@ -1988,7 +1989,7 @@ class ChatPanel(QWidget):
         row = FlowLayout(frame, hspacing=4, vspacing=4)
         row.setContentsMargins(0, 0, 0, 0)
 
-        btn_copy = _make_assistant_button("Copy")
+        btn_copy = _make_assistant_button("Copy", minimum_width=52)
         btn_copy.clicked.connect(lambda _checked=False, t=text: self._copy_text(t))
         row.addWidget(btn_copy)
 
