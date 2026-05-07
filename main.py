@@ -32,25 +32,18 @@ def _ensure_alarm_app_alias() -> None:
 _ensure_alarm_app_alias()
 
 try:
-    from .constants import APP_NAME, APP_VERSION
-    from .logging_config import setup_logging
-    from .runtime.bootstrap import bootstrap_local_runtime
-    from .runtime.env import load_local_env
-    from .ui.viewer import AlarmViewer
+    from alarm_app.constants import APP_NAME, APP_VERSION
+    from alarm_app.logging_config import setup_logging
+    from alarm_app.runtime.bootstrap import bootstrap_local_runtime
+    from alarm_app.runtime.env import load_local_env
+    from alarm_app.ui.viewer import AlarmViewer
 except ImportError:
-    try:
-        from alarm_app.constants import APP_NAME, APP_VERSION
-        from alarm_app.logging_config import setup_logging
-        from alarm_app.runtime.bootstrap import bootstrap_local_runtime
-        from alarm_app.runtime.env import load_local_env
-        from alarm_app.ui.viewer import AlarmViewer
-    except ImportError:
-        # PyInstaller flat-bundle: package root is on sys.path directly
-        from constants import APP_NAME, APP_VERSION  # type: ignore[no-redef]
-        from logging_config import setup_logging  # type: ignore[no-redef]
-        from runtime.bootstrap import bootstrap_local_runtime  # type: ignore[no-redef]
-        from runtime.env import load_local_env  # type: ignore[no-redef]
-        from ui.viewer import AlarmViewer  # type: ignore[no-redef]
+    # PyInstaller flat-bundle: package root is on sys.path directly
+    from constants import APP_NAME, APP_VERSION  # type: ignore[no-redef]
+    from logging_config import setup_logging  # type: ignore[no-redef]
+    from runtime.bootstrap import bootstrap_local_runtime  # type: ignore[no-redef]
+    from runtime.env import load_local_env  # type: ignore[no-redef]
+    from ui.viewer import AlarmViewer  # type: ignore[no-redef]
 
 _log = logging.getLogger(__name__)
 

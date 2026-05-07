@@ -411,8 +411,11 @@ class RobustSynthIDExtractor:
                 norm_freq_y = int(round(freq[0] * base_scale / scale))
                 norm_freq_x = int(round(freq[1] * base_scale / scale))
 
-                # Use tolerance-based binning (frequencies within ±2 are considered the same)
-                bin_freq = (norm_freq_y // 2 * 2, norm_freq_x // 2 * 2)
+                # Symmetric rounding: use round() instead of floor division
+                # to ensure positive and negative frequencies map consistently
+                bin_freq_y = round(norm_freq_y / 2) * 2
+                bin_freq_x = round(norm_freq_x / 2) * 2
+                bin_freq = (bin_freq_y, bin_freq_x)
 
                 all_carriers[bin_freq]['votes'] += 1
                 all_carriers[bin_freq]['total_score'] += info['score']
@@ -426,7 +429,9 @@ class RobustSynthIDExtractor:
             if info['votes'] >= 2 or (info['votes'] >= 1 and info['total_score'] > 100):
                 # Average the info from all scales
                 avg_coherence = np.mean([i.get('coherence', 0) for i in info['infos']])
-                avg_phase = np.mean([i.get('phase', 0) for i in info['infos']])
+                # Circular mean over phase values (angles wrap around ±π)
+                phases = np.array([i.get('phase', 0.0) for i in info['infos']])
+                avg_phase = float(np.angle(np.mean(np.exp(1j * phases))))
                 avg_magnitude = np.mean([i.get('magnitude', 0) for i in info['infos']])
 
                 carrier = {

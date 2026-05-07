@@ -8,7 +8,10 @@ Tests verify:
 - Function calls match actual repo function signatures
 """
 
+import ast
 import inspect
+
+import pytest
 
 from alarm_app.bdt.history import persist_photo_jobs, save_validation_batch
 
@@ -19,7 +22,10 @@ class TestSaveValidationBatchIsolation:
     def test_savepoint_per_item_in_code(self):
         """Verify savepoint-per-item isolation is implemented in code."""
         import alarm_app.bdt.history as history_module
-        source = inspect.getsource(history_module.save_validation_batch)
+        try:
+            source = inspect.getsource(history_module.save_validation_batch)
+        except OSError:
+            pytest.skip("Source not available (bytecode-only install)")
 
         # Verify begin_nested is used for savepoint isolation
         assert "begin_nested" in source, "save_validation_batch should use begin_nested for savepoint isolation"
@@ -42,7 +48,10 @@ class TestSaveValidationBatchIsolation:
     def test_no_autocommit_parameter_in_calls(self):
         """Verify autocommit is only used on save_validation_run, not save_bdt_test."""
         import alarm_app.bdt.history as history_module
-        source = inspect.getsource(history_module.save_validation_batch)
+        try:
+            source = inspect.getsource(history_module.save_validation_batch)
+        except OSError:
+            pytest.skip("Source not available (bytecode-only install)")
 
         # save_bdt_test signature does not accept autocommit.
         assert "_save_bdt_test(session, bdt_dict" in source, \
@@ -57,10 +66,14 @@ class TestSaveValidationBatchIsolation:
     def test_bdt_data_converted_to_dict(self):
         """Verify bdt_data is converted to bdt_dict before calling save_bdt_test."""
         import alarm_app.bdt.history as history_module
-        source = inspect.getsource(history_module.save_validation_batch)
+        try:
+            source = inspect.getsource(history_module.save_validation_batch)
+        except OSError:
+            pytest.skip("Source not available (bytecode-only install)")
 
-        # Verify _build_bdt_dict is called to convert BDTData to dict
-        assert "_build_bdt_dict" in source, "BDTData should be converted to dict using _build_bdt_dict"
+        tree = ast.parse(source)
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "_build_bdt_dict"]
+        assert len(calls) > 0, "_build_bdt_dict() call not found in save_validation_batch"
 
 
 class TestPersistPhotoJobsIsolation:
@@ -69,7 +82,10 @@ class TestPersistPhotoJobsIsolation:
     def test_savepoint_per_job_in_code(self):
         """Verify savepoint-per-job isolation is implemented in code."""
         import alarm_app.bdt.history as history_module
-        source = inspect.getsource(history_module.persist_photo_jobs)
+        try:
+            source = inspect.getsource(history_module.persist_photo_jobs)
+        except OSError:
+            pytest.skip("Source not available (bytecode-only install)")
 
         # Verify begin_nested is used for savepoint isolation
         assert "begin_nested" in source, "persist_photo_jobs should use begin_nested for savepoint isolation"
@@ -89,7 +105,10 @@ class TestOutboxEmissionTiming:
     def test_outbox_after_run_payloads(self):
         """Verify outbox emission happens only after run_payloads are returned."""
         import alarm_app.bdt.history as history_module
-        source = inspect.getsource(history_module.save_validation_batch)
+        try:
+            source = inspect.getsource(history_module.save_validation_batch)
+        except OSError:
+            pytest.skip("Source not available (bytecode-only install)")
 
         # Verify photo_jobs are only queued after pm_run is successfully persisted
         assert "if pm_run is not None:" in source, "photo_jobs should only be queued after pm_run success"

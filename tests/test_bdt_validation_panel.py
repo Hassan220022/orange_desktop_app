@@ -313,3 +313,43 @@ def test_column_filter_popup_style_switches_for_light_mode():
 
     assert "#eff1f5" in style
     assert "#4c4f69" in style
+
+
+def test_show_rules_reference_dialog_passes_all_rules(monkeypatch):
+    from alarm_app.bdt.rule_docs import iter_rule_docs
+
+    calls = {}
+    panel = SimpleNamespace(
+        spn_health=SimpleNamespace(value=lambda: 85),
+    )
+
+    class _Dialog:
+        def __init__(self, *, tolerances, health_pct, parent=None):
+            calls["tolerances"] = tolerances
+            calls["health_pct"] = health_pct
+            calls["parent"] = parent
+
+        def exec_(self):
+            return 0
+
+    monkeypatch.setattr(
+        "alarm_app.ui.panels.bdt_validation_panel.BdtRulesReferenceDialog",
+        _Dialog,
+    )
+    monkeypatch.setattr(
+        "alarm_app.ui.panels.bdt_validation_panel.state.load_state",
+        lambda: {},
+    )
+
+    BdtValidationPanel._show_rules_reference_dialog(panel)
+
+    assert calls["health_pct"] == 85
+    assert calls["parent"] is panel
+    assert calls["tolerances"] is not None
+
+    docs = list(iter_rule_docs())
+    assert len(docs) == 12
+    keys = [k for k, _title, _html in docs]
+    assert "R1" in keys
+    assert "R11" in keys
+    assert "settings" in keys
