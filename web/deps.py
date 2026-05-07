@@ -2,8 +2,9 @@
 
 from collections.abc import Generator
 
-from alarm_app.db.engine import create_engine, get_session_factory, init_db
 from sqlalchemy.orm import Session
+
+from alarm_app.db.engine import create_engine, get_session_factory, init_db
 
 _engine = None
 _SessionFactory = None

@@ -15,6 +15,7 @@ from alarm_app.data.sync import TransientSyncError
 BACKEND_URL = os.environ.get("ALARM_SYNC_URL", "http://127.0.0.1:8787")
 
 from urllib.parse import urlparse
+
 _parsed = urlparse(BACKEND_URL)
 if _parsed.scheme == "http" and _parsed.hostname not in ("127.0.0.1", "localhost", "::1"):
     _log.warning("BACKEND_URL uses http to non-local host %s — payloads may be exposed", _parsed.hostname)
