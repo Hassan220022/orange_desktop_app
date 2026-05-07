@@ -7,6 +7,7 @@ exclude = ["bdt/vendor_synthid/**"]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
 ignore = [
     "B008",   # FastAPI Depends() in argument defaults is idiomatic
+    "E501",   # line-too-long: pre-existing across codebase, fix incrementally
     "E402",   # logger between import blocks is intentional for module-level _log
     "E702",   # multiple statements on one line (semicolons) used intentionally for compact widget creation
     "E741",   # ambiguous variable names like 'l' for layout objects
