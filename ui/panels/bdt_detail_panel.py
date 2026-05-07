@@ -18,31 +18,13 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, QUrl
 from PyQt5.QtGui import QColor, QPixmap, QDesktopServices
 
-try:
-    from ..flow_layout import FlowLayout
-    from ...bdt.parser import BDTData, load_bdt_photos
-    from ...bdt.photo_auth import verify_photo_slots
-    from ...bdt.validator import ValidationResult
-    from ...data.alarm_store import load_alarm_slice_for_bdt
-    from ...data import state
-    from ...constants import format_bdt_rule_label
-except ImportError:
-    try:
-        from alarm_app.ui.flow_layout import FlowLayout
-        from alarm_app.bdt.parser import BDTData, load_bdt_photos
-        from alarm_app.bdt.photo_auth import verify_photo_slots
-        from alarm_app.bdt.validator import ValidationResult
-        from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
-        from alarm_app.data import state
-        from alarm_app.constants import format_bdt_rule_label
-    except ImportError:
-        from ui.flow_layout import FlowLayout
-        from bdt.parser import BDTData, load_bdt_photos
-        from bdt.photo_auth import verify_photo_slots
-        from bdt.validator import ValidationResult
-        from data.alarm_store import load_alarm_slice_for_bdt
-        from data import state
-        from constants import format_bdt_rule_label
+from alarm_app.ui.flow_layout import FlowLayout
+from alarm_app.bdt.parser import BDTData, load_bdt_photos
+from alarm_app.bdt.photo_auth import verify_photo_slots
+from alarm_app.bdt.validator import ValidationResult
+from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
+from alarm_app.data import state
+from alarm_app.constants import format_bdt_rule_label
 
 
 class _VerticalExpandButton(QPushButton):
@@ -707,13 +689,7 @@ class BdtDetailPanel(QWidget):
         self._bdt_door_table.setRowCount(0)
         if bdt and bdt.test_date:
             try:
-                try:
-                    from ...bdt.validator import _find_door_alarms
-                except ImportError:
-                    try:
-                        from alarm_app.bdt.validator import _find_door_alarms
-                    except ImportError:
-                        from bdt.validator import _find_door_alarms
+                from alarm_app.bdt.validator import _find_door_alarms
                 test_date_ts = pd.Timestamp(bdt.test_date).normalize()
                 alarm_df = self._load_door_alarm_subset(bdt.site_code, test_date_ts)
                 doors = _find_door_alarms(alarm_df, bdt.site_code, test_date_ts)
@@ -739,22 +715,10 @@ class BdtDetailPanel(QWidget):
         self._bdt_history_label.setText("—  no previous test history found")
         if bdt and bdt.site_code:
             try:
-                try:
-                    from ...bdt.history import (
-                        load_previous_test, compare_tests,
-                        load_second_most_recent_test,
-                    )
-                except ImportError:
-                    try:
-                        from alarm_app.bdt.history import (
-                            load_previous_test, compare_tests,
-                            load_second_most_recent_test,
-                        )
-                    except ImportError:
-                        from bdt.history import (
-                            load_previous_test, compare_tests,
-                            load_second_most_recent_test,
-                        )
+                from alarm_app.bdt.history import (
+                    load_previous_test, compare_tests,
+                    load_second_most_recent_test,
+                )
                 from datetime import date as date_type, datetime as datetime_type
                 test_date = None
                 if bdt.test_date:

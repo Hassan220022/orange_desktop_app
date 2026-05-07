@@ -2,13 +2,7 @@
 
 import pandas as pd
 
-try:
-    from ..data.alarm_store import AlarmQuery, query_alarms
-except ImportError:
-    try:
-        from alarm_app.data.alarm_store import AlarmQuery, query_alarms
-    except ImportError:
-        from data.alarm_store import AlarmQuery, query_alarms
+from alarm_app.data.alarm_store import AlarmQuery, query_alarms
 
 
 def compute_backup_times(df: pd.DataFrame):

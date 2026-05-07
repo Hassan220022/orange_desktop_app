@@ -13,12 +13,8 @@ from __future__ import annotations
 
 from typing import Iterator
 
-try:
-    from .validator import BDTTolerances
-    from ..constants import BDT_DEFAULT_HEALTH_PCT
-except ImportError:
-    from alarm_app.bdt.validator import BDTTolerances
-    from alarm_app.constants import BDT_DEFAULT_HEALTH_PCT
+from alarm_app.bdt.validator import BDTTolerances
+from alarm_app.constants import BDT_DEFAULT_HEALTH_PCT
 
 
 def _fmt(value, decimals: int = 2) -> str:

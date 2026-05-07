@@ -4,11 +4,12 @@ All UI construction and slot logic lives here.
 """
 
 import getpass
+import logging
 import os
 import re
 import subprocess
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -26,100 +27,41 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QDate, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QKeySequence, QTextCharFormat
 
-try:
-    from ..constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
-                             COL_WIDTHS, DISPLAY_COLUMNS,
-                             BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
-    from ..styles import STYLE, STYLE_DARK, STYLE_LIGHT
-    from .model import AlarmTableModel
-    from .threads import (LoaderThread, ExportThread,
-                          BDTValidationThread, BackupTimeThread)
-    from .dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
-                          AlarmIdConfigDialog, BackupTimeDialog,
-                          FeatureFlagDialog, AppSettingsDialog)
-    from .panels.search_panel import SearchPanel
-    from .panels.left_panel import LeftPanel
-    from .panels.bdt_workspace_panel import BdtWorkspacePanel
-    from .panels.bdt_validation_panel import BdtValidationPanel
-    from .panels.bdt_detail_panel import BdtDetailPanel
-    from .panels.chat_panel import ChatPanel
-    from ..core.filters import compute_date_mask, parse_manual_days
-    from ..core.classify import classify_by_alarm_id, compute_site_down_flag
-    from ..data.loaders import discover_alarm_files
-    from ..data import alarm_store
-    from ..data import state
-    from ..data.sync import LocalSyncWorker
-    from ..data.site_report import (
-        read_site_sheet,
-        build_site_alarm_report,
-        collect_site_sheet_keys,
-    )
-    from ..bdt.parser import parse_bdt_file, BDTData, load_bdt_photos
-    from ..bdt.validator import validate_bdt, ValidationResult
-    from ..bdt.export import build_bdt_export_sheets
-except ImportError:
-    try:
-        from alarm_app.constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
-                                         COL_WIDTHS, DISPLAY_COLUMNS,
-                                         BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
-        from alarm_app.styles import STYLE, STYLE_DARK, STYLE_LIGHT
-        from alarm_app.ui.model import AlarmTableModel
-        from alarm_app.ui.threads import (LoaderThread, ExportThread,
-                                          BDTValidationThread, BackupTimeThread)
-        from alarm_app.ui.dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
-                                          AlarmIdConfigDialog, BackupTimeDialog,
-                                          FeatureFlagDialog, AppSettingsDialog)
-        from alarm_app.ui.panels.search_panel import SearchPanel
-        from alarm_app.ui.panels.left_panel import LeftPanel
-        from alarm_app.ui.panels.bdt_workspace_panel import BdtWorkspacePanel
-        from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
-        from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
-        from alarm_app.ui.panels.chat_panel import ChatPanel
-        from alarm_app.core.filters import compute_date_mask, parse_manual_days
-        from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
-        from alarm_app.data.loaders import discover_alarm_files
-        from alarm_app.data import alarm_store
-        from alarm_app.data import state
-        from alarm_app.data.sync import LocalSyncWorker
-        from alarm_app.data.site_report import (
-            read_site_sheet,
-            build_site_alarm_report,
-            collect_site_sheet_keys,
-        )
-        from alarm_app.bdt.parser import parse_bdt_file, BDTData, load_bdt_photos
-        from alarm_app.bdt.validator import validate_bdt, ValidationResult
-        from alarm_app.bdt.export import build_bdt_export_sheets
-    except ImportError:
-        from constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
-                               COL_WIDTHS, DISPLAY_COLUMNS,
-                               BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
-        from styles import STYLE, STYLE_DARK, STYLE_LIGHT
-        from ui.model import AlarmTableModel
-        from ui.threads import (LoaderThread, ExportThread,
-                                BDTValidationThread, BackupTimeThread)
-        from ui.dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
-                                AlarmIdConfigDialog, BackupTimeDialog,
-                                FeatureFlagDialog, AppSettingsDialog)
-        from ui.panels.search_panel import SearchPanel
-        from ui.panels.left_panel import LeftPanel
-        from ui.panels.bdt_workspace_panel import BdtWorkspacePanel
-        from ui.panels.bdt_validation_panel import BdtValidationPanel
-        from ui.panels.bdt_detail_panel import BdtDetailPanel
-        from ui.panels.chat_panel import ChatPanel
-        from core.filters import compute_date_mask, parse_manual_days
-        from core.classify import classify_by_alarm_id, compute_site_down_flag
-        from data.loaders import discover_alarm_files
-        from data import alarm_store
-        from data import state
-        from data.sync import LocalSyncWorker
-        from data.site_report import (
-            read_site_sheet,
-            build_site_alarm_report,
-            collect_site_sheet_keys,
-        )
-        from bdt.parser import parse_bdt_file, BDTData, load_bdt_photos
-        from bdt.validator import validate_bdt, ValidationResult
-        from bdt.export import build_bdt_export_sheets
+from alarm_app.constants import (APP_NAME, APP_VERSION, ALL_INTERNAL_COLS,
+                                 COL_WIDTHS, DISPLAY_COLUMNS,
+                                 BDT_RESULT_HEADERS, BDT_RESULT_WIDTHS)
+from alarm_app.styles import STYLE, STYLE_DARK, STYLE_LIGHT
+from alarm_app.ui.model import AlarmTableModel
+from alarm_app.ui.filter_state import FilterState
+from alarm_app.ui.state_manager import StateManager
+from alarm_app.ui.threads import (LoaderThread, ExportThread,
+                                  BDTValidationThread, BackupTimeThread)
+from alarm_app.ui.dialogs import (ColumnFilterPopup, DailyReviewReportDialog,
+                                  AlarmIdConfigDialog, BackupTimeDialog,
+                                  FeatureFlagDialog, AppSettingsDialog)
+from alarm_app.ui.bridge import UIBridge
+from alarm_app.ui.panels.search_panel import SearchPanel
+from alarm_app.ui.panels.left_panel import LeftPanel
+from alarm_app.ui.panels.bdt_workspace_panel import BdtWorkspacePanel
+from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
+from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
+from alarm_app.ui.panels.chat_panel import ChatPanel
+from alarm_app.core.filters import compute_date_mask, parse_manual_days
+from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
+from alarm_app.data.loaders import discover_alarm_files
+from alarm_app.data import alarm_store
+from alarm_app.data import state
+from alarm_app.data.sync import LocalSyncWorker
+from alarm_app.data.site_report import (
+    read_site_sheet,
+    build_site_alarm_report,
+    collect_site_sheet_keys,
+)
+from alarm_app.bdt.parser import parse_bdt_file, BDTData, load_bdt_photos
+from alarm_app.bdt.validator import validate_bdt, ValidationResult
+from alarm_app.bdt.export import build_bdt_export_sheets
+
+_log = logging.getLogger(__name__)
 
 
 def _format_count_label(start: int, end: int, total: int) -> str:
@@ -215,13 +157,6 @@ class AlarmViewer(QMainWindow):
 
         # Left sidebar
         self._left_panel = LeftPanel(self)
-        # Bridge: existing code references self._xxx etc.
-        self._edit_dir = self._left_panel.edit_dir
-        self._lbl_file_count = self._left_panel.lbl_file_count
-        self._file_list = self._left_panel.file_list
-        self._btn_load = self._left_panel.btn_load
-        self._cmb_alarm_source = self._left_panel.cmb_alarm_source
-        self._lbl_loaded = self._left_panel.lbl_loaded
         self._sidebar_stack = QStackedWidget()
         self._sidebar_stack.addWidget(self._left_panel)
         self._sidebar = self._sidebar_stack
@@ -261,34 +196,7 @@ class AlarmViewer(QMainWindow):
         splitter = QSplitter(Qt.Vertical)
         splitter.setHandleWidth(1)
         self._search_panel = SearchPanel(self)
-        # Bridge: existing code references self._xxx etc.
-        self._edit_site = self._search_panel.edit_site
-        self._cb_cat = self._search_panel.cb_cat
-        self._cb_net = self._search_panel.cb_net
-        self._cb_vnd = self._search_panel.cb_vnd
-        self._chk_mindur = self._search_panel.chk_mindur
-        self._spn_mindur = self._search_panel.spn_mindur
-        self._chk_date = self._search_panel.chk_date
-        self._chk_date_range = self._search_panel.chk_date_range
-        self._d_from = self._search_panel.d_from
-        self._d_to = self._search_panel.d_to
-        self._lbl_from = self._search_panel.lbl_from
-        self._lbl_to = self._search_panel.lbl_to
-        self._date_quick_widgets = self._search_panel.date_quick_widgets
-        self._chk_date_days = self._search_panel.chk_date_days
-        self._lbl_day = self._search_panel.lbl_day
-        self._d_day = self._search_panel.d_day
-        self._btn_add_day = self._search_panel.btn_add_day
-        self._edit_days = self._search_panel.edit_days
-        self._btn_clear_days = self._search_panel.btn_clear_days
-        self._btn_export = self._search_panel.btn_export
-        self._btn_backup = self._search_panel.btn_backup
-        self._btn_site_sheet = self._search_panel.btn_site_sheet
-        self._btn_site_report = self._search_panel.btn_site_report
-        self._btn_both = self._search_panel.btn_both
         self._stats = self._left_panel.stats
-        # Deferred: trigger date filter state now that bridge refs are assigned
-        self._toggle_date_filter(self._chk_date.isChecked())
         splitter.addWidget(self._search_panel)
         splitter.addWidget(self._make_table())
         splitter.setSizes([130, 800])
@@ -297,14 +205,6 @@ class AlarmViewer(QMainWindow):
 
         # Tab 2: Test Validation
         self._bdt_validation_panel = BdtValidationPanel(self)
-        # Bridge: existing code references self._xxx etc.
-        self._spn_health = self._bdt_validation_panel.spn_health
-        self._bdt_search = self._bdt_validation_panel.bdt_search
-        self._bdt_table = self._bdt_validation_panel.bdt_table
-        self._bdt_splitter = self._bdt_validation_panel.bdt_splitter
-        self._bdt_summary = self._bdt_validation_panel.bdt_summary
-        self._btn_bdt_export = self._bdt_validation_panel.btn_bdt_export
-        self._btn_bdt_report = self._bdt_validation_panel.btn_bdt_report
         # Wire the detail panel into the validation tab splitter
         self._bdt_detail_panel_obj = BdtDetailPanel(self)
         self._bdt_detail_panel = self._bdt_detail_panel_obj
@@ -313,9 +213,8 @@ class AlarmViewer(QMainWindow):
         self._tabs.addTab(self._bdt_validation_panel, "Test Validation")
         self._bdt_sidebar = BdtWorkspacePanel(self)
         self._sidebar_stack.addWidget(self._bdt_sidebar)
-        self._edit_bdt_dir = self._bdt_sidebar.edit_dir
-        self._lbl_bdt_file_count = self._bdt_sidebar.lbl_file_count
-        self._bdt_file_list = self._bdt_sidebar.file_list
+        self._ui = UIBridge.from_panels(self._left_panel, self._search_panel, self._bdt_sidebar)
+        self._toggle_date_filter(self._search_panel.chk_date.isChecked())
 
         # Embedded assistant panel (Copilot-like, not a separate workspace tab)
         self._chat_panel = ChatPanel(self)
@@ -599,58 +498,7 @@ class AlarmViewer(QMainWindow):
     # ── State persistence ────────────────────────────────────────
     def _save_ui_state(self):
         """Collect all widget values and save to state.json."""
-        hdr = self._table.horizontalHeader()
-        sort_section = hdr.sortIndicatorSection()
-        sort_order = int(hdr.sortIndicatorOrder())
-
-        # Serialise col_filters: convert sets to lists for JSON
-        col_filters_json = {}
-        for col, vals in self._col_filters.items():
-            col_filters_json[col] = sorted(vals) if vals is not None else None
-
-        geo = self.geometry()
-        file_paths = [info["path"] for info in self._file_infos]
-        d = {
-            "directory": self._edit_dir.text(),
-            "uploaded_folder_path": self._uploaded_folder_path or self._edit_dir.text(),
-            "bdt_directory": self._edit_bdt_dir.text(),
-            "alarm_load_source": self._get_alarm_load_mode(),
-            "bdt_load_source": self._bdt_validation_panel.cmb_bdt_source.currentData(),
-            "workspace_view": self._tabs.currentIndex(),
-            "file_paths": file_paths,
-            "file_hashes": state.compute_file_hashes(file_paths),
-            "sync_on": self._sync_flags.get("sync_on", False),
-            "cloud_read_on": self._sync_flags.get("cloud_read_on", False),
-            "bootstrap_on": self._sync_flags.get("bootstrap_on", False),
-            "site_filter": self._edit_site.text(),
-            "date_enabled": self._chk_date.isChecked(),
-            "date_use_range": self._chk_date_range.isChecked(),
-            "date_use_days": self._chk_date_days.isChecked(),
-            "date_from": self._d_from.date().toString("yyyy-MM-dd"),
-            "date_to": self._d_to.date().toString("yyyy-MM-dd"),
-            "date_day": self._d_day.date().toString("yyyy-MM-dd"),
-            "date_days": self._edit_days.text().strip(),
-            "category": self._cb_cat.currentIndex(),
-            "network": self._cb_net.currentIndex(),
-            "vendor": self._cb_vnd.currentIndex(),
-            "dur_enabled": self._chk_mindur.isChecked(),
-            "dur_minutes": self._spn_mindur.value(),
-            "both_pd": self._both_pd_active,
-            "col_filters": col_filters_json,
-            "sort_column": sort_section if sort_section >= 0 else None,
-            "sort_order": sort_order,
-            "alarm_page_offset": self._page_offset,
-            "alarm_page_size": self._page_size,
-            "window_geometry": [geo.x(), geo.y(), geo.width(), geo.height()],
-            "ui_zoom_pct": self._app_zoom_pct,
-            "theme_mode": self._theme_mode,
-            "skip_photos": self._skip_photos,
-            "openrouter_api_key": self._openrouter_api_key,
-            "chat_model": self._chat_panel.model() if hasattr(self, "_chat_panel") else "",
-            "chat_state": self._chat_panel.chat_state() if hasattr(self, "_chat_panel") else {},
-            "assistant_open": bool(getattr(self, "_assistant_open", True)),
-            "assistant_width": int(getattr(self, "_assistant_width", 420) or 420),
-        }
+        d = StateManager.collect(self)
         state.save_state(d)
 
     def _restore_ui_state(self):
@@ -660,120 +508,7 @@ class AlarmViewer(QMainWindow):
             self._sync_flags = state.load_feature_flags({})
             return
         self._sync_flags = state.load_feature_flags(s)
-
-        # Window geometry
-        geo = s.get("window_geometry")
-        if geo and len(geo) == 4:
-            self.setGeometry(*geo)
-        if "ui_zoom_pct" in s:
-            self._set_app_zoom(s["ui_zoom_pct"])
-
-        if "theme_mode" in s:
-            self._theme_mode = s["theme_mode"]
-            self._update_theme_button_label()
-        self._skip_photos = bool(s.get("skip_photos", self._skip_photos))
-        self._openrouter_api_key = str(s.get("openrouter_api_key") or "")
-        if hasattr(self, "_chat_panel"):
-            self._chat_panel.refresh_settings()
-        if "chat_model" in s and hasattr(self, "_chat_panel"):
-            self._chat_panel.set_model(str(s.get("chat_model") or ""))
-        if "chat_state" in s and hasattr(self, "_chat_panel"):
-            self._chat_panel.restore_chat_state(s.get("chat_state"))
-        if "assistant_width" in s:
-            self._assistant_width = max(120, min(340, int(s.get("assistant_width") or self._assistant_width)))
-        if "assistant_open" in s:
-            self._assistant_open = bool(s.get("assistant_open"))
-
-        workspace_view = int(s.get("workspace_view", 0) or 0)
-        self._set_workspace_view(workspace_view, persist=False)
-        self._set_assistant_panel_open(self._assistant_open, persist=False)
-
-        # Directory & site filter
-        restored_directory = str(s.get("directory") or "")
-        self._uploaded_folder_path = str(s.get("uploaded_folder_path") or restored_directory or "")
-        self._bdt_uploaded_folder_path = str(
-            s.get("bdt_directory") or self._uploaded_folder_path or restored_directory or ""
-        )
-        if restored_directory:
-            self._edit_dir.setText(restored_directory)
-        elif self._uploaded_folder_path:
-            self._edit_dir.setText(self._uploaded_folder_path)
-        if self._bdt_uploaded_folder_path:
-            self._edit_bdt_dir.setText(self._bdt_uploaded_folder_path)
-        alarm_load_source = str(s.get("alarm_load_source") or "directory")
-        idx = self._cmb_alarm_source.findData(alarm_load_source)
-        if idx >= 0:
-            self._cmb_alarm_source.setCurrentIndex(idx)
-        bdt_load_source = str(s.get("bdt_load_source") or "directory")
-        bdt_idx = self._bdt_validation_panel.cmb_bdt_source.findData(bdt_load_source)
-        if bdt_idx >= 0:
-            self._bdt_validation_panel.cmb_bdt_source.setCurrentIndex(bdt_idx)
-        if s.get("site_filter"):
-            self._edit_site.setText(s["site_filter"])
-
-        # Date filter
-        if "date_enabled" in s:
-            self._chk_date.setChecked(s["date_enabled"])
-        if s.get("date_from"):
-            d = QDate.fromString(s["date_from"], "yyyy-MM-dd")
-            if d.isValid():
-                self._d_from.setDate(d)
-        if s.get("date_to"):
-            d = QDate.fromString(s["date_to"], "yyyy-MM-dd")
-            if d.isValid():
-                self._d_to.setDate(d)
-        use_range = s.get("date_use_range")
-        use_days = s.get("date_use_days")
-        if use_range is not None:
-            self._chk_date_range.setChecked(use_range)
-        if use_days is not None:
-            self._chk_date_days.setChecked(use_days)
-        if use_range is None and use_days is None and "day_only" in s:
-            self._chk_date_range.setChecked(not s["day_only"])
-            self._chk_date_days.setChecked(s["day_only"])
-        if s.get("date_day"):
-            d = QDate.fromString(s["date_day"], "yyyy-MM-dd")
-            if d.isValid():
-                self._d_day.setDate(d)
-        if s.get("date_days"):
-            self._edit_days.setText(str(s["date_days"]))
-        elif s.get("day_only") and s.get("date_day"):
-            self._edit_days.setText(str(s["date_day"]))
-        self._toggle_date_mode_controls()
-
-        # Combo filters
-        if "category" in s:
-            self._cb_cat.setCurrentIndex(s["category"])
-        if "network" in s:
-            self._cb_net.setCurrentIndex(s["network"])
-        if "vendor" in s:
-            self._cb_vnd.setCurrentIndex(s["vendor"])
-
-        # Duration filter
-        if "dur_enabled" in s:
-            self._chk_mindur.setChecked(s["dur_enabled"])
-        if "dur_minutes" in s:
-            self._spn_mindur.setValue(s["dur_minutes"])
-
-        # Both P+D filter
-        if s.get("both_pd"):
-            self._both_pd_active = True
-            self._btn_both.setStyleSheet(
-                "QPushButton { background:#4a3018; color:#fab387; "
-                "border:2px solid #fab387; border-radius:6px; "
-                "padding:7px 16px; font-weight:700; font-size:12px; "
-                "min-width:72px; }")
-
-        # Column filters — convert lists back to sets
-        cf = s.get("col_filters", {})
-        for col, vals in cf.items():
-            self._col_filters[col] = set(vals) if vals is not None else None
-
-        # Stash sort info for after data loads
-        self._pending_sort_col = s.get("sort_column")
-        self._pending_sort_order = s.get("sort_order", 0)
-        self._page_offset = max(int(s.get("alarm_page_offset", 0) or 0), 0)
-        self._page_size = max(int(s.get("alarm_page_size", self._page_size) or self._page_size), 1)
+        StateManager.apply(self, s)
 
         # Stash file_paths for reference
         self._restored_file_paths = s.get("file_paths", [])
@@ -798,8 +533,8 @@ class AlarmViewer(QMainWindow):
                     for p in restored_paths
                 ]
                 total = self._current_alarm_total()
-                self._lbl_loaded.setText(f"✓  {total:,} cached records")
-                self._lbl_loaded.setStyleSheet("color:#a6e3a1; font-size:11px;")
+                self._ui.lbl_loaded.setText(f"✓  {total:,} cached records")
+                self._ui.lbl_loaded.setStyleSheet("color:#a6e3a1; font-size:11px;")
             else:
                 df = self._load_alarm_dataframe_from_db()
                 if df is not None and not df.empty:
@@ -826,8 +561,8 @@ class AlarmViewer(QMainWindow):
             for p in restored_paths
         ]
 
-        self._lbl_loaded.setText(f"✓  {len(df):,} records (restored)")
-        self._lbl_loaded.setStyleSheet("color:#a6e3a1; font-size:11px;")
+        self._ui.lbl_loaded.setText(f"✓  {len(df):,} records (restored)")
+        self._ui.lbl_loaded.setStyleSheet("color:#a6e3a1; font-size:11px;")
         self._reset_date_range(df)
 
         # Restore sort indicator
@@ -845,7 +580,7 @@ class AlarmViewer(QMainWindow):
             )
 
         # Populate sidebar file list so it's not blank after restore
-        directory = self._edit_dir.text().strip()
+        directory = self._ui.edit_dir.text().strip()
         if directory and os.path.isdir(directory):
             self._scan()
 
@@ -867,7 +602,7 @@ class AlarmViewer(QMainWindow):
                 ),
             )
         except Exception:
-            pass  # BDT restore is best-effort
+            _log.warning("BDT restore from DB failed", exc_info=True)
 
     def _start_sync_worker_if_enabled(self):
         should_run = (
@@ -880,16 +615,15 @@ class AlarmViewer(QMainWindow):
             sender = None
             if self._sync_flags.get("sync_on", False):
                 try:
-                    try:
-                        from alarm_app.data.sync_client import http_send_batch
-                    except ImportError:
-                        from data.sync_client import http_send_batch
+                    from alarm_app.data.sync_client import http_send_batch
                     sender = http_send_batch
                 except Exception:
+                    _log.warning("HTTP sync client import failed, sync disabled", exc_info=True)
                     pass
             self._sync_worker = LocalSyncWorker(send_batch=sender)
             self._sync_worker.start()
         except Exception:
+            _log.warning("Sync worker failed to start", exc_info=True)
             self._sync_worker = None
 
     def _run_bootstrap_if_enabled(self):
@@ -900,20 +634,12 @@ class AlarmViewer(QMainWindow):
         class _BootstrapThread(QThread):
             def run(self_thread):
                 try:
-                    try:
-                        from alarm_app.data.bootstrap import run_bootstrap
-                        from alarm_app.db.engine import (
-                            create_engine,
-                            init_db,
-                            get_session_factory,
-                        )
-                    except ImportError:
-                        from data.bootstrap import run_bootstrap
-                        from db.engine import (
-                            create_engine,
-                            init_db,
-                            get_session_factory,
-                        )
+                    from alarm_app.data.bootstrap import run_bootstrap
+                    from alarm_app.db.engine import (
+                        create_engine,
+                        init_db,
+                        get_session_factory,
+                    )
 
                     engine = create_engine()
                     init_db(engine, include_alarm_records=False)
@@ -942,7 +668,7 @@ class AlarmViewer(QMainWindow):
         try:
             worker.stop(timeout=2.0)
         except Exception:
-            pass
+            _log.debug("Sync worker stop timed out during toggle", exc_info=True)
 
     def _toggle_sync(self):
         """Toggle sync_on feature flag and restart or stop the worker."""
@@ -1262,52 +988,34 @@ class AlarmViewer(QMainWindow):
         ignore_sort: bool = False,
     ) -> alarm_store.AlarmQuery:
         exclude_columns = exclude_columns or set()
-        manual_days = None
-        if self._chk_date.isChecked() and self._chk_date_days.isChecked():
-            manual_days, invalid = parse_manual_days(self._edit_days.text())
-            if invalid:
-                self._sbar.showMessage(
-                    "Ignored invalid day value(s) in specific days filter",
-                    2500,
-                )
+        fs = FilterState.from_viewer(self)
 
-        query = alarm_store.AlarmQuery(
-            site_text=self._edit_site.text().strip(),
-            category="All" if "alarm_category" in exclude_columns else self._cb_cat.currentText(),
-            vendor="All" if "vendor" in exclude_columns else self._cb_vnd.currentText(),
-            network_type="All" if "network_type" in exclude_columns else self._cb_net.currentText(),
-            min_duration_secs=(
-                self._spn_mindur.value() * 60 if self._chk_mindur.isChecked() else None
-            ),
-            date_from=(
-                self._d_from.date().toPyDate()
-                if self._chk_date.isChecked() and self._chk_date_range.isChecked()
-                else None
-            ),
-            date_to=(
-                self._d_to.date().toPyDate()
-                if self._chk_date.isChecked() and self._chk_date_range.isChecked()
-                else None
-            ),
-            manual_days=manual_days if self._chk_date.isChecked() and self._chk_date_days.isChecked() else None,
-            both_pd=self._both_pd_active,
-            limit=limit,
-            offset=offset,
-            site_scope_keys=self._uploaded_site_keys or None,
-            col_filters={
+        if fs.invalid_manual_days:
+            self._sbar.showMessage(
+                "Ignored invalid day value(s) in specific days filter",
+                2500,
+            )
+
+        query = fs.to_alarm_query()
+
+        if "alarm_category" in exclude_columns:
+            query = replace(query, category="All")
+        if "vendor" in exclude_columns:
+            query = replace(query, vendor="All")
+        if "network_type" in exclude_columns:
+            query = replace(query, network_type="All")
+
+        if exclude_columns:
+            query.col_filters = {
                 col: allowed
                 for col, allowed in self._col_filters.items()
                 if col not in exclude_columns
-            },
-        )
+            }
 
-        if not ignore_sort:
-            sort_section = self._table.horizontalHeader().sortIndicatorSection()
-            cols = self._current_alarm_columns()
-            if 0 <= sort_section < len(cols):
-                query.sort_by = cols[sort_section]
-                query.sort_desc = self._table.horizontalHeader().sortIndicatorOrder() == Qt.DescendingOrder
-        return query
+        if ignore_sort:
+            query = replace(query, sort_by=None, sort_desc=False)
+
+        return replace(query, limit=limit, offset=offset)
 
     @staticmethod
     def _expand_backup_time_query(query: alarm_store.AlarmQuery) -> alarm_store.AlarmQuery:
@@ -1357,28 +1065,28 @@ class AlarmViewer(QMainWindow):
         if not self._has_query_backed_alarm_data():
             return
         self._set_combo_values(
-            self._cb_cat,
+            self._ui.cb_cat,
             alarm_store.distinct_values(
                 "alarm_category",
                 self._build_alarm_query(limit=None, offset=0, exclude_columns={"alarm_category"}, ignore_sort=True),
             ),
-            self._cb_cat.currentText(),
+            self._ui.cb_cat.currentText(),
         )
         self._set_combo_values(
-            self._cb_net,
+            self._ui.cb_net,
             alarm_store.distinct_values(
                 "network_type",
                 self._build_alarm_query(limit=None, offset=0, exclude_columns={"network_type"}, ignore_sort=True),
             ),
-            self._cb_net.currentText(),
+            self._ui.cb_net.currentText(),
         )
         self._set_combo_values(
-            self._cb_vnd,
+            self._ui.cb_vnd,
             alarm_store.distinct_values(
                 "vendor",
                 self._build_alarm_query(limit=None, offset=0, exclude_columns={"vendor"}, ignore_sort=True),
             ),
-            self._cb_vnd.currentText(),
+            self._ui.cb_vnd.currentText(),
         )
 
     def _load_alarm_page(self, *, offset: int | None = None, status_message: str | None = None) -> bool:
@@ -1561,15 +1269,15 @@ class AlarmViewer(QMainWindow):
             mx = df["occurred_on"].max()
             if pd.notna(mn):
                 qmn = QDate(mn.year, mn.month, mn.day)
-                self._d_from.setMinimumDate(qmn)
-                self._d_day.setMinimumDate(qmn)
-                self._d_from.setDate(qmn)
+                self._ui.d_from.setMinimumDate(qmn)
+                self._ui.d_day.setMinimumDate(qmn)
+                self._ui.d_from.setDate(qmn)
             if pd.notna(mx):
                 qmx = QDate(mx.year, mx.month, mx.day)
-                self._d_to.setMaximumDate(qmx)
-                self._d_day.setMaximumDate(qmx)
-                self._d_to.setDate(qmx)
-                self._d_day.setDate(qmx)
+                self._ui.d_to.setMaximumDate(qmx)
+                self._ui.d_day.setMaximumDate(qmx)
+                self._ui.d_to.setDate(qmx)
+                self._ui.d_day.setDate(qmx)
 
     def _reset_date_range_from_store(self):
         mn, mx = alarm_store.occurred_on_bounds()
@@ -1584,46 +1292,46 @@ class AlarmViewer(QMainWindow):
         return pd.DataFrame({"site_id": site_ids})
 
     def _toggle_date_filter(self, enabled: bool):
-        self._chk_date_range.setEnabled(enabled)
-        self._chk_date_days.setEnabled(enabled)
+        self._ui.chk_date_range.setEnabled(enabled)
+        self._ui.chk_date_days.setEnabled(enabled)
         self._toggle_date_mode_controls()
 
     def _toggle_date_mode_controls(self):
-        date_enabled = self._chk_date.isChecked()
-        use_range = date_enabled and self._chk_date_range.isChecked()
-        use_days = date_enabled and self._chk_date_days.isChecked()
-        self._lbl_from.setEnabled(use_range)
-        self._d_from.setEnabled(use_range)
-        self._lbl_to.setEnabled(use_range)
-        self._d_to.setEnabled(use_range)
-        for widget in self._date_quick_widgets:
+        date_enabled = self._ui.chk_date.isChecked()
+        use_range = date_enabled and self._ui.chk_date_range.isChecked()
+        use_days = date_enabled and self._ui.chk_date_days.isChecked()
+        self._ui.lbl_from.setEnabled(use_range)
+        self._ui.d_from.setEnabled(use_range)
+        self._ui.lbl_to.setEnabled(use_range)
+        self._ui.d_to.setEnabled(use_range)
+        for widget in self._ui.date_quick_widgets:
             widget.setEnabled(use_range)
-        self._lbl_day.setEnabled(use_days)
-        self._d_day.setEnabled(use_days)
-        self._btn_add_day.setEnabled(use_days)
-        self._edit_days.setEnabled(use_days)
-        self._btn_clear_days.setEnabled(use_days)
+        self._ui.lbl_day.setEnabled(use_days)
+        self._ui.d_day.setEnabled(use_days)
+        self._ui.btn_add_day.setEnabled(use_days)
+        self._ui.edit_days.setEnabled(use_days)
+        self._ui.btn_clear_days.setEnabled(use_days)
 
     def _set_manual_days_text(self, days: set[pd.Timestamp]):
         ordered = sorted(days)
-        self._edit_days.setText(
+        self._ui.edit_days.setText(
             ", ".join(d.strftime("%Y-%m-%d") for d in ordered))
 
     def _add_selected_day(self):
-        days, invalid = parse_manual_days(self._edit_days.text())
-        days.add(pd.Timestamp(self._d_day.date().toPyDate()).normalize())
+        days, invalid = parse_manual_days(self._ui.edit_days.text())
+        days.add(pd.Timestamp(self._ui.d_day.date().toPyDate()).normalize())
         self._set_manual_days_text(days)
         if invalid:
             self._sbar.showMessage("Ignored invalid day value(s) while adding day", 2500)
 
     def _clear_selected_days(self):
-        self._edit_days.clear()
+        self._ui.edit_days.clear()
 
     def _quick_date(self, days: int):
         """Set date range to a quick preset. days=-1 means 'All'."""
-        self._chk_date.setChecked(True)
-        if not self._chk_date_range.isChecked():
-            self._chk_date_range.setChecked(True)
+        self._ui.chk_date.setChecked(True)
+        if not self._ui.chk_date_range.isChecked():
+            self._ui.chk_date_range.setChecked(True)
         today = QDate.currentDate()
         if days < 0:
             if self._has_query_backed_alarm_data():
@@ -1631,11 +1339,11 @@ class AlarmViewer(QMainWindow):
             elif not self._full_df.empty:
                 self._reset_date_range(self._full_df)
         elif days == 0:
-            self._d_from.setDate(today)
-            self._d_to.setDate(today)
+            self._ui.d_from.setDate(today)
+            self._ui.d_to.setDate(today)
         else:
-            self._d_from.setDate(today.addDays(-days))
-            self._d_to.setDate(today)
+            self._ui.d_from.setDate(today.addDays(-days))
+            self._ui.d_to.setDate(today)
 
     # ── sidebar toggle (Cmd+B) ──────────────────────────────────
     def _toggle_sidebar(self):
@@ -1899,8 +1607,8 @@ class AlarmViewer(QMainWindow):
         row_h = max(22, int(round(28 * (pct / 100.0))))
         if hasattr(self, "_table"):
             self._table.verticalHeader().setDefaultSectionSize(row_h)
-        if hasattr(self, "_bdt_table"):
-            self._bdt_table.verticalHeader().setDefaultSectionSize(row_h)
+        if hasattr(self, "_bdt_validation_panel") and hasattr(self._bdt_validation_panel, "bdt_table"):
+            self._bdt_validation_panel.bdt_table.verticalHeader().setDefaultSectionSize(row_h)
         if hasattr(self, "_btn_settings"):
             self._refresh_compact_buttons()
             self._refresh_header_button_texts()
@@ -1941,18 +1649,18 @@ class AlarmViewer(QMainWindow):
     def _browse(self):
         d = QFileDialog.getExistingDirectory(
             self, "Select Alarm Data Directory",
-            self._edit_dir.text() or str(Path.home()))
+            self._ui.edit_dir.text() or str(Path.home()))
         if d:
-            self._edit_dir.setText(d)
+            self._ui.edit_dir.setText(d)
             self._uploaded_folder_path = d
             self._scan()
 
     def _browse_bdt(self):
         d = QFileDialog.getExistingDirectory(
             self, "Select BDT Directory",
-            self._edit_bdt_dir.text() or self._edit_dir.text() or str(Path.home()))
+            self._ui.edit_bdt_dir.text() or self._ui.edit_dir.text() or str(Path.home()))
         if d:
-            self._edit_bdt_dir.setText(d)
+            self._ui.edit_bdt_dir.setText(d)
             self._bdt_uploaded_folder_path = d
             self._scan_bdt()
 
@@ -1986,7 +1694,7 @@ class AlarmViewer(QMainWindow):
         return file_infos
 
     def _scan_bdt(self):
-        directory = self._edit_bdt_dir.text().strip()
+        directory = self._ui.edit_bdt_dir.text().strip()
         if not directory:
             QMessageBox.warning(
                 self, "No Directory",
@@ -2000,10 +1708,10 @@ class AlarmViewer(QMainWindow):
 
         self._bdt_uploaded_folder_path = directory
         self._bdt_file_infos = self._discover_bdt_files(directory)
-        self._bdt_file_list.clear()
+        self._ui.bdt_file_list.clear()
 
         if not self._bdt_file_infos:
-            self._lbl_bdt_file_count.setText("No BDT .xlsx files found")
+            self._ui.lbl_bdt_file_count.setText("No BDT .xlsx files found")
             self._sbar.showMessage("No BDT files found in the selected directory")
             return
 
@@ -2020,15 +1728,15 @@ class AlarmViewer(QMainWindow):
             item = QListWidgetItem(line)
             item.setData(Qt.UserRole, info)
             item.setForeground(QColor("#6c7086"))
-            self._bdt_file_list.addItem(item)
+            self._ui.bdt_file_list.addItem(item)
 
-        self._bdt_file_list.selectAll()
+        self._ui.bdt_file_list.selectAll()
         n = len(self._bdt_file_infos)
-        self._lbl_bdt_file_count.setText(f"  {n} file{'s' if n != 1 else ''}")
+        self._ui.lbl_bdt_file_count.setText(f"  {n} file{'s' if n != 1 else ''}")
         self._sbar.showMessage(f"Found {n} BDT file(s) in the selected directory")
 
     def _scan(self):
-        directory = self._edit_dir.text().strip()
+        directory = self._ui.edit_dir.text().strip()
         if not directory:
             QMessageBox.warning(
                 self, "No Directory",
@@ -2043,12 +1751,12 @@ class AlarmViewer(QMainWindow):
         self._uploaded_folder_path = directory
 
         self._file_infos = discover_alarm_files(directory)
-        self._file_list.clear()
+        self._ui.file_list.clear()
 
         if not self._file_infos:
-            self._lbl_file_count.setText(
+            self._ui.lbl_file_count.setText(
                 "❌  No .csv / .xlsx files found")
-            self._lbl_file_count.setStyleSheet(
+            self._ui.lbl_file_count.setStyleSheet(
                 "color:#f38ba8; font-size:11px;")
             self._on_alarm_source_changed()
             return
@@ -2066,13 +1774,13 @@ class AlarmViewer(QMainWindow):
             item = QListWidgetItem(line)
             item.setData(Qt.UserRole, info)
             item.setForeground(QColor("#6c7086"))
-            self._file_list.addItem(item)
+            self._ui.file_list.addItem(item)
 
-        self._file_list.selectAll()
+        self._ui.file_list.selectAll()
 
         n = len(self._file_infos)
-        self._lbl_file_count.setText(f"  {n} file{'s' if n != 1 else ''}")
-        self._lbl_file_count.setStyleSheet("color:#a6e3a1; font-size:11px;")
+        self._ui.lbl_file_count.setText(f"  {n} file{'s' if n != 1 else ''}")
+        self._ui.lbl_file_count.setStyleSheet("color:#a6e3a1; font-size:11px;")
         self._on_alarm_source_changed()
         self._sbar.showMessage(
             f"Found {n} file(s) — select files to load, "
@@ -2082,13 +1790,13 @@ class AlarmViewer(QMainWindow):
         mode = self._get_alarm_load_mode()
         has_files = bool(getattr(self, "_file_infos", []))
         can_load = (mode == "db") or has_files
-        self._btn_load.setEnabled(can_load)
+        self._ui.btn_load.setEnabled(can_load)
         if mode == "db":
-            self._btn_load.setText("Load Cached Alarms")
+            self._ui.btn_load.setText("Load Cached Alarms")
         elif mode == "both":
-            self._btn_load.setText("Load + Verify")
+            self._ui.btn_load.setText("Load + Verify")
         else:
-            self._btn_load.setText("Load Selected Files")
+            self._ui.btn_load.setText("Load Selected Files")
 
     def _load(self):
         self._pending_alarm_load_mode = self._get_alarm_load_mode()
@@ -2099,8 +1807,8 @@ class AlarmViewer(QMainWindow):
                 status_message="Loaded cached alarm results from local store",
             ) and self._current_alarm_total() > 0:
                 total = self._current_alarm_total()
-                self._lbl_loaded.setText(f"✓  {total:,} cached records")
-                self._lbl_loaded.setStyleSheet("color:#a6e3a1; font-size:11px;")
+                self._ui.lbl_loaded.setText(f"✓  {total:,} cached records")
+                self._ui.lbl_loaded.setStyleSheet("color:#a6e3a1; font-size:11px;")
                 return
 
             df = self._load_alarm_dataframe_from_db()
@@ -2112,8 +1820,8 @@ class AlarmViewer(QMainWindow):
                 return
 
             has_selected_files = any(
-                self._file_list.item(i).isSelected()
-                for i in range(self._file_list.count())
+                self._ui.file_list.item(i).isSelected()
+                for i in range(self._ui.file_list.count())
             )
             has_discovered_files = bool(getattr(self, "_file_infos", None))
             if has_selected_files or has_discovered_files:
@@ -2136,9 +1844,9 @@ class AlarmViewer(QMainWindow):
                 return
 
         selected = [
-            self._file_list.item(i).data(Qt.UserRole)
-            for i in range(self._file_list.count())
-            if self._file_list.item(i).isSelected()
+            self._ui.file_list.item(i).data(Qt.UserRole)
+            for i in range(self._ui.file_list.count())
+            if self._ui.file_list.item(i).isSelected()
         ]
         if (
             self._pending_alarm_load_mode == "directory"
@@ -2154,7 +1862,7 @@ class AlarmViewer(QMainWindow):
                 self, "Nothing Selected",
                 "Select at least one file from the list.")
             return
-        self._btn_load.setEnabled(False)
+        self._ui.btn_load.setEnabled(False)
         self._prog.setVisible(True)
         self._prog.setValue(0)
         self._sbar.showMessage(f"Loading {len(selected)} file(s) …")
@@ -2170,10 +1878,7 @@ class AlarmViewer(QMainWindow):
 
     def _on_loaded(self, df: pd.DataFrame, msg: str):
         if getattr(self, "_pending_alarm_load_mode", "directory") == "both":
-            try:
-                from alarm_app.data.loaders import deduplicate_alarm_rows
-            except ImportError:
-                from data.loaders import deduplicate_alarm_rows
+            from alarm_app.data.loaders import deduplicate_alarm_rows
             db_df = self._load_alarm_dataframe_from_db()
             if db_df is None:
                 db_df = pd.DataFrame()
@@ -2188,13 +1893,13 @@ class AlarmViewer(QMainWindow):
         self._apply_loaded_alarm_dataframe(df, msg)
 
     def _on_error(self, msg: str):
-        self._btn_load.setEnabled(True)
+        self._ui.btn_load.setEnabled(True)
         self._prog.setVisible(False)
         QMessageBox.critical(self, "Load Error", msg)
         self._sbar.showMessage(f"Error: {msg}")
 
     def _get_alarm_load_mode(self) -> str:
-        return str(self._cmb_alarm_source.currentData() or "directory")
+        return str(self._ui.cmb_alarm_source.currentData() or "directory")
 
     def _load_alarm_dataframe_from_db(self) -> pd.DataFrame | None:
         try:
@@ -2210,12 +1915,12 @@ class AlarmViewer(QMainWindow):
         alarm_ids = state.load_alarm_ids()
         df = classify_by_alarm_id(df, alarm_ids)
         df = compute_site_down_flag(df)
-        self._btn_load.setEnabled(True)
+        self._ui.btn_load.setEnabled(True)
         self._prog.setVisible(False)
         self._sbar.showMessage(msg)
-        self._lbl_loaded.setText(
+        self._ui.lbl_loaded.setText(
             f"✓  {len(df):,} records cached locally")
-        self._lbl_loaded.setStyleSheet(
+        self._ui.lbl_loaded.setStyleSheet(
             "color:#a6e3a1; font-size:11px;")
         self._reset_date_range(df)
         self._page_offset = 0
@@ -2256,12 +1961,8 @@ class AlarmViewer(QMainWindow):
 
     def _load_bdt_results_from_db(self) -> list:
         try:
-            try:
-                from alarm_app.db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
-                from alarm_app.db.repos.pm_repo import load_all_validation_results
-            except ImportError:
-                from db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
-                from db.repos.pm_repo import load_all_validation_results
+            from alarm_app.db.engine import create_engine as _ce, init_db as _idb, get_session_factory as _gsf
+            from alarm_app.db.repos.pm_repo import load_all_validation_results
             engine = _ce()
             _idb(engine)
             session = _gsf(engine)()
@@ -2288,14 +1989,21 @@ class AlarmViewer(QMainWindow):
 
     def _apply_filters(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply current UI filters to *df* and return the subset."""
-        if self._uploaded_site_keys and "site_id" in df.columns:
+        f = FilterState.from_viewer(self)
+
+        if f.invalid_manual_days:
+            self._sbar.showMessage(
+                "Ignored invalid day value(s) in specific days filter",
+                2500,
+            )
+
+        if f.site_scope_keys and "site_id" in df.columns:
             site_keys = df["site_id"].map(lambda value: "".join(ch for ch in str(value).strip().upper() if ch.isalnum()) if pd.notna(value) else "")
-            df = df[site_keys.isin(self._uploaded_site_keys)]
+            df = df[site_keys.isin(f.site_scope_keys)]
 
         # Site ID — supports multiple comma-separated terms
-        raw = self._edit_site.text().strip()
-        if raw:
-            terms = [t.strip() for t in raw.split(",") if t.strip()]
+        if f.site_text:
+            terms = [t.strip() for t in f.site_text.split(",") if t.strip()]
             if terms:
                 site_col = df["site_id"].astype(str).str.upper()
                 mask = pd.Series(False, index=df.index)
@@ -2308,61 +2016,46 @@ class AlarmViewer(QMainWindow):
                 df = df[mask]
 
         # Date filter (range and/or specific days)
-        if self._chk_date.isChecked() and "occurred_on" in df.columns:
-            use_range = self._chk_date_range.isChecked()
-            use_days = self._chk_date_days.isChecked()
-
-            manual_days: set[pd.Timestamp] = set()
-            if use_days:
-                manual_days, invalid = parse_manual_days(
-                    self._edit_days.text())
-                if invalid:
-                    self._sbar.showMessage(
-                        "Ignored invalid day value(s) in specific days filter",
-                        2500)
-
+        if (f.date_from is not None or f.date_to is not None or f.manual_days is not None) and "occurred_on" in df.columns:
             mask = compute_date_mask(
                 df["occurred_on"],
-                use_range=use_range,
-                from_date=self._d_from.date().toPyDate(),
-                to_date=self._d_to.date().toPyDate(),
-                use_days=use_days,
-                manual_days=manual_days,
+                use_range=(f.date_from is not None or f.date_to is not None),
+                from_date=f.date_from or date.today(),
+                to_date=f.date_to or date.today(),
+                use_days=(f.manual_days is not None),
+                manual_days=f.manual_days,
             )
             if mask is not None:
                 df = df[mask]
 
         # Category
-        cat = self._cb_cat.currentText()
-        if cat != "All" and "alarm_category" in df.columns:
-            df = df[df["alarm_category"] == cat]
+        if f.category != "All" and "alarm_category" in df.columns:
+            df = df[df["alarm_category"] == f.category]
 
         # Network
-        net = self._cb_net.currentText()
-        if net != "All" and "network_type" in df.columns:
-            df = df[df["network_type"].astype(str) == net]
+        if f.network_type != "All" and "network_type" in df.columns:
+            df = df[df["network_type"].astype(str) == f.network_type]
 
         # Vendor
-        vnd = self._cb_vnd.currentText()
-        if vnd != "All" and "vendor" in df.columns:
+        if f.vendor != "All" and "vendor" in df.columns:
             df = df[df["vendor"].astype(str).str.upper()
-                    == vnd.upper()]
+                    == f.vendor.upper()]
 
         # Duration ≥ N min filter
-        if self._chk_mindur.isChecked() and "_duration_secs" in df.columns:
-            df = df[df["_duration_secs"] >= self._spn_mindur.value() * 60]
+        if f.min_duration_secs is not None and "_duration_secs" in df.columns:
+            df = df[df["_duration_secs"] >= f.min_duration_secs]
 
         # Per-column filters (from header popup)
-        for col, allowed in self._col_filters.items():
+        for col, allowed in f.col_filters.items():
             if allowed is not None and col in df.columns:
                 df = df[df[col].fillna("").astype(str).isin(allowed)]
 
         # Both Power + Down: keep only sites that have both categories
         # Check against _full_df so other filters don't hide categories
-        if (self._both_pd_active
+        if (f.both_pd
                 and "site_id" in df.columns
                 and "alarm_category" in df.columns):
-            full = df
+            full = self._full_df
             cats_per_site = full.groupby("site_id")["alarm_category"].apply(set)
             both_sites = cats_per_site[
                 cats_per_site.apply(
@@ -2376,7 +2069,7 @@ class AlarmViewer(QMainWindow):
         if self._has_query_backed_alarm_data():
             self._page_offset = 0
             if self._load_alarm_page(offset=0):
-                raw = self._edit_site.text().strip()
+                raw = self._ui.edit_site.text().strip()
                 total = self._current_alarm_total()
                 if raw:
                     summary = alarm_store.stats(
@@ -2404,7 +2097,7 @@ class AlarmViewer(QMainWindow):
         self._refresh_in_memory_count_label(df)
         n = len(df)
 
-        raw = self._edit_site.text().strip()
+        raw = self._ui.edit_site.text().strip()
         if raw:
             u = (df["site_id"].nunique()
                  if "site_id" in df.columns else 0)
@@ -2421,7 +2114,7 @@ class AlarmViewer(QMainWindow):
                 self, "No Data", "Load alarm data first.")
             return
         self._both_pd_active = True
-        self._btn_both.setStyleSheet(
+        self._ui.btn_both.setStyleSheet(
             "QPushButton { background:#4a3018; color:#fab387; "
             "border:2px solid #fab387; border-radius:6px; "
             "padding:7px 16px; font-weight:700; font-size:12px; "
@@ -2429,16 +2122,16 @@ class AlarmViewer(QMainWindow):
         self._search()
 
     def _clear_filters(self):
-        self._edit_site.clear()
-        self._cb_cat.setCurrentIndex(0)
-        self._cb_net.setCurrentIndex(0)
-        self._cb_vnd.setCurrentIndex(0)
-        self._chk_date.setChecked(True)
-        self._chk_date_range.setChecked(True)
-        self._chk_date_days.setChecked(False)
-        self._edit_days.clear()
+        self._ui.edit_site.clear()
+        self._ui.cb_cat.setCurrentIndex(0)
+        self._ui.cb_net.setCurrentIndex(0)
+        self._ui.cb_vnd.setCurrentIndex(0)
+        self._ui.chk_date.setChecked(True)
+        self._ui.chk_date_range.setChecked(True)
+        self._ui.chk_date_days.setChecked(False)
+        self._ui.edit_days.clear()
         self._both_pd_active = False
-        self._btn_both.setStyleSheet("")  # reset to default theme style
+        self._ui.btn_both.setStyleSheet("")  # reset to default theme style
         self._col_filters.clear()
         # Reset sort indicator
         hdr = self._table.horizontalHeader()
@@ -2453,8 +2146,8 @@ class AlarmViewer(QMainWindow):
             # Restore original load order
             self._full_df = self._full_df.sort_index().reset_index(drop=True)
             df = self._full_df
-            if self._chk_mindur.isChecked() and "_duration_secs" in df.columns:
-                df = df[df["_duration_secs"] >= self._spn_mindur.value() * 60]
+            if self._ui.chk_mindur.isChecked() and "_duration_secs" in df.columns:
+                df = df[df["_duration_secs"] >= self._ui.spn_mindur.value() * 60]
             self._populate(df)
             self._refresh_stats(df)
             self._refresh_in_memory_count_label(df)
@@ -2470,7 +2163,7 @@ class AlarmViewer(QMainWindow):
                     self, "No Data",
                     "No records match the current filters.")
                 return
-            self._btn_backup.setEnabled(False)
+            self._ui.btn_backup.setEnabled(False)
             self._sbar.showMessage("Computing backup times …")
             self._bt_thread = BackupTimeThread(alarm_query=query)
             self._bt_thread.progress.connect(
@@ -2490,7 +2183,7 @@ class AlarmViewer(QMainWindow):
                 self, "No Data",
                 "No records match the current filters.")
             return
-        self._btn_backup.setEnabled(False)
+        self._ui.btn_backup.setEnabled(False)
         self._sbar.showMessage("Computing backup times …")
         self._bt_thread = BackupTimeThread(filtered.copy())
         self._bt_thread.progress.connect(
@@ -2500,7 +2193,7 @@ class AlarmViewer(QMainWindow):
         self._bt_thread.start()
 
     def _on_bt_done(self, result, err: str):
-        self._btn_backup.setEnabled(True)
+        self._ui.btn_backup.setEnabled(True)
         if err:
             QMessageBox.warning(self, "Backup Time", err)
             self._sbar.showMessage("Backup time: " + err)
@@ -2511,7 +2204,7 @@ class AlarmViewer(QMainWindow):
         dlg.exec_()
 
     def _on_bt_error(self, msg: str):
-        self._btn_backup.setEnabled(True)
+        self._ui.btn_backup.setEnabled(True)
         QMessageBox.critical(self, "Backup Time Error", msg)
         self._sbar.showMessage("Backup time computation failed")
 
@@ -2524,14 +2217,14 @@ class AlarmViewer(QMainWindow):
         in_path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Site Sheet",
-            self._edit_dir.text().strip() or str(Path.home()),
+            self._ui.edit_dir.text().strip() or str(Path.home()),
             "Spreadsheet Files (*.xlsx *.xls *.csv)",
         )
         if not in_path:
             return
 
         try:
-            self._btn_site_sheet.setEnabled(False)
+            self._ui.btn_site_sheet.setEnabled(False)
             self._sbar.showMessage("Reading site sheet …")
             alarm_df = self._reference_alarm_sites_df() if self._has_query_backed_alarm_data() else self._full_df
             site_df, sheet_name, site_col = read_site_sheet(in_path, alarm_df)
@@ -2539,12 +2232,12 @@ class AlarmViewer(QMainWindow):
             if not site_keys:
                 raise ValueError("The uploaded site sheet does not contain any usable site IDs.")
         except Exception as exc:
-            self._btn_site_sheet.setEnabled(True)
+            self._ui.btn_site_sheet.setEnabled(True)
             QMessageBox.critical(self, "Site Sheet Error", str(exc))
             self._sbar.showMessage("Site sheet upload failed")
             return
 
-        self._btn_site_sheet.setEnabled(True)
+        self._ui.btn_site_sheet.setEnabled(True)
         self._uploaded_site_df = site_df.copy()
         self._uploaded_site_sheet_name = sheet_name
         self._uploaded_site_id_column = site_col
@@ -2666,7 +2359,7 @@ class AlarmViewer(QMainWindow):
             "Excel Files (*.xlsx)")
         if not fp:
             return
-        self._btn_export.setEnabled(False)
+        self._ui.btn_export.setEnabled(False)
         self._sbar.showMessage("Exporting …")
         self._pending_export_row_count = len(export_df)
         self._export_thread = ExportThread(export_df, fp)
@@ -2677,7 +2370,7 @@ class AlarmViewer(QMainWindow):
         self._export_thread.start()
 
     def _on_export_done(self, fp: str):
-        self._btn_export.setEnabled(True)
+        self._ui.btn_export.setEnabled(True)
         row_count = int(getattr(self, "_pending_export_row_count", self._model.rowCount()) or 0)
         QMessageBox.information(
             self, "Export OK",
@@ -2685,7 +2378,7 @@ class AlarmViewer(QMainWindow):
         self._sbar.showMessage(f"Exported → {fp}")
 
     def _on_export_error(self, msg: str):
-        self._btn_export.setEnabled(True)
+        self._ui.btn_export.setEnabled(True)
         QMessageBox.critical(self, "Export Failed", msg)
         self._sbar.showMessage("Export failed")
 

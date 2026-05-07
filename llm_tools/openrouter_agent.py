@@ -11,10 +11,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-try:
-    from alarm_app.runtime.env import load_local_env
-except ImportError:
-    from runtime.env import load_local_env  # type: ignore[no-redef]
+from alarm_app.runtime.env import load_local_env
 
 from .service import LocalDataService
 from .tools import dispatch_tool, tool_definitions_for_openrouter

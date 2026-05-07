@@ -39,37 +39,15 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-try:
-    from ...constants import DISPLAY_COLUMNS
-    from ..flow_layout import FlowLayout
-    from ...llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message
-    from ...llm_tools.openrouter_models import (
-        FALLBACK_FREE_MODELS,
-        OpenRouterModelOption,
-        fetch_free_tool_models,
-        normalize_free_model_id,
-    )
-except ImportError:
-    try:
-        from alarm_app.constants import DISPLAY_COLUMNS
-        from alarm_app.ui.flow_layout import FlowLayout
-        from alarm_app.llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message
-        from alarm_app.llm_tools.openrouter_models import (
-            FALLBACK_FREE_MODELS,
-            OpenRouterModelOption,
-            fetch_free_tool_models,
-            normalize_free_model_id,
-        )
-    except ImportError:
-        from constants import DISPLAY_COLUMNS  # type: ignore[no-redef]
-        from ui.flow_layout import FlowLayout  # type: ignore[no-redef]
-        from llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message  # type: ignore[no-redef]
-        from llm_tools.openrouter_models import (  # type: ignore[no-redef]
-            FALLBACK_FREE_MODELS,
-            OpenRouterModelOption,
-            fetch_free_tool_models,
-            normalize_free_model_id,
-        )
+from alarm_app.constants import DISPLAY_COLUMNS
+from alarm_app.ui.flow_layout import FlowLayout
+from alarm_app.llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message
+from alarm_app.llm_tools.openrouter_models import (
+    FALLBACK_FREE_MODELS,
+    OpenRouterModelOption,
+    fetch_free_tool_models,
+    normalize_free_model_id,
+)
 
 
 _BULLET_RE = re.compile(r"^\s*(?:[-*•])\s+(.*)$")

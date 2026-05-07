@@ -10,18 +10,11 @@ from pathlib import Path
 
 
 def bootstrap_local_runtime() -> dict[str, str]:
-    try:
-        from alarm_app.data import state as state_mod
-        from alarm_app.data import alarm_store
-        from alarm_app.db import engine as db_engine
-        from alarm_app.db.repos import blob_repo
-        from alarm_app.logging_config import LOG_DIR
-    except ImportError:
-        from data import state as state_mod
-        from data import alarm_store
-        from db import engine as db_engine
-        from db.repos import blob_repo
-        from logging_config import LOG_DIR
+    from alarm_app.data import state as state_mod
+    from alarm_app.data import alarm_store
+    from alarm_app.db import engine as db_engine
+    from alarm_app.db.repos import blob_repo
+    from alarm_app.logging_config import LOG_DIR
 
     state_dir = Path(state_mod.STATE_DIR)
     state_dir.mkdir(parents=True, exist_ok=True)

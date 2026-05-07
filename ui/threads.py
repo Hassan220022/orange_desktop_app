@@ -13,55 +13,21 @@ import pandas as pd
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
-try:
-    from ..constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
-    from ..core.backup_time import compute_backup_times, compute_backup_times_for_query
-    from ..core.duration import duration_to_secs as _duration_to_secs
-    from ..core.duration import secs_to_hhmmss as _secs_to_hhmmss
-    from ..core.classify import classify_by_alarm_id, compute_site_down_flag
-    from ..data import loaders as _loaders
-    from ..data.alarm_store import load_alarm_slice_for_bdt
-    from ..data.loaders import (
-        parse_alarm_file,
-        deduplicate_alarm_rows,
-    )
-    from ..data import state
-    from ..db.engine import create_engine as _db_create_engine, init_db as _db_init_db, get_session_factory as _db_get_session_factory
-    from ..db.hashing import compute_file_sha256
-    from ..db.repos.file_repo import file_exists as _file_exists, register_file as _register_file
-except ImportError:
-    try:
-        from alarm_app.constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
-        from alarm_app.core.backup_time import compute_backup_times, compute_backup_times_for_query
-        from alarm_app.core.duration import duration_to_secs as _duration_to_secs
-        from alarm_app.core.duration import secs_to_hhmmss as _secs_to_hhmmss
-        from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
-        from alarm_app.data import loaders as _loaders
-        from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
-        from alarm_app.data.loaders import (
-            parse_alarm_file,
-            deduplicate_alarm_rows,
-        )
-        from alarm_app.data import state
-        from alarm_app.db.engine import create_engine as _db_create_engine, init_db as _db_init_db, get_session_factory as _db_get_session_factory
-        from alarm_app.db.hashing import compute_file_sha256
-        from alarm_app.db.repos.file_repo import file_exists as _file_exists, register_file as _register_file
-    except ImportError:
-        from constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
-        from core.backup_time import compute_backup_times, compute_backup_times_for_query
-        from core.duration import duration_to_secs as _duration_to_secs
-        from core.duration import secs_to_hhmmss as _secs_to_hhmmss
-        from core.classify import classify_by_alarm_id, compute_site_down_flag
-        from data import loaders as _loaders
-        from data.alarm_store import load_alarm_slice_for_bdt
-        from data.loaders import (
-            parse_alarm_file,
-            deduplicate_alarm_rows,
-        )
-        from data import state
-        from db.engine import create_engine as _db_create_engine, init_db as _db_init_db, get_session_factory as _db_get_session_factory
-        from db.hashing import compute_file_sha256
-        from db.repos.file_repo import file_exists as _file_exists, register_file as _register_file
+from alarm_app.constants import SCHEMA_1_MAP, SCHEMA_2_MAP, ALL_INTERNAL_COLS
+from alarm_app.core.backup_time import compute_backup_times, compute_backup_times_for_query
+from alarm_app.core.duration import duration_to_secs as _duration_to_secs
+from alarm_app.core.duration import secs_to_hhmmss as _secs_to_hhmmss
+from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
+from alarm_app.data import loaders as _loaders
+from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
+from alarm_app.data.loaders import (
+    parse_alarm_file,
+    deduplicate_alarm_rows,
+)
+from alarm_app.data import state
+from alarm_app.db.engine import create_engine as _db_create_engine, init_db as _db_init_db, get_session_factory as _db_get_session_factory
+from alarm_app.db.hashing import compute_file_sha256
+from alarm_app.db.repos.file_repo import file_exists as _file_exists, register_file as _register_file
 
 _log = logging.getLogger(__name__)
 
@@ -409,10 +375,7 @@ class BDTValidationThread(QThread):
         if not photo_jobs:
             return
         try:
-            try:
-                from alarm_app.bdt.history import persist_photo_jobs
-            except ImportError:
-                from bdt.history import persist_photo_jobs
+            from alarm_app.bdt.history import persist_photo_jobs
             stored = persist_photo_jobs(photo_jobs)
             _log.info("Deferred BDT photo jobs completed: photos=%d", stored)
         except Exception:
@@ -444,12 +407,8 @@ class BDTValidationThread(QThread):
         return subset
 
     def run(self):
-        try:
-            from alarm_app.bdt.parser import parse_bdt_file
-            from alarm_app.bdt.validator import validate_bdt
-        except ImportError:
-            from bdt.parser import parse_bdt_file
-            from bdt.validator import validate_bdt
+        from alarm_app.bdt.parser import parse_bdt_file
+        from alarm_app.bdt.validator import validate_bdt
         from datetime import datetime
 
         try:
@@ -546,10 +505,7 @@ class BDTValidationThread(QThread):
             if persist_items:
                 try:
                     self.progress.emit(96, "Saving validation history …")
-                    try:
-                        from alarm_app.bdt.history import save_validation_batch
-                    except ImportError:
-                        from bdt.history import save_validation_batch
+                    from alarm_app.bdt.history import save_validation_batch
                     run_payloads, photo_jobs, failed_items = save_validation_batch(
                         items=persist_items,
                         alarm_df=self._alarm_df,

@@ -16,10 +16,7 @@ from uuid import uuid5, NAMESPACE_URL
 
 import pandas as pd
 
-try:
-    from ..constants import APP_VERSION, BDT_RULES
-except ImportError:
-    from alarm_app.constants import APP_VERSION, BDT_RULES
+from alarm_app.constants import APP_VERSION, BDT_RULES
 
 
 HISTORY_DIR = Path.home() / ".alarm_viewer" / "bdt_history"
@@ -240,12 +237,8 @@ def _register_bdt_uploaded_file(session, bdt_data) -> int | None:
     if not path_obj.is_file():
         return None
 
-    try:
-        from alarm_app.db.hashing import compute_file_sha256
-        from alarm_app.db.repos.file_repo import register_file as _register_file
-    except ImportError:
-        from db.hashing import compute_file_sha256
-        from db.repos.file_repo import register_file as _register_file
+    from alarm_app.db.hashing import compute_file_sha256
+    from alarm_app.db.repos.file_repo import register_file as _register_file
 
     file_sha256 = compute_file_sha256(path_obj)
     record = _register_file(

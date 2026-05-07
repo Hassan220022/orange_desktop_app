@@ -14,54 +14,29 @@ import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 from sqlalchemy import inspect as sa_inspect
 
-try:
-    from ..bdt.export import build_bdt_export_sheets
-    from ..core.backup_time import compute_backup_times
-    from ..data import alarm_store, state
-    from ..data.site_report import (
-        build_pm_accept_report,
-        build_site_alarm_report,
-        collect_site_sheet_keys,
-        infer_site_id_column,
-        normalize_site_key,
-        read_pm_accept_sheet,
-    )
-    from ..db import engine as db_engine
-    from ..db.models import (
-        BDTPhoto,
-        BDTTest,
-        BlobAsset,
-        UploadedFile,
-        PMRuleCatalog,
-        PMRuleResult,
-        PMValidationRun,
-    )
-    from ..db.repos import blob_repo
-    from ..db.repos.pm_repo import load_all_validation_results
-except ImportError:
-    from alarm_app.core.backup_time import compute_backup_times
-    from alarm_app.bdt.export import build_bdt_export_sheets
-    from alarm_app.data import alarm_store, state
-    from alarm_app.data.site_report import (
-        build_pm_accept_report,
-        build_site_alarm_report,
-        collect_site_sheet_keys,
-        infer_site_id_column,
-        normalize_site_key,
-        read_pm_accept_sheet,
-    )
-    from alarm_app.db import engine as db_engine
-    from alarm_app.db.models import (
-        BDTPhoto,
-        BDTTest,
-        BlobAsset,
-        UploadedFile,
-        PMRuleCatalog,
-        PMRuleResult,
-        PMValidationRun,
-    )
-    from alarm_app.db.repos import blob_repo
-    from alarm_app.db.repos.pm_repo import load_all_validation_results
+from alarm_app.bdt.export import build_bdt_export_sheets
+from alarm_app.core.backup_time import compute_backup_times
+from alarm_app.data import alarm_store, state
+from alarm_app.data.site_report import (
+    build_pm_accept_report,
+    build_site_alarm_report,
+    collect_site_sheet_keys,
+    infer_site_id_column,
+    normalize_site_key,
+    read_pm_accept_sheet,
+)
+from alarm_app.db import engine as db_engine
+from alarm_app.db.models import (
+    BDTPhoto,
+    BDTTest,
+    BlobAsset,
+    UploadedFile,
+    PMRuleCatalog,
+    PMRuleResult,
+    PMValidationRun,
+)
+from alarm_app.db.repos import blob_repo
+from alarm_app.db.repos.pm_repo import load_all_validation_results
 
 
 MAX_QUERY_LIMIT = 500

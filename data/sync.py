@@ -7,10 +7,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
-try:
-    from . import state
-except ImportError:
-    from alarm_app.data import state
+from alarm_app.data import state
 
 
 SyncSender = Callable[[dict], dict]

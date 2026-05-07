@@ -13,24 +13,14 @@ from typing import Any
 
 import pandas as pd
 
-try:
-    from ..constants import (
-        BDT_RULES,
-        BDT_RULE_NAME_BY_CODE,
-        BDT_PM_SUMMARY_HEADERS,
-        BDT_SUMMARY_EXPORT_HEADERS,
-        BDT_SUMMARY_SHEET_NAME,
-        format_bdt_rule_label,
-    )
-except ImportError:
-    from alarm_app.constants import (
-        BDT_RULES,
-        BDT_RULE_NAME_BY_CODE,
-        BDT_PM_SUMMARY_HEADERS,
-        BDT_SUMMARY_EXPORT_HEADERS,
-        BDT_SUMMARY_SHEET_NAME,
-        format_bdt_rule_label,
-    )
+from alarm_app.constants import (
+    BDT_RULES,
+    BDT_RULE_NAME_BY_CODE,
+    BDT_PM_SUMMARY_HEADERS,
+    BDT_SUMMARY_EXPORT_HEADERS,
+    BDT_SUMMARY_SHEET_NAME,
+    format_bdt_rule_label,
+)
 
 
 _EMPTY_VALUES = {"", "none", "nan", "null", "-", "--", "unknown"}

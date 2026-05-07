@@ -9,13 +9,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QDate
 from PyQt5.QtGui import QColor, QFont, QTextCharFormat
 
-try:
-    from ..flow_layout import FlowLayout
-except ImportError:
-    try:
-        from alarm_app.ui.flow_layout import FlowLayout
-    except ImportError:
-        from ui.flow_layout import FlowLayout
+from alarm_app.ui.flow_layout import FlowLayout
 
 
 class SearchPanel(QWidget):

@@ -8,10 +8,7 @@ import urllib.request
 
 _log = logging.getLogger(__name__)
 
-try:
-    from .sync import TransientSyncError
-except ImportError:
-    from alarm_app.data.sync import TransientSyncError
+from alarm_app.data.sync import TransientSyncError
 
 BACKEND_URL = os.environ.get("ALARM_SYNC_URL", "http://127.0.0.1:8787")
 

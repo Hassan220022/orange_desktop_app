@@ -14,22 +14,10 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 
-try:
-    from ..constants import BT_HEADERS, BT_WIDTHS
-    from ..core.backup_time import fmt_td as _fmt_td
-    from ..data import state
-    from ..bdt.rule_docs import full_rules_html, iter_rule_docs
-except ImportError:
-    try:
-        from alarm_app.constants import BT_HEADERS, BT_WIDTHS
-        from alarm_app.core.backup_time import fmt_td as _fmt_td
-        from alarm_app.data import state
-        from alarm_app.bdt.rule_docs import full_rules_html, iter_rule_docs
-    except ImportError:
-        from constants import BT_HEADERS, BT_WIDTHS
-        from core.backup_time import fmt_td as _fmt_td
-        from data import state
-        from bdt.rule_docs import full_rules_html, iter_rule_docs
+from alarm_app.constants import BT_HEADERS, BT_WIDTHS
+from alarm_app.core.backup_time import fmt_td as _fmt_td
+from alarm_app.data import state
+from alarm_app.bdt.rule_docs import full_rules_html, iter_rule_docs
 
 
 def _resolved_parent_theme_mode(parent) -> str:
@@ -845,13 +833,7 @@ class BdtParametersDialog(QDialog):
 
 def _BDTTolerances_default_value(key: str) -> float:
     """Return the default value of a single field on ``BDTTolerances``."""
-    try:
-        from ..bdt.validator import BDTTolerances
-    except ImportError:
-        try:
-            from alarm_app.bdt.validator import BDTTolerances
-        except ImportError:
-            from bdt.validator import BDTTolerances
+    from alarm_app.bdt.validator import BDTTolerances
     return float(getattr(BDTTolerances.defaults(), key))
 
 

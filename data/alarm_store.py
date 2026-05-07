@@ -10,16 +10,8 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-try:
-    from ..core.classify import classify_by_alarm_id, compute_site_down_flag
-    from ..core.duration import duration_to_secs, secs_to_hhmmss
-except ImportError:
-    try:
-        from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
-        from alarm_app.core.duration import duration_to_secs, secs_to_hhmmss
-    except ImportError:
-        from core.classify import classify_by_alarm_id, compute_site_down_flag
-        from core.duration import duration_to_secs, secs_to_hhmmss
+from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
+from alarm_app.core.duration import duration_to_secs, secs_to_hhmmss
 
 STATE_DIR = Path.home() / ".alarm_viewer"
 ALARM_DB_FILE = STATE_DIR / "alarms.duckdb"
@@ -188,13 +180,7 @@ def _range_end_exclusive(value: date | datetime | None) -> datetime | None:
 
 
 def _load_alarm_ids() -> dict[str, list[str]]:
-    try:
-        from . import state as _state
-    except ImportError:
-        try:
-            from alarm_app.data import state as _state
-        except ImportError:
-            from data import state as _state
+    from alarm_app.data import state as _state
     try:
         data = _state.load_alarm_ids()
     except Exception:

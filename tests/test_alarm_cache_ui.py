@@ -195,19 +195,22 @@ class _ModelStub:
 def _build_query_viewer():
     header = _Header(section=2, order=Qt.DescendingOrder)
     stats = {key: _StatsLabel() for key in ("total", "power", "down", "door", "sites", "avg_dur")}
+    ui = SimpleNamespace(
+        edit_site=_LineEdit("A001, B002"),
+        cb_cat=_Combo("Power"),
+        cb_net=_Combo("4G"),
+        cb_vnd=_Combo("Huawei"),
+        chk_mindur=_Check(True),
+        spn_mindur=_Spin(15),
+        chk_date=_Check(True),
+        chk_date_range=_Check(True),
+        chk_date_days=_Check(True),
+        d_from=_DateEdit(pd.Timestamp("2026-04-01").date()),
+        d_to=_DateEdit(pd.Timestamp("2026-04-05").date()),
+        edit_days=_LineEdit("2026-04-02,2026-04-04"),
+    )
     viewer = SimpleNamespace(
-        _edit_site=_LineEdit("A001, B002"),
-        _cb_cat=_Combo("Power"),
-        _cb_net=_Combo("4G"),
-        _cb_vnd=_Combo("Huawei"),
-        _chk_mindur=_Check(True),
-        _spn_mindur=_Spin(15),
-        _chk_date=_Check(True),
-        _chk_date_range=_Check(True),
-        _chk_date_days=_Check(True),
-        _d_from=_DateEdit(pd.Timestamp("2026-04-01").date()),
-        _d_to=_DateEdit(pd.Timestamp("2026-04-05").date()),
-        _edit_days=_LineEdit("2026-04-02,2026-04-04"),
+        _ui=ui,
         _both_pd_active=True,
         _uploaded_site_keys={"A001"},
         _col_filters={"vendor": {"Huawei"}, "alarm_category": {"Power"}},
@@ -260,10 +263,10 @@ def test_build_alarm_query_maps_ui_state():
 
 def test_db_load_uses_query_page_path_without_materializing_full_df(monkeypatch):
     viewer = SimpleNamespace(
+        _ui=SimpleNamespace(lbl_loaded=_Label()),
         _get_alarm_load_mode=lambda: "db",
         _load_alarm_page=lambda **kwargs: True,
         _current_alarm_total=lambda: 42,
-        _lbl_loaded=_Label(),
         _pending_alarm_load_mode=None,
         _full_df=pd.DataFrame(),
     )
@@ -272,7 +275,7 @@ def test_db_load_uses_query_page_path_without_materializing_full_df(monkeypatch)
     AlarmViewer._load(viewer)
 
     assert viewer._pending_alarm_load_mode == "db"
-    assert viewer._lbl_loaded.text == "✓  42 cached records"
+    assert viewer._ui.lbl_loaded.text == "✓  42 cached records"
     assert viewer._full_df.empty
 
 
@@ -281,16 +284,18 @@ def test_db_load_falls_back_to_state_dataframe_before_cache_miss_dialog(monkeypa
     applied = []
     dialog_calls = []
     viewer = SimpleNamespace(
+        _ui=SimpleNamespace(
+            lbl_loaded=_Label(),
+            btn_load=_Button(),
+            file_list=_ListWidget(),
+        ),
         _get_alarm_load_mode=lambda: "db",
         _load_alarm_page=lambda **kwargs: True,
         _current_alarm_total=lambda: 0,
         _load_alarm_dataframe_from_db=lambda: recovered_df,
         _apply_loaded_alarm_dataframe=lambda df, msg: applied.append((df.copy(), msg)),
-        _file_list=_ListWidget(),
         _file_infos=[],
-        _lbl_loaded=_Label(),
         _sbar=_StatusBar(),
-        _btn_load=_Button(),
         _prog=_Progress(),
         _pending_alarm_load_mode=None,
         _full_df=pd.DataFrame(),
@@ -316,10 +321,9 @@ def test_apply_loaded_alarm_dataframe_keeps_in_memory_results_when_db_render_una
     populated = []
     refreshed = []
     viewer = SimpleNamespace(
-        _btn_load=_Button(),
+        _ui=SimpleNamespace(btn_load=_Button(), lbl_loaded=_Label()),
         _prog=_Progress(),
         _sbar=_StatusBar(),
-        _lbl_loaded=_Label(),
         _lbl_count=_Label(),
         _page_offset=99,
         _full_df=pd.DataFrame(),
@@ -353,20 +357,22 @@ def test_load_alarm_page_fetches_count_page_stats_and_facets(monkeypatch):
     model = _ModelStub()
     stats = {key: _StatsLabel() for key in ("total", "power", "down", "door", "sites", "avg_dur")}
     viewer = SimpleNamespace(
+        _ui=SimpleNamespace(
+            cb_cat=_Combo("All"),
+            cb_net=_Combo("All"),
+            cb_vnd=_Combo("All"),
+        ),
         _page_size=2,
         _page_offset=0,
         _page_total_rows=0,
         _alarm_query_active=False,
         _alarm_table_columns=[],
         _model=model,
+        _btn_prev_page=_Button(),
+        _btn_next_page=_Button(),
         _lbl_count=_Label(),
         _lbl_page=_Label(),
         _lbl_page_range=_Label(),
-        _btn_prev_page=_Button(),
-        _btn_next_page=_Button(),
-        _cb_cat=_Combo("All"),
-        _cb_net=_Combo("All"),
-        _cb_vnd=_Combo("All"),
         _table=_Table(header),
         _sbar=_StatusBar(),
         _stats=stats,
@@ -430,5 +436,5 @@ def test_load_alarm_page_fetches_count_page_stats_and_facets(monkeypatch):
     assert viewer._lbl_page.text == "Page 2/3"
     assert viewer._lbl_page_range.text == "Rows 3-4 of 5"
     assert stats["avg_dur"].text == "01:01:01"
-    assert viewer._cb_vnd.items == ["All", "Huawei", "Nokia"]
+    assert viewer._ui.cb_vnd.items == ["All", "Huawei", "Nokia"]
     assert viewer._sbar.messages[-1][0] == "Loaded page"

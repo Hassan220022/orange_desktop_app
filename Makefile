@@ -1,4 +1,4 @@
-.PHONY: run dev live server build-windows build-macos build-windows-installer build-macos-installer
+.PHONY: run dev live server build-windows build-macos build-windows-installer build-macos-installer lint typecheck test
 
 # Start the app (backend starts automatically as a child process).
 run:
@@ -28,3 +28,12 @@ build-windows-installer:
 
 build-macos-installer:
 	cd scripts && ./build_macos_installer.sh
+
+lint:
+	ruff check .
+
+typecheck:
+	mypy --ignore-missing-imports --no-strict-optional core/ data/ db/ web/ llm_tools/
+
+test:
+	pytest tests/ -x
