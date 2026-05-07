@@ -46,33 +46,40 @@ hiddenimports = [
     "sklearn",
     "scipy",
     "c2pa",
+    # Root-level alarm_app packages (needed for Python to treat dirs as packages)
+    "core", "data", "db", "db.repos",
+    "bdt", "ui", "ui.panels",
+    "web", "web.routers",
+    "llm_tools", "runtime",
     # Root-level alarm_app modules (flat in PyInstaller bundle)
     "versioning",
     "constants",
     "styles",
     "logging_config",
-    "core",
-    "data",
-    "db",
-    "bdt",
-    "ui",
-    "web",
-    "llm_tools",
-    "runtime",
+    "main",
+    # All subpackages and their modules (explicit — more reliable than collect_submodules)
+    "core.backup_time", "core.classify", "core.duration", "core.filters",
+    "data.alarm_store", "data.bootstrap", "data.cloud_reader", "data.loaders",
+    "data.site_report", "data.state", "data.sync", "data.sync_client",
+    "data.sync_monitor",
+    "db.engine", "db.hashing", "db.models", "db.seed",
+    "db.repos.alarm_repo", "db.repos.bdt_repo", "db.repos.blob_repo",
+    "db.repos.file_repo", "db.repos.photo_service", "db.repos.pm_repo",
+    "db.repos.state_repo", "db.repos.sync_repo",
+    "bdt.export", "bdt.history", "bdt.image_assigner", "bdt.models",
+    "bdt.normalization", "bdt.ooxml_reader", "bdt.parser", "bdt.photo_auth",
+    "bdt.rule_docs", "bdt.section_parser", "bdt.validator",
+    "ui.bridge", "ui.dialogs", "ui.filter_state", "ui.flow_layout",
+    "ui.model", "ui.state_manager", "ui.threads", "ui.viewer",
+    "ui.panels.bdt_detail_panel", "ui.panels.bdt_validation_panel",
+    "ui.panels.bdt_workspace_panel", "ui.panels.chat_panel",
+    "ui.panels.left_panel", "ui.panels.search_panel",
+    "web.app", "web.config", "web.deps", "web.schemas",
+    "web.routers.alarms", "web.routers.pm", "web.routers.sync",
+    "llm_tools.mcp_server", "llm_tools.openrouter_agent",
+    "llm_tools.openrouter_models", "llm_tools.service", "llm_tools.tools",
+    "runtime.bootstrap", "runtime.env",
 ]
-hiddenimports += collect_submodules("core")
-hiddenimports += collect_submodules("data")
-hiddenimports += collect_submodules("db")
-hiddenimports += collect_submodules("db.repos")
-hiddenimports += collect_submodules("bdt")
-hiddenimports += collect_submodules("ui")
-hiddenimports += collect_submodules("ui.panels")
-hiddenimports += collect_submodules("web")
-hiddenimports += collect_submodules("web.routers")
-hiddenimports += collect_submodules("llm_tools")
-hiddenimports += collect_submodules("runtime")
-hiddenimports += collect_submodules("bdt.vendor_synthid")
-
 
 
 a = Analysis(
