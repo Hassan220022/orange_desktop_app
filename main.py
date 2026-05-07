@@ -7,6 +7,7 @@ Starts the FastAPI backend in a child process and shuts it down on exit.
 
 import argparse
 import atexit
+import builtins
 import logging
 import multiprocessing
 import os
@@ -28,35 +29,25 @@ def _ensure_alarm_app_alias() -> None:
     pkg.__path__ = [str(package_root)]  # type: ignore[attr-defined]
     sys.modules["alarm_app"] = pkg
 
-    # In PyInstaller frozen bundles, flat modules are stored without the
-    # alarm_app prefix.  Register a meta-path finder that redirects
-    # `alarm_app.<flat>` imports to the corresponding flat module.
+    # In PyInstaller frozen bundles, modules are stored flat (without the
+    # alarm_app prefix) in a custom archive.  The filesystem-based namespace
+    # package approach fails because the archive is not on disk.  Instead,
+    # hook builtins.__import__ to transparently redirect alarm_app.<name>
+    # imports to their flat counterparts, which PyInstaller's FrozenImporter
+    # can resolve from the archive.
     if getattr(sys, "_MEIPASS", None):
-        import importlib.abc
-        import importlib.machinery
+        _original_import = builtins.__import__
 
-        class _AlarmNamespaceFinder(importlib.abc.MetaPathFinder):
-            def find_spec(self, fullname, path, target=None):
-                if not fullname.startswith("alarm_app."):
-                    return None
-                flat_name = fullname[len("alarm_app."):]
-                # Check if flat module is already loaded
-                if flat_name in sys.modules:
-                    mod = sys.modules[flat_name]
-                    sys.modules.setdefault(fullname, mod)
-                    return mod.__spec__
-                # Try to find via regular import machinery
+        def _frozen_alarm_import(name, *args, **kwargs):
+            if name.startswith("alarm_app."):
+                flat = name[len("alarm_app."):]
                 try:
-                    spec = importlib.machinery.PathFinder.find_spec(
-                        flat_name, sys.path
-                    )
-                    if spec is not None:
-                        return spec
-                except Exception:
+                    return _original_import(flat, *args, **kwargs)
+                except ImportError:
                     pass
-                return None
+            return _original_import(name, *args, **kwargs)
 
-        sys.meta_path.insert(0, _AlarmNamespaceFinder())
+        builtins.__import__ = _frozen_alarm_import
 
 
 _ensure_alarm_app_alias()
