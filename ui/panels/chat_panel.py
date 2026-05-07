@@ -9,8 +9,8 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from PyQt5.QtCore import QDate, QEvent, Qt, QThread, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QDesktopServices, QPainter, QPixmap
+from PyQt5.QtCore import QDate, QEvent, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QDesktopServices, QPainter, QPixmap, QTextDocument
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -256,6 +256,63 @@ def _output_paths(value: object) -> list[str]:
     return unique
 
 
+class _WrappingRichLabel(QLabel):
+    """A QLabel that reports an accurate ``heightForWidth`` for word-wrapped
+    text (rich or plain), so that the surrounding layout reserves enough
+    vertical space for wrapped lines.
+
+    The default ``QLabel.sizeHint()`` returns the size for the text rendered
+    on a *single* line, which causes wrapped multi-line text to be clipped
+    by its parent layout. We override ``heightForWidth`` to drive layout
+    height from a ``QTextDocument`` rendered at the constrained width.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWordWrap(True)
+        self.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        sp = self.sizePolicy()
+        sp.setHorizontalPolicy(QSizePolicy.Preferred)
+        sp.setVerticalPolicy(QSizePolicy.Preferred)
+        sp.setHeightForWidth(True)
+        self.setSizePolicy(sp)
+        self.setMinimumHeight(0)
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def _document_height(self, width: int) -> int:
+        text = self.text() or ""
+        if not text:
+            return 0
+        m = self.contentsMargins()
+        usable = max(0, width - m.left() - m.right())
+        doc = QTextDocument()
+        doc.setDefaultFont(self.font())
+        doc.setDocumentMargin(0)
+        if self.textFormat() == Qt.RichText:
+            doc.setHtml(text)
+        elif self.textFormat() == Qt.PlainText:
+            doc.setPlainText(text)
+        else:  # AutoText: detect HTML
+            if "<" in text and ">" in text:
+                doc.setHtml(text)
+            else:
+                doc.setPlainText(text)
+        doc.setTextWidth(usable)
+        return int(doc.size().height()) + m.top() + m.bottom()
+
+    def heightForWidth(self, width: int) -> int:
+        return self._document_height(width)
+
+    def minimumSizeHint(self) -> QSize:
+        # A wrapping label needs to be allowed to shrink horizontally so
+        # heightForWidth() can drive the wrapped height. We report a small
+        # minimum (one line of text height, zero width) so the label never
+        # forces its parent layout to be wider than necessary.
+        return QSize(0, self.fontMetrics().lineSpacing())
+
+
 class _ZoomableImageView(QGraphicsView):
     """Graphics view with mouse-wheel zoom and reset support."""
 
@@ -365,7 +422,7 @@ def _make_assistant_button(text: str, *, minimum_width: int = 0) -> QPushButton:
     button.setObjectName("assistant_chip")
     button.setCursor(Qt.PointingHandCursor)
     button.setMinimumHeight(max(32, button.fontMetrics().height() + 14))
-    button.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+    button.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
     if minimum_width:
         button.setMinimumWidth(minimum_width)
     return button
@@ -625,6 +682,8 @@ class ChatPanel(QWidget):
         self.edit_model.setObjectName("chat_model")
         self.edit_model.setMinimumWidth(0)
         self.edit_model.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.edit_model.setToolTip("Select the OpenRouter model for chat responses")
+        self.edit_model.setMaxVisibleItems(12)
         self.edit_model.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._populate_model_options(list(FALLBACK_FREE_MODELS))
         self.edit_model.currentIndexChanged.connect(self._sync_model)
@@ -687,9 +746,13 @@ class ChatPanel(QWidget):
             "Ask about local alarms, BDT, photos, or exports…"
         )
         self.input.setAcceptRichText(False)
-        self.input.setFixedHeight(78)
+        self.input.setMinimumHeight(40)
+        self.input.setMaximumHeight(160)
+        self.input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.input.document().setDocumentMargin(8)
         self.input.installEventFilter(self)
         self.input.textChanged.connect(self._refresh_send_state)
+        self.input.textChanged.connect(self._adjust_input_height)
         composer_lay.addWidget(self.input)
 
         actions = QHBoxLayout()
@@ -698,8 +761,16 @@ class ChatPanel(QWidget):
 
         self.btn_send = QPushButton("Send")
         self.btn_send.setObjectName("assistant_send")
+        self.btn_send.setMinimumHeight(36)
+        self.btn_send.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.btn_send.clicked.connect(self.send_current_message)
         actions.addWidget(self.btn_send)
+
+        self.lbl_char_count = QLabel("0 / 4000")
+        self.lbl_char_count.setObjectName("assistant_status")
+        self.lbl_char_count.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        actions.addStretch(1)
+        actions.addWidget(self.lbl_char_count)
         composer_lay.addLayout(actions)
 
         layout.addWidget(composer)
@@ -725,9 +796,11 @@ class ChatPanel(QWidget):
             content_height = max(content_height, int(fm.height() * 2.2))
         content_height = max(content_height, 30)
         for btn in getattr(self, "_adaptive_buttons", []):
+            if btn is self.btn_send:
+                continue
             btn.setMinimumHeight(content_height)
         two_column_tools = (content_width * 2) + 48
-        self._recommended_min_width = max(310, two_column_tools)
+        self._recommended_min_width = max(280, min(two_column_tools, 420))
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -737,6 +810,8 @@ class ChatPanel(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._refresh_responsive_metrics()
+        # Update all existing bubble widths
+        self._update_message_bubble_widths()
         if hasattr(self, "_history_scroll"):
             bar = self._history_scroll.verticalScrollBar()
             if bar.value() >= bar.maximum() - 8:
@@ -934,6 +1009,7 @@ class ChatPanel(QWidget):
         if current not in seen:
             self.edit_model.addItem(current, current)
         self._select_model_option(current)
+        self.edit_model.setMinimumWidth(0)
         self.edit_model.blockSignals(False)
 
     def _select_model_option(self, model: str):
@@ -1843,6 +1919,24 @@ class ChatPanel(QWidget):
             or (self._summary_thread and self._summary_thread.isRunning())
         )
         self.btn_send.setEnabled(not busy and bool(self.input.toPlainText().strip()))
+        text = self.input.toPlainText()
+        char_count = len(text)
+        if hasattr(self, "lbl_char_count"):
+            self.lbl_char_count.setText(f"{char_count} / 4000")
+
+    def _adjust_input_height(self):
+        """Auto-resize the input field to fit its content."""
+        doc = self.input.document()
+        if doc is None:
+            return
+        margins = self.input.contentsMargins()
+        doc_margin = doc.documentMargin() * 2
+        frame_width = self.input.frameWidth() * 2
+        doc.setPageSize(self.input.viewport().size())
+        height = doc.size().height()
+        target = max(40, min(int(height + margins.top() + margins.bottom() + doc_margin + frame_width + 4), 160))
+        if abs(self.input.height() - target) > 4:
+            self.input.setFixedHeight(target)
 
     def _api_status_text(self) -> str:
         key_state = "API key ready" if self._viewer.openrouter_api_key() else "API key missing"
@@ -1856,12 +1950,9 @@ class ChatPanel(QWidget):
 
     @staticmethod
     def _make_rich_label(text: str, *, object_name: str = "chat_text") -> QLabel:
-        label = QLabel()
+        label = _WrappingRichLabel()
         label.setObjectName(object_name)
         label.setTextFormat(Qt.RichText)
-        label.setWordWrap(True)
-        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         label.setText(text)
         return label
 
@@ -1943,11 +2034,19 @@ class ChatPanel(QWidget):
 
         bubble = QFrame()
         bubble.setObjectName(bubble_name)
-        bubble.setMaximumWidth(self._message_bubble_width(self.width(), role_key))
-        bubble.setSizePolicy(
-            QSizePolicy.Preferred,
-            QSizePolicy.MinimumExpanding,
-        )
+
+        # Size policy: let the bubble shrink-wrap to content, capped by maximumWidth.
+        # heightForWidth=True is required so the bubble asks its layout (and the
+        # WrappingRichLabel children) for the actual wrapped height instead of
+        # using the unwrapped single-line sizeHint.
+        max_w = self._message_bubble_width(self.width(), role_key)
+        bubble.setMaximumWidth(max_w)
+        # Floor sized to comfortably fit the meta header + action button
+        # ("Copy" chip ≈ 80 px + padding) without horizontal clipping.
+        bubble.setMinimumWidth(180)
+        bubble_sp = QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        bubble_sp.setHeightForWidth(True)
+        bubble.setSizePolicy(bubble_sp)
         bubble_layout = QVBoxLayout(bubble)
         bubble_layout.setContentsMargins(12, 10, 12, 10)
         bubble_layout.setSpacing(6)
@@ -2005,6 +2104,32 @@ class ChatPanel(QWidget):
             "error": 0.82,
         }.get(role_key, 0.80)
         return max(280, min(int(available_width * ratio), 760))
+
+    def _update_message_bubble_widths(self):
+        """Re-apply maximum width to all existing message bubbles on resize."""
+        for i in range(self._history_layout.count()):
+            item = self._history_layout.itemAt(i)
+            if item is None:
+                continue
+            row_widget = item.widget()
+            if row_widget is None:
+                continue
+            row_layout = row_widget.layout()
+            if row_layout is None:
+                continue
+            for j in range(row_layout.count()):
+                row_item = row_layout.itemAt(j)
+                if row_item is None:
+                    continue
+                bubble = row_item.widget()
+                if bubble is None or not isinstance(bubble, QFrame):
+                    continue
+                obj_name = bubble.objectName() or ""
+                if "chat_bubble" not in obj_name:
+                    continue
+                role_key = "you" if "user" in obj_name else "assistant"
+                max_w = self._message_bubble_width(self.width(), role_key)
+                bubble.setMaximumWidth(max_w)
 
     def _save_message_output(self, role: str, text: str):
         default_name = f"assistant-{role.lower()}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.txt"
