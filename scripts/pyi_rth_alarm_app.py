@@ -33,11 +33,32 @@ def _register_alarm_app_namespace():
     if toc is not None and isinstance(toc, dict):
         module_names = list(toc.keys())
     else:
-        # Fallback: eagerly import a known set of top-level modules
+        # Fallback: import all known alarm_app modules
         module_names = [
-            "logging_config", "versioning", "constants", "styles",
-            "core", "data", "db", "bdt", "ui", "web", "llm_tools",
-            "runtime",
+            "logging_config", "versioning", "constants", "styles", "main",
+            "core", "core.backup_time", "core.classify", "core.duration", "core.filters",
+            "data", "data.alarm_store", "data.bootstrap", "data.cloud_reader",
+            "data.loaders", "data.site_report", "data.state", "data.sync",
+            "data.sync_client", "data.sync_monitor",
+            "db", "db.engine", "db.hashing", "db.models", "db.seed",
+            "db.repos", "db.repos.alarm_repo", "db.repos.bdt_repo",
+            "db.repos.blob_repo", "db.repos.file_repo", "db.repos.photo_service",
+            "db.repos.pm_repo", "db.repos.state_repo", "db.repos.sync_repo",
+            "bdt", "bdt.export", "bdt.history", "bdt.image_assigner",
+            "bdt.models", "bdt.normalization", "bdt.ooxml_reader",
+            "bdt.parser", "bdt.photo_auth", "bdt.rule_docs",
+            "bdt.section_parser", "bdt.validator",
+            "ui", "ui.bridge", "ui.dialogs", "ui.filter_state",
+            "ui.flow_layout", "ui.model", "ui.state_manager", "ui.threads",
+            "ui.viewer",
+            "ui.panels", "ui.panels.bdt_detail_panel", "ui.panels.bdt_validation_panel",
+            "ui.panels.bdt_workspace_panel", "ui.panels.chat_panel",
+            "ui.panels.left_panel", "ui.panels.search_panel",
+            "web", "web.app", "web.config", "web.deps", "web.schemas",
+            "web.routers", "web.routers.alarms", "web.routers.pm", "web.routers.sync",
+            "llm_tools", "llm_tools.mcp_server", "llm_tools.openrouter_agent",
+            "llm_tools.openrouter_models", "llm_tools.service", "llm_tools.tools",
+            "runtime", "runtime.bootstrap", "runtime.env",
         ]
 
     for mod_name in module_names:

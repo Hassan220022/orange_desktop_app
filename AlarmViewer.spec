@@ -52,6 +52,7 @@ hiddenimports = [
     "web", "web.routers",
     "llm_tools", "runtime",
     # Root-level alarm_app modules (flat in PyInstaller bundle)
+    "main",
     "versioning",
     "constants",
     "styles",
