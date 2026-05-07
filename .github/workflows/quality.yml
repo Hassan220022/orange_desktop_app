@@ -29,7 +29,7 @@ jobs:
         run: ruff check . --exit-zero
 
       - name: Typecheck
-        run: mypy --ignore-missing-imports --no-strict-optional core/ data/ db/ web/ llm_tools/ --exit-zero
+        run: mypy --ignore-missing-imports --no-strict-optional --exit-zero core/ data/ db/ web/ llm_tools/
 
       - name: Test
-        run:           pytest tests/ -x
+        run: pytest tests/ -x
