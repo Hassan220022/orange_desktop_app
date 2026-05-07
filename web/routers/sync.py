@@ -20,7 +20,10 @@ def receive_batch(req: SyncBatchRequest, db: Session = Depends(get_db)):
     duplicate = 0
     for evt in req.events:
         try:
-            from alarm_app.db.repos.sync_repo import append_outbox_event
+            try:
+                from alarm_app.db.repos.sync_repo import append_outbox_event
+            except ImportError:
+                from db.repos.sync_repo import append_outbox_event
 
             append_outbox_event(
                 db,
@@ -54,6 +57,9 @@ def receive_batch(req: SyncBatchRequest, db: Session = Depends(get_db)):
 
 @router.get("/status")
 def sync_status(db: Session = Depends(get_db)):
-    from alarm_app.data.sync_monitor import outbox_stats
+    try:
+        from alarm_app.data.sync_monitor import outbox_stats
+    except ImportError:
+        from data.sync_monitor import outbox_stats
 
     return outbox_stats(db)

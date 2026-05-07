@@ -16,7 +16,10 @@ router = APIRouter(prefix="/v1/alarms", tags=["alarms"])
 
 @router.post("/upsert", response_model=AlarmBatchResponse)
 def upsert_alarms(req: AlarmBatchRequest, db: Session = Depends(get_db)):
-    from alarm_app.db.repos.alarm_repo import bulk_upsert_alarms
+    try:
+        from alarm_app.db.repos.alarm_repo import bulk_upsert_alarms
+    except ImportError:
+        from db.repos.alarm_repo import bulk_upsert_alarms
 
     records = [a.model_dump() for a in req.alarms]
     df = pd.DataFrame(records)
@@ -32,7 +35,10 @@ def upsert_alarms(req: AlarmBatchRequest, db: Session = Depends(get_db)):
 def query_alarms(db: Session = Depends(get_db),
                  site_id: str | None = None,
                  limit: int = 10000):
-    from alarm_app.db.repos.alarm_repo import load_alarms_as_df
+    try:
+        from alarm_app.db.repos.alarm_repo import load_alarms_as_df
+    except ImportError:
+        from db.repos.alarm_repo import load_alarms_as_df
 
     df = load_alarms_as_df(db)
     if df.empty:

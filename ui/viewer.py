@@ -43,43 +43,82 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from alarm_app.constants import (
-    ALL_INTERNAL_COLS,
-    APP_NAME,
-    APP_VERSION,
-    COL_WIDTHS,
-    DISPLAY_COLUMNS,
-)
-from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
-from alarm_app.core.filters import compute_date_mask, parse_manual_days
-from alarm_app.data import alarm_store, state
-from alarm_app.data.loaders import discover_alarm_files
-from alarm_app.data.site_report import (
-    build_site_alarm_report,
-    collect_site_sheet_keys,
-    read_site_sheet,
-)
-from alarm_app.data.sync import LocalSyncWorker
-from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
-from alarm_app.ui.bridge import UIBridge
-from alarm_app.ui.dialogs import (
-    AlarmIdConfigDialog,
-    AppSettingsDialog,
-    BackupTimeDialog,
-    ColumnFilterPopup,
-    DailyReviewReportDialog,
-    FeatureFlagDialog,
-)
-from alarm_app.ui.filter_state import FilterState
-from alarm_app.ui.model import AlarmTableModel
-from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
-from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
-from alarm_app.ui.panels.bdt_workspace_panel import BdtWorkspacePanel
-from alarm_app.ui.panels.chat_panel import ChatPanel
-from alarm_app.ui.panels.left_panel import LeftPanel
-from alarm_app.ui.panels.search_panel import SearchPanel
-from alarm_app.ui.state_manager import StateManager
-from alarm_app.ui.threads import BackupTimeThread, ExportThread, LoaderThread
+try:
+    from alarm_app.constants import (
+        ALL_INTERNAL_COLS,
+        APP_NAME,
+        APP_VERSION,
+        COL_WIDTHS,
+        DISPLAY_COLUMNS,
+    )
+    from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
+    from alarm_app.core.filters import compute_date_mask, parse_manual_days
+    from alarm_app.data import alarm_store, state
+    from alarm_app.data.loaders import discover_alarm_files
+    from alarm_app.data.site_report import (
+        build_site_alarm_report,
+        collect_site_sheet_keys,
+        read_site_sheet,
+    )
+    from alarm_app.data.sync import LocalSyncWorker
+    from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
+    from alarm_app.ui.bridge import UIBridge
+    from alarm_app.ui.dialogs import (
+        AlarmIdConfigDialog,
+        AppSettingsDialog,
+        BackupTimeDialog,
+        ColumnFilterPopup,
+        DailyReviewReportDialog,
+        FeatureFlagDialog,
+    )
+    from alarm_app.ui.filter_state import FilterState
+    from alarm_app.ui.model import AlarmTableModel
+    from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
+    from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
+    from alarm_app.ui.panels.bdt_workspace_panel import BdtWorkspacePanel
+    from alarm_app.ui.panels.chat_panel import ChatPanel
+    from alarm_app.ui.panels.left_panel import LeftPanel
+    from alarm_app.ui.panels.search_panel import SearchPanel
+    from alarm_app.ui.state_manager import StateManager
+    from alarm_app.ui.threads import BackupTimeThread, ExportThread, LoaderThread
+except ImportError:
+    from constants import (
+        ALL_INTERNAL_COLS,
+        APP_NAME,
+        APP_VERSION,
+        COL_WIDTHS,
+        DISPLAY_COLUMNS,
+    )
+    from core.classify import classify_by_alarm_id, compute_site_down_flag
+    from core.filters import compute_date_mask, parse_manual_days
+    from data import alarm_store, state
+    from data.loaders import discover_alarm_files
+    from data.site_report import (
+        build_site_alarm_report,
+        collect_site_sheet_keys,
+        read_site_sheet,
+    )
+    from data.sync import LocalSyncWorker
+    from styles import STYLE_DARK, STYLE_LIGHT
+    from ui.bridge import UIBridge
+    from ui.dialogs import (
+        AlarmIdConfigDialog,
+        AppSettingsDialog,
+        BackupTimeDialog,
+        ColumnFilterPopup,
+        DailyReviewReportDialog,
+        FeatureFlagDialog,
+    )
+    from ui.filter_state import FilterState
+    from ui.model import AlarmTableModel
+    from ui.panels.bdt_detail_panel import BdtDetailPanel
+    from ui.panels.bdt_validation_panel import BdtValidationPanel
+    from ui.panels.bdt_workspace_panel import BdtWorkspacePanel
+    from ui.panels.chat_panel import ChatPanel
+    from ui.panels.left_panel import LeftPanel
+    from ui.panels.search_panel import SearchPanel
+    from ui.state_manager import StateManager
+    from ui.threads import BackupTimeThread, ExportThread, LoaderThread
 
 _log = logging.getLogger(__name__)
 
@@ -635,7 +674,10 @@ class AlarmViewer(QMainWindow):
             sender = None
             if self._sync_flags.get("sync_on", False):
                 try:
-                    from alarm_app.data.sync_client import http_send_batch
+                    try:
+                        from alarm_app.data.sync_client import http_send_batch
+                    except ImportError:
+                        from data.sync_client import http_send_batch
                     sender = http_send_batch
                 except Exception:
                     _log.warning("HTTP sync client import failed, sync disabled", exc_info=True)
@@ -653,12 +695,22 @@ class AlarmViewer(QMainWindow):
         class _BootstrapThread(QThread):
             def run(self_thread):
                 try:
-                    from alarm_app.data.bootstrap import run_bootstrap
-                    from alarm_app.db.engine import (
-                        create_engine,
-                        get_session_factory,
-                        init_db,
-                    )
+                    try:
+                        from alarm_app.data.bootstrap import run_bootstrap
+                    except ImportError:
+                        from data.bootstrap import run_bootstrap
+                    try:
+                        from alarm_app.db.engine import (
+                            create_engine,
+                            get_session_factory,
+                            init_db,
+                        )
+                    except ImportError:
+                        from db.engine import (
+                            create_engine,
+                            get_session_factory,
+                            init_db,
+                        )
 
                     engine = create_engine()
                     init_db(engine, include_alarm_records=False)
@@ -1897,7 +1949,10 @@ class AlarmViewer(QMainWindow):
 
     def _on_loaded(self, df: pd.DataFrame, msg: str):
         if getattr(self, "_pending_alarm_load_mode", "directory") == "both":
-            from alarm_app.data.loaders import deduplicate_alarm_rows
+            try:
+                from alarm_app.data.loaders import deduplicate_alarm_rows
+            except ImportError:
+                from data.loaders import deduplicate_alarm_rows
             db_df = self._load_alarm_dataframe_from_db()
             if db_df is None:
                 db_df = pd.DataFrame()
@@ -1980,10 +2035,22 @@ class AlarmViewer(QMainWindow):
 
     def _load_bdt_results_from_db(self) -> list:
         try:
-            from alarm_app.db.engine import create_engine as _ce
-            from alarm_app.db.engine import get_session_factory as _gsf
-            from alarm_app.db.engine import init_db as _idb
-            from alarm_app.db.repos.pm_repo import load_all_validation_results
+            try:
+                from alarm_app.db.engine import create_engine as _ce
+            except ImportError:
+                from db.engine import create_engine as _ce
+            try:
+                from alarm_app.db.engine import get_session_factory as _gsf
+            except ImportError:
+                from db.engine import get_session_factory as _gsf
+            try:
+                from alarm_app.db.engine import init_db as _idb
+            except ImportError:
+                from db.engine import init_db as _idb
+            try:
+                from alarm_app.db.repos.pm_repo import load_all_validation_results
+            except ImportError:
+                from db.repos.pm_repo import load_all_validation_results
             engine = _ce()
             _idb(engine)
             session = _gsf(engine)()

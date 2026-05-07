@@ -4,9 +4,14 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from alarm_app.db.hashing import compute_perceptual_hash
-from alarm_app.db.repos.bdt_repo import save_bdt_photo
-from alarm_app.db.repos.blob_repo import store_blob
+try:
+    from alarm_app.db.hashing import compute_perceptual_hash
+    from alarm_app.db.repos.bdt_repo import save_bdt_photo
+    from alarm_app.db.repos.blob_repo import store_blob
+except ImportError:
+    from db.hashing import compute_perceptual_hash
+    from db.repos.bdt_repo import save_bdt_photo
+    from db.repos.blob_repo import store_blob
 
 _log = logging.getLogger(__name__)
 

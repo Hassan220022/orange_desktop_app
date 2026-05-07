@@ -8,7 +8,10 @@ import urllib.request
 
 _log = logging.getLogger(__name__)
 
-from alarm_app.data.sync import TransientSyncError
+try:
+    from alarm_app.data.sync import TransientSyncError
+except ImportError:
+    from data.sync import TransientSyncError
 
 # Development-only: defaults to localhost for local testing.
 # Set ALARM_SYNC_URL env var to override for production.

@@ -30,13 +30,22 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from alarm_app.bdt.parser import BDTData, load_bdt_photos
-from alarm_app.bdt.photo_auth import verify_photo_slots
-from alarm_app.bdt.validator import ValidationResult
-from alarm_app.constants import format_bdt_rule_label
-from alarm_app.data import state
-from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
-from alarm_app.ui.flow_layout import FlowLayout
+try:
+    from alarm_app.bdt.parser import BDTData, load_bdt_photos
+    from alarm_app.bdt.photo_auth import verify_photo_slots
+    from alarm_app.bdt.validator import ValidationResult
+    from alarm_app.constants import format_bdt_rule_label
+    from alarm_app.data import state
+    from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
+    from alarm_app.ui.flow_layout import FlowLayout
+except ImportError:
+    from bdt.parser import BDTData, load_bdt_photos
+    from bdt.photo_auth import verify_photo_slots
+    from bdt.validator import ValidationResult
+    from constants import format_bdt_rule_label
+    from data import state
+    from data.alarm_store import load_alarm_slice_for_bdt
+    from ui.flow_layout import FlowLayout
 
 
 class _VerticalExpandButton(QPushButton):
@@ -701,7 +710,10 @@ class BdtDetailPanel(QWidget):
         self._bdt_door_table.setRowCount(0)
         if bdt and bdt.test_date:
             try:
-                from alarm_app.bdt.validator import _find_door_alarms
+                try:
+                    from alarm_app.bdt.validator import _find_door_alarms
+                except ImportError:
+                    from bdt.validator import _find_door_alarms
                 test_date_ts = pd.Timestamp(bdt.test_date).normalize()
                 alarm_df = self._load_door_alarm_subset(bdt.site_code, test_date_ts)
                 doors = _find_door_alarms(alarm_df, bdt.site_code, test_date_ts)
@@ -729,11 +741,18 @@ class BdtDetailPanel(QWidget):
             try:
                 from datetime import date as date_type
 
-                from alarm_app.bdt.history import (
-                    compare_tests,
-                    load_previous_test,
-                    load_second_most_recent_test,
-                )
+                try:
+                    from alarm_app.bdt.history import (
+                        compare_tests,
+                        load_previous_test,
+                        load_second_most_recent_test,
+                    )
+                except ImportError:
+                    from bdt.history import (
+                        compare_tests,
+                        load_previous_test,
+                        load_second_most_recent_test,
+                    )
                 test_date = None
                 if bdt.test_date:
                     test_date = (bdt.test_date.date()

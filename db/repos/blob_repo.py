@@ -5,8 +5,12 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from alarm_app.db.hashing import compute_image_sha256
-from alarm_app.db.models import BlobAsset
+try:
+    from alarm_app.db.hashing import compute_image_sha256
+    from alarm_app.db.models import BlobAsset
+except ImportError:
+    from db.hashing import compute_image_sha256
+    from db.models import BlobAsset
 
 _log = logging.getLogger(__name__)
 

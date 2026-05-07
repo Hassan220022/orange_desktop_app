@@ -16,7 +16,10 @@ from uuid import NAMESPACE_URL, uuid5
 
 import pandas as pd
 
-from alarm_app.constants import APP_VERSION, BDT_RULES
+try:
+    from alarm_app.constants import APP_VERSION, BDT_RULES
+except ImportError:
+    from constants import APP_VERSION, BDT_RULES
 
 HISTORY_DIR = Path.home() / ".alarm_viewer" / "bdt_history"
 PM_RUNS_DIR = HISTORY_DIR / "_pm_runs"
@@ -31,15 +34,30 @@ _SessionFactory = None
 def _get_session():
     global _engine, _SessionFactory
     if _engine is None:
-        from alarm_app.db.engine import (
-            create_engine as _create_engine,
-        )
-        from alarm_app.db.engine import (
-            get_session_factory as _get_session_factory,
-        )
-        from alarm_app.db.engine import (
-            init_db as _init_db,
-        )
+        try:
+            from alarm_app.db.engine import (
+                create_engine as _create_engine,
+            )
+        except ImportError:
+            from db.engine import (
+                create_engine as _create_engine,
+            )
+        try:
+            from alarm_app.db.engine import (
+                get_session_factory as _get_session_factory,
+            )
+        except ImportError:
+            from db.engine import (
+                get_session_factory as _get_session_factory,
+            )
+        try:
+            from alarm_app.db.engine import (
+                init_db as _init_db,
+            )
+        except ImportError:
+            from db.engine import (
+                init_db as _init_db,
+            )
         _engine = _create_engine()
         _init_db(_engine, include_alarm_records=False)
         _SessionFactory = _get_session_factory(_engine)
@@ -240,8 +258,14 @@ def _register_bdt_uploaded_file(session, bdt_data) -> int | None:
     if not path_obj.is_file():
         return None
 
-    from alarm_app.db.hashing import compute_file_sha256
-    from alarm_app.db.repos.file_repo import register_file as _register_file
+    try:
+        from alarm_app.db.hashing import compute_file_sha256
+    except ImportError:
+        from db.hashing import compute_file_sha256
+    try:
+        from alarm_app.db.repos.file_repo import register_file as _register_file
+    except ImportError:
+        from db.repos.file_repo import register_file as _register_file
 
     file_sha256 = compute_file_sha256(path_obj)
     record = _register_file(
@@ -315,7 +339,10 @@ def save_test_record(bdt, verdict: str) -> None:
 
     bdt_dict = _build_bdt_dict(bdt, verdict=verdict)
 
-    from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
+    try:
+        from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
+    except ImportError:
+        from db.repos.bdt_repo import save_bdt_test as _save_bdt_test
     session = _get_session()
     try:
         file_id = _register_bdt_uploaded_file(session, bdt)
@@ -326,7 +353,10 @@ def save_test_record(bdt, verdict: str) -> None:
         photo_slots = getattr(bdt, "photo_slots", [])
         if photo_slots and bdt_record:
             try:
-                from alarm_app.db.repos.photo_service import persist_bdt_photos
+                try:
+                    from alarm_app.db.repos.photo_service import persist_bdt_photos
+                except ImportError:
+                    from db.repos.photo_service import persist_bdt_photos
                 persist_bdt_photos(session, bdt_record.id, photo_slots)
             except Exception:
                 pass  # photo persistence is best-effort
@@ -344,7 +374,10 @@ def load_previous_test(site_code: str, before_date: date) -> BDTTestRecord | Non
     Returns:
         BDTTestRecord or None if no history found
     """
-    from alarm_app.db.repos.bdt_repo import load_previous_test as _load_previous_test
+    try:
+        from alarm_app.db.repos.bdt_repo import load_previous_test as _load_previous_test
+    except ImportError:
+        from db.repos.bdt_repo import load_previous_test as _load_previous_test
     session = _get_session()
     try:
         db_row = _load_previous_test(session, site_code, before_date)
@@ -369,7 +402,10 @@ def load_second_most_recent_test(site_code: str) -> BDTTestRecord | None:
     """
     if not site_code or not str(site_code).strip():
         return None
-    from alarm_app.db.repos.bdt_repo import load_second_most_recent as _load
+    try:
+        from alarm_app.db.repos.bdt_repo import load_second_most_recent as _load
+    except ImportError:
+        from db.repos.bdt_repo import load_second_most_recent as _load
     session = _get_session()
     try:
         db_row = _load(session, site_code)
@@ -474,8 +510,14 @@ def save_validation_run(
     overall_verdict = str(getattr(validation_result, "overall", "") or "")
     bdt_dict = _build_bdt_dict(bdt_data)
 
-    from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
-    from alarm_app.db.repos.pm_repo import save_validation_run as _save_pm_run
+    try:
+        from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
+    except ImportError:
+        from db.repos.bdt_repo import save_bdt_test as _save_bdt_test
+    try:
+        from alarm_app.db.repos.pm_repo import save_validation_run as _save_pm_run
+    except ImportError:
+        from db.repos.pm_repo import save_validation_run as _save_pm_run
 
     session = _get_session()
     try:
@@ -523,16 +565,34 @@ def save_validation_batch(
     if not items:
         return [], [], []
 
-    from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
-    from alarm_app.db.repos.pm_repo import (
-        get_or_create_parameter_set as _get_or_create_parameter_set,
-    )
-    from alarm_app.db.repos.pm_repo import (
-        get_or_create_rule_catalog as _get_or_create_rule_catalog,
-    )
-    from alarm_app.db.repos.pm_repo import (
-        save_validation_run as _save_pm_run,
-    )
+    try:
+        from alarm_app.db.repos.bdt_repo import save_bdt_test as _save_bdt_test
+    except ImportError:
+        from db.repos.bdt_repo import save_bdt_test as _save_bdt_test
+    try:
+        from alarm_app.db.repos.pm_repo import (
+            get_or_create_parameter_set as _get_or_create_parameter_set,
+        )
+    except ImportError:
+        from db.repos.pm_repo import (
+            get_or_create_parameter_set as _get_or_create_parameter_set,
+        )
+    try:
+        from alarm_app.db.repos.pm_repo import (
+            get_or_create_rule_catalog as _get_or_create_rule_catalog,
+        )
+    except ImportError:
+        from db.repos.pm_repo import (
+            get_or_create_rule_catalog as _get_or_create_rule_catalog,
+        )
+    try:
+        from alarm_app.db.repos.pm_repo import (
+            save_validation_run as _save_pm_run,
+        )
+    except ImportError:
+        from db.repos.pm_repo import (
+            save_validation_run as _save_pm_run,
+        )
 
     params = params or {}
     validator_ref = validator_code_ref or f"alarm_app.bdt_validator.validate_bdt@{APP_VERSION}"
@@ -683,7 +743,10 @@ def persist_photo_jobs(photo_jobs: list[dict]) -> int:
     if not photo_jobs:
         return 0
 
-    from alarm_app.db.repos.photo_service import persist_bdt_photos
+    try:
+        from alarm_app.db.repos.photo_service import persist_bdt_photos
+    except ImportError:
+        from db.repos.photo_service import persist_bdt_photos
 
     session = _get_session()
     total = 0

@@ -5,7 +5,10 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from alarm_app.db.models import UploadedFile
+try:
+    from alarm_app.db.models import UploadedFile
+except ImportError:
+    from db.models import UploadedFile
 
 _log = logging.getLogger(__name__)
 

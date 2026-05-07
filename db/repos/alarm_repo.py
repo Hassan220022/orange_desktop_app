@@ -10,7 +10,10 @@ import logging
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from alarm_app.db.hashing import ALARM_HASH_COLS
+try:
+    from alarm_app.db.hashing import ALARM_HASH_COLS
+except ImportError:
+    from db.hashing import ALARM_HASH_COLS
 
 _log = logging.getLogger(__name__)
 

@@ -18,15 +18,26 @@ _log = logging.getLogger(__name__)
 
 import pandas as pd
 
-from alarm_app.db.engine import (
-    create_engine as _create_engine,
-)
-from alarm_app.db.engine import (
-    get_session_factory as _get_session_factory,
-)
-from alarm_app.db.engine import (
-    init_db as _init_db,
-)
+try:
+    from alarm_app.db.engine import (
+        create_engine as _create_engine,
+    )
+    from alarm_app.db.engine import (
+        get_session_factory as _get_session_factory,
+    )
+    from alarm_app.db.engine import (
+        init_db as _init_db,
+    )
+except ImportError:
+    from db.engine import (
+        create_engine as _create_engine,
+    )
+    from db.engine import (
+        get_session_factory as _get_session_factory,
+    )
+    from db.engine import (
+        init_db as _init_db,
+    )
 
 STATE_DIR  = Path.home() / ".alarm_viewer"
 STATE_FILE = STATE_DIR / "state.json"
@@ -56,22 +67,34 @@ def _get_session():
 
 
 def _state_repo_module():
-    from alarm_app.db.repos import state_repo as _repo
+    try:
+        from alarm_app.db.repos import state_repo as _repo
+    except ImportError:
+        from db.repos import state_repo as _repo
     return _repo
 
 
 def _sync_repo_module():
-    from alarm_app.db.repos import sync_repo as _repo
+    try:
+        from alarm_app.db.repos import sync_repo as _repo
+    except ImportError:
+        from db.repos import sync_repo as _repo
     return _repo
 
 
 def _alarm_store_module():
-    from alarm_app.data import alarm_store as _store
+    try:
+        from alarm_app.data import alarm_store as _store
+    except ImportError:
+        from data import alarm_store as _store
     return _store
 
 
 def _db_models_module():
-    from alarm_app.db import models as _models
+    try:
+        from alarm_app.db import models as _models
+    except ImportError:
+        from db import models as _models
     return _models
 
 
@@ -80,7 +103,10 @@ def _load_alarm_dataframe_from_sqlite() -> pd.DataFrame | None:
     try:
         from sqlalchemy import inspect as sa_inspect
 
-        from alarm_app.db.repos.alarm_repo import load_alarms_as_df as _load_alarm_df
+        try:
+            from alarm_app.db.repos.alarm_repo import load_alarms_as_df as _load_alarm_df
+        except ImportError:
+            from db.repos.alarm_repo import load_alarms_as_df as _load_alarm_df
     except Exception:
         return None
 
@@ -217,7 +243,10 @@ def load_dataframe() -> pd.DataFrame | None:
         _log.warning("Feature flags unavailable; using local DuckDB only", exc_info=True)
         flags = dict(DEFAULT_FEATURE_FLAGS)
     if flags.get("cloud_read_on"):
-        from alarm_app.data.cloud_reader import fetch_alarms_from_api
+        try:
+            from alarm_app.data.cloud_reader import fetch_alarms_from_api
+        except ImportError:
+            from data.cloud_reader import fetch_alarms_from_api
         cloud_df = fetch_alarms_from_api()
         if cloud_df is not None and not cloud_df.empty:
             _log.info("DataFrame loaded from cloud: row_count=%d", len(cloud_df))

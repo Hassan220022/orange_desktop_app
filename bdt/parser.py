@@ -1111,7 +1111,10 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
             data.parser_mode = "structural"
         data.photos_deferred = False
         # Set required photo categories from constants (FR-003)
-        from alarm_app.constants import BDT_REQUIRED_PHOTO_CATEGORIES
+        try:
+            from alarm_app.constants import BDT_REQUIRED_PHOTO_CATEGORIES
+        except ImportError:
+            from constants import BDT_REQUIRED_PHOTO_CATEGORIES
         data.required_photo_categories = list(BDT_REQUIRED_PHOTO_CATEGORIES)
     else:
         data.photos_deferred = True
@@ -1152,7 +1155,10 @@ def load_bdt_photos(bdt: BDTData) -> None:
         bdt.parser_mode = "structural"
     bdt.photos_deferred = False
     # Set required photo categories from constants (FR-003)
-    from alarm_app.constants import BDT_REQUIRED_PHOTO_CATEGORIES
+    try:
+        from alarm_app.constants import BDT_REQUIRED_PHOTO_CATEGORIES
+    except ImportError:
+        from constants import BDT_REQUIRED_PHOTO_CATEGORIES
     bdt.required_photo_categories = list(BDT_REQUIRED_PHOTO_CATEGORIES)
 
 
@@ -1278,9 +1284,18 @@ def _extract_photo_slots_structural(
     This path is used for unknown/low-confidence files and Layout C where
     fixed slot geometry can drift.
     """
-    from alarm_app.bdt.image_assigner import assign_manifest_images
-    from alarm_app.bdt.ooxml_reader import OOXMLPackage
-    from alarm_app.bdt.section_parser import build_workbook_manifest
+    try:
+        from alarm_app.bdt.image_assigner import assign_manifest_images
+    except ImportError:
+        from bdt.image_assigner import assign_manifest_images
+    try:
+        from alarm_app.bdt.ooxml_reader import OOXMLPackage
+    except ImportError:
+        from bdt.ooxml_reader import OOXMLPackage
+    try:
+        from alarm_app.bdt.section_parser import build_workbook_manifest
+    except ImportError:
+        from bdt.section_parser import build_workbook_manifest
 
     with OOXMLPackage(file_path) as pkg:
         workbook = pkg.read_workbook_xml()

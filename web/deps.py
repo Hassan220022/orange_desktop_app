@@ -4,7 +4,10 @@ from collections.abc import Generator
 
 from sqlalchemy.orm import Session
 
-from alarm_app.db.engine import create_engine, get_session_factory, init_db
+try:
+    from alarm_app.db.engine import create_engine, get_session_factory, init_db
+except ImportError:
+    from db.engine import create_engine, get_session_factory, init_db
 
 _engine = None
 _SessionFactory = None

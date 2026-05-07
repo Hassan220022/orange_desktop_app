@@ -15,7 +15,10 @@ router = APIRouter(prefix="/v1/pm", tags=["pm"])
 
 @router.get("/runs/{run_id}", response_model=PMRunResponse)
 def get_run(run_id: int, db: Session = Depends(get_db)):
-    from alarm_app.db.models import PMValidationRun
+    try:
+        from alarm_app.db.models import PMValidationRun
+    except ImportError:
+        from db.models import PMValidationRun
 
     run = db.get(PMValidationRun, run_id)
     if not run:

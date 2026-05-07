@@ -5,7 +5,10 @@ from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
-from alarm_app.db.models import SyncOutboxEvent
+try:
+    from alarm_app.db.models import SyncOutboxEvent
+except ImportError:
+    from db.models import SyncOutboxEvent
 
 _log = logging.getLogger(__name__)
 

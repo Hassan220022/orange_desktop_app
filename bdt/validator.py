@@ -12,20 +12,36 @@ from datetime import datetime, time, timedelta
 import numpy as np
 import pandas as pd
 
-from alarm_app.bdt.parser import BDTData
-from alarm_app.constants import (
-    BDT_COMPLETION_MINUTES,
-    BDT_DEFAULT_HEALTH_PCT,
-    BDT_DEFAULT_TOLERANCE,
-    BDT_DISCHARGE_CURRENT_TOLERANCE_A,
-    BDT_END_VOLTAGE_MAX,
-    BDT_END_VOLTAGE_MIN,
-    BDT_POWER_TIMING_TOLERANCE_MIN,
-    BDT_REQUIRED_PHOTO_COUNT,
-    BDT_SIZING_TOLERANCE_MINUTES,
-    BDT_START_AMPERE_THRESHOLD_A,
-    BDT_STRING_AMPERE_TOLERANCE_A,
-)
+try:
+    from alarm_app.bdt.parser import BDTData
+    from alarm_app.constants import (
+        BDT_COMPLETION_MINUTES,
+        BDT_DEFAULT_HEALTH_PCT,
+        BDT_DEFAULT_TOLERANCE,
+        BDT_DISCHARGE_CURRENT_TOLERANCE_A,
+        BDT_END_VOLTAGE_MAX,
+        BDT_END_VOLTAGE_MIN,
+        BDT_POWER_TIMING_TOLERANCE_MIN,
+        BDT_REQUIRED_PHOTO_COUNT,
+        BDT_SIZING_TOLERANCE_MINUTES,
+        BDT_START_AMPERE_THRESHOLD_A,
+        BDT_STRING_AMPERE_TOLERANCE_A,
+    )
+except ImportError:
+    from bdt.parser import BDTData
+    from constants import (
+        BDT_COMPLETION_MINUTES,
+        BDT_DEFAULT_HEALTH_PCT,
+        BDT_DEFAULT_TOLERANCE,
+        BDT_DISCHARGE_CURRENT_TOLERANCE_A,
+        BDT_END_VOLTAGE_MAX,
+        BDT_END_VOLTAGE_MIN,
+        BDT_POWER_TIMING_TOLERANCE_MIN,
+        BDT_REQUIRED_PHOTO_COUNT,
+        BDT_SIZING_TOLERANCE_MINUTES,
+        BDT_START_AMPERE_THRESHOLD_A,
+        BDT_STRING_AMPERE_TOLERANCE_A,
+    )
 
 
 @dataclass

@@ -6,8 +6,12 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from alarm_app.db.hashing import compute_bdt_content_hash
-from alarm_app.db.models import BDTPhoto, BDTTest
+try:
+    from alarm_app.db.hashing import compute_bdt_content_hash
+    from alarm_app.db.models import BDTPhoto, BDTTest
+except ImportError:
+    from db.hashing import compute_bdt_content_hash
+    from db.models import BDTPhoto, BDTTest
 
 _log = logging.getLogger(__name__)
 

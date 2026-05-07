@@ -2,7 +2,10 @@
 
 from PyQt5.QtCore import QDate
 
-from alarm_app.data import state
+try:
+    from alarm_app.data import state
+except ImportError:
+    from data import state
 
 
 class StateManager:

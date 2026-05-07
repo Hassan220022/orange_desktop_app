@@ -31,26 +31,48 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from alarm_app.bdt.export import build_bdt_export_sheets
-from alarm_app.bdt.parser import BDTData
-from alarm_app.bdt.validator import BDTTolerances, ValidationResult, bdt_battery_status
-from alarm_app.constants import (
-    BDT_RESULT_HEADERS,
-    BDT_RESULT_WIDTHS,
-    format_bdt_rule_label,
-)
-from alarm_app.data import state
-from alarm_app.data.alarm_store import AlarmQuery, distinct_values, query_alarms
-from alarm_app.data.site_report import build_pm_accept_report, read_pm_accept_sheet
-from alarm_app.ui.dialogs import (
-    AcceptedPmReportDialog,
-    BdtParametersDialog,
-    BdtRulesReferenceDialog,
-    BdtValidationIntroDialog,
-    ColumnFilterPopup,
-    DailyReviewReportDialog,
-)
-from alarm_app.ui.threads import BDTValidationThread, ExportThread
+try:
+    from alarm_app.bdt.export import build_bdt_export_sheets
+    from alarm_app.bdt.parser import BDTData
+    from alarm_app.bdt.validator import BDTTolerances, ValidationResult, bdt_battery_status
+    from alarm_app.constants import (
+        BDT_RESULT_HEADERS,
+        BDT_RESULT_WIDTHS,
+        format_bdt_rule_label,
+    )
+    from alarm_app.data import state
+    from alarm_app.data.alarm_store import AlarmQuery, distinct_values, query_alarms
+    from alarm_app.data.site_report import build_pm_accept_report, read_pm_accept_sheet
+    from alarm_app.ui.dialogs import (
+        AcceptedPmReportDialog,
+        BdtParametersDialog,
+        BdtRulesReferenceDialog,
+        BdtValidationIntroDialog,
+        ColumnFilterPopup,
+        DailyReviewReportDialog,
+    )
+    from alarm_app.ui.threads import BDTValidationThread, ExportThread
+except ImportError:
+    from bdt.export import build_bdt_export_sheets
+    from bdt.parser import BDTData
+    from bdt.validator import BDTTolerances, ValidationResult, bdt_battery_status
+    from constants import (
+        BDT_RESULT_HEADERS,
+        BDT_RESULT_WIDTHS,
+        format_bdt_rule_label,
+    )
+    from data import state
+    from data.alarm_store import AlarmQuery, distinct_values, query_alarms
+    from data.site_report import build_pm_accept_report, read_pm_accept_sheet
+    from ui.dialogs import (
+        AcceptedPmReportDialog,
+        BdtParametersDialog,
+        BdtRulesReferenceDialog,
+        BdtValidationIntroDialog,
+        ColumnFilterPopup,
+        DailyReviewReportDialog,
+    )
+    from ui.threads import BDTValidationThread, ExportThread
 
 
 class BdtValidationPanel(QWidget):

@@ -19,7 +19,10 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from alarm_app.ui.flow_layout import FlowLayout
+try:
+    from alarm_app.ui.flow_layout import FlowLayout
+except ImportError:
+    from ui.flow_layout import FlowLayout
 
 
 class SearchPanel(QWidget):

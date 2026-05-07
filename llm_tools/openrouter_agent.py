@@ -11,7 +11,10 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from alarm_app.runtime.env import load_local_env
+try:
+    from alarm_app.runtime.env import load_local_env
+except ImportError:
+    from runtime.env import load_local_env
 
 from .openrouter_models import FREE_MODELS_ROUTER, normalize_free_model_id
 from .service import LocalDataService

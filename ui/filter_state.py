@@ -14,7 +14,10 @@ from typing import TYPE_CHECKING
 
 from PyQt5.QtCore import Qt
 
-from alarm_app.core.filters import parse_manual_days
+try:
+    from alarm_app.core.filters import parse_manual_days
+except ImportError:
+    from core.filters import parse_manual_days
 
 if TYPE_CHECKING:
     pass
@@ -98,7 +101,10 @@ class FilterState:
 
     def to_alarm_query(self):
         """Build an ``alarm_store.AlarmQuery`` from this filter state."""
-        from alarm_app.data import alarm_store
+        try:
+            from alarm_app.data import alarm_store
+        except ImportError:
+            from data import alarm_store
 
         return alarm_store.AlarmQuery(
             site_text=self.site_text,

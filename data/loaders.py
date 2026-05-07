@@ -18,7 +18,10 @@ import os
 import numpy as np
 import pandas as pd
 
-from alarm_app.constants import ALL_INTERNAL_COLS, SCHEMA_1_MAP, SCHEMA_2_MAP
+try:
+    from alarm_app.constants import ALL_INTERNAL_COLS, SCHEMA_1_MAP, SCHEMA_2_MAP
+except ImportError:
+    from constants import ALL_INTERNAL_COLS, SCHEMA_1_MAP, SCHEMA_2_MAP
 
 _EXTS = frozenset((".csv", ".xlsx", ".xls"))
 _ENCODINGS = ("utf-8-sig", "latin-1")          # utf-8-sig covers plain utf-8 too

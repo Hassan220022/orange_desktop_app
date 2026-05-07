@@ -7,7 +7,10 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from alarm_app.db.models import SyncCheckpoint, SyncOutboxEvent
+try:
+    from alarm_app.db.models import SyncCheckpoint, SyncOutboxEvent
+except ImportError:
+    from db.models import SyncCheckpoint, SyncOutboxEvent
 
 _log = logging.getLogger(__name__)
 

@@ -31,10 +31,16 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from alarm_app.bdt.rule_docs import full_rules_html, iter_rule_docs
-from alarm_app.constants import BT_HEADERS, BT_WIDTHS
-from alarm_app.core.backup_time import fmt_td as _fmt_td
-from alarm_app.data import state
+try:
+    from alarm_app.bdt.rule_docs import full_rules_html, iter_rule_docs
+    from alarm_app.constants import BT_HEADERS, BT_WIDTHS
+    from alarm_app.core.backup_time import fmt_td as _fmt_td
+    from alarm_app.data import state
+except ImportError:
+    from bdt.rule_docs import full_rules_html, iter_rule_docs
+    from constants import BT_HEADERS, BT_WIDTHS
+    from core.backup_time import fmt_td as _fmt_td
+    from data import state
 
 
 def _resolved_parent_theme_mode(parent) -> str:
@@ -850,7 +856,10 @@ class BdtParametersDialog(QDialog):
 
 def _BDTTolerances_default_value(key: str) -> float:
     """Return the default value of a single field on ``BDTTolerances``."""
-    from alarm_app.bdt.validator import BDTTolerances
+    try:
+        from alarm_app.bdt.validator import BDTTolerances
+    except ImportError:
+        from bdt.validator import BDTTolerances
     return float(getattr(BDTTolerances.defaults(), key))
 
 
