@@ -80,7 +80,7 @@ def _extract_synced_event_ids(batch: Sequence[Mapping[str, Any]], response: Any)
         checkpoint_cursor = response.get("checkpoint_cursor") or response.get("cursor")
         return synced_ids, str(checkpoint_cursor) if checkpoint_cursor else None
 
-    synced_ids = response.get("synced_event_ids")
+    synced_ids = response.get("synced_event_ids") or []
     if isinstance(synced_ids, list):
         cleaned = [str(event_id) for event_id in synced_ids if str(event_id)]
         checkpoint_cursor = response.get("checkpoint_cursor") or response.get("cursor")

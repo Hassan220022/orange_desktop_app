@@ -27,7 +27,7 @@ def save_bdt_test(session: Session, bdt_dict: dict,
         return existing
 
     test_date = bdt_dict.get("test_date")
-    if hasattr(test_date, "date"):
+    if test_date is not None and hasattr(test_date, "date"):
         test_date = test_date.date()
 
     # Serialize variable-length fields as JSON
