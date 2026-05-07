@@ -38,10 +38,28 @@ hiddenimports = [
     "sklearn",
     "scipy",
     "c2pa",
+    # Root-level alarm_app modules (flat in PyInstaller bundle)
+    "versioning",
+    "constants",
+    "styles",
+    "logging_config",
+    "core",
+    "data",
+    "db",
+    "bdt",
+    "ui",
+    "web",
+    "llm_tools",
+    "runtime",
 ]
+hiddenimports += collect_submodules("alarm_app.core")
+hiddenimports += collect_submodules("alarm_app.data")
 hiddenimports += collect_submodules("alarm_app.db.repos")
+hiddenimports += collect_submodules("alarm_app.bdt")
+hiddenimports += collect_submodules("alarm_app.ui")
 hiddenimports += collect_submodules("alarm_app.web")
 hiddenimports += collect_submodules("alarm_app.llm_tools")
+hiddenimports += collect_submodules("alarm_app.runtime")
 hiddenimports += collect_submodules("alarm_app.bdt.vendor_synthid")
 
 
