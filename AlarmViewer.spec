@@ -2,6 +2,14 @@
 
 from pathlib import Path
 import sys
+import types
+
+# Register alarm_app as a namespace package so PyInstaller's collect_submodules()
+# can discover all subpackages during the analysis phase.
+if "alarm_app" not in sys.modules:
+    pkg = types.ModuleType("alarm_app")
+    pkg.__path__ = ["."]
+    sys.modules["alarm_app"] = pkg
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 

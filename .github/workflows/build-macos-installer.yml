@@ -9,6 +9,7 @@ on:
     branches: [main]
     paths:
       - "**/*.py"
+      - "AlarmViewer.spec"
       - "requirements.txt"
       - "scripts/build_macos.sh"
       - "scripts/build_macos_installer.sh"
