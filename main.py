@@ -28,6 +28,27 @@ def _ensure_alarm_app_alias() -> None:
     pkg.__path__ = [str(package_root)]  # type: ignore[attr-defined]
     sys.modules["alarm_app"] = pkg
 
+    # In PyInstaller frozen bundles, flat modules need to be aliased under
+    # the alarm_app namespace so that `from alarm_app.core.classify import ...`
+    # resolves correctly.  Without this, PyInstaller's custom import system
+    # cannot resolve the fake namespace package to the collected flat modules.
+    if getattr(sys, "_MEIPASS", None):
+        for name, mod in list(sys.modules.items()):
+            # Skip private, already-namespaced, nested, and stdlib modules
+            if (
+                name.startswith("_")
+                or "." in name
+                or "alarm_app" in name
+                or name in sys.builtin_module_names
+                or name == "__main__"
+            ):
+                continue
+            alias = f"alarm_app.{name}"
+            try:
+                sys.modules[alias] = mod
+            except Exception:
+                pass
+
 
 _ensure_alarm_app_alias()
 
