@@ -97,6 +97,17 @@ def gui_app(monkeypatch, tmp_path):
         raising=False,
     )
 
+    # Mock OpenRouter fetch to prevent real HTTP calls during GUI tests
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.openrouter_models.fetch_free_tool_models",
+        lambda *a, **kw: [],
+    )
+    monkeypatch.setattr(
+        "llm_tools.openrouter_models.fetch_free_tool_models",
+        lambda *a, **kw: [],
+        raising=False,
+    )
+
     # Patch logger to avoid noise
     import logging
 
@@ -138,11 +149,20 @@ class TestAlarmViewerGUI:
         assert btn.isEnabled()
         assert "Settings" in btn.text()
 
-    def test_settings_dialog_opens_and_saves(self, gui_app):
-        try:
-            gui_app._show_settings()
-        except Exception as exc:
-            pytest.fail(f"_show_settings() raised {exc}")
+    def test_settings_dialog_changes_theme(self, gui_app, monkeypatch):
+        assert gui_app._theme_mode == "auto"
+
+        def _set_theme_and_accept(dialog_self):
+            if hasattr(dialog_self, "cmb_theme"):
+                idx = dialog_self.cmb_theme.findData("dark")
+                if idx >= 0:
+                    dialog_self.cmb_theme.setCurrentIndex(idx)
+            dialog_self.accept()
+            return QDialog.Accepted
+
+        monkeypatch.setattr(QDialog, "exec_", _set_theme_and_accept)
+        gui_app._show_settings()
+        assert gui_app._theme_mode == "dark"
 
     def test_load_alarm_csv_file(self, gui_app, tmp_path):
         csv_content = (
@@ -164,7 +184,7 @@ class TestAlarmViewerGUI:
         count = gui_app._ui.file_list.count()
         assert count > 0, "File list should have items after scan"
 
-    def test_search_filters_apply(self, gui_app):
+    def test_search_filters_actually_filter_rows(self, gui_app):
         df = pd.DataFrame({
             "site_id": ["SITE01", "SITE02"],
             "alarm_name": ["Power Failure", "Site Down"],
@@ -187,11 +207,16 @@ class TestAlarmViewerGUI:
             "file_source": ["test.csv", "test.csv"],
         })
         gui_app._apply_loaded_alarm_dataframe(df, "test data")
-        assert gui_app._model.rowCount() > 0
+        assert gui_app._model.rowCount() == 2
 
         gui_app._ui.edit_site.setText("SITE01")
         gui_app._search()
-        assert gui_app._model.rowCount() >= 1
+        assert gui_app._model.rowCount() == 1
+        model_df = gui_app._model._df
+        assert "Power" in model_df["alarm_name"].iloc[0], (
+            f"Filtered row should have 'Power' in alarm_name, "
+            f"got {model_df['alarm_name'].to_dict()}"
+        )
 
     def test_category_filter_combobox_exists(self, gui_app):
         assert hasattr(gui_app._ui, "cb_cat")

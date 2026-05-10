@@ -132,6 +132,17 @@ def gui_app(tmp_path, monkeypatch):
     monkeypatch.setattr(QMessageBox, "critical", lambda *a, **kw: QMessageBox.Ok)
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **kw: QMessageBox.Ok)
 
+    # Mock OpenRouter fetch to prevent real HTTP calls during GUI tests
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.openrouter_models.fetch_free_tool_models",
+        lambda *a, **kw: [],
+    )
+    monkeypatch.setattr(
+        "llm_tools.openrouter_models.fetch_free_tool_models",
+        lambda *a, **kw: [],
+        raising=False,
+    )
+
     app = QApplication([])
     app.setStyle("Fusion")
 
@@ -254,11 +265,38 @@ class TestBDTValidationGUI:
         assert filtered < total
         assert filtered == 2
 
-    def test_bdt_export_button_exists(self, gui_app):
-        btn = gui_app._bdt_validation_panel.btn_bdt_export
-        assert btn is not None
-        assert btn.text() == "Export Results XLSX"
-        assert isinstance(btn.isEnabled(), bool)
+    def test_bdt_export_triggers_file_dialog(self, gui_app, monkeypatch):
+        from PyQt5.QtCore import QObject, pyqtSignal
+        from PyQt5.QtWidgets import QFileDialog
+        results = [_mock_result("S01", "2026-05-10", "Accepted", "exp.xlsx")]
+        _inject_results(gui_app, results)
+
+        called_with = []
+
+        def fake_get_save_file_name(*args, **kwargs):
+            called_with.append((args, kwargs))
+            return ("/tmp/fake_export.xlsx", "Excel Files (*.xlsx)")
+
+        monkeypatch.setattr(QFileDialog, "getSaveFileName", fake_get_save_file_name)
+
+        class _FakeExport(QObject):
+            progress = pyqtSignal(int, str)
+            finished = pyqtSignal(str)
+            error = pyqtSignal(str)
+
+            def __init__(self, sheets, fp):
+                super().__init__()
+
+            def start(self):
+                pass
+
+        monkeypatch.setattr(
+            "alarm_app.ui.panels.bdt_validation_panel.ExportThread",
+            _FakeExport,
+        )
+
+        gui_app._bdt_validation_panel._export_bdt_results()
+        assert len(called_with) == 1, "getSaveFileName was not called"
 
     def test_bdt_detail_panel_selects_item(self, gui_app):
         results = [

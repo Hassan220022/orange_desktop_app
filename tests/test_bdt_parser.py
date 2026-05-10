@@ -934,6 +934,28 @@ class TestResolveBdtSheetName:
     def test_missing_match(self):
         assert _resolve_bdt_sheet_name(["Sheet1", "Data"], "random.xlsx") is None
 
+    def test_summary_and_bdt_summary_resolves_to_none(self):
+        assert _resolve_bdt_sheet_name(["Summary", "BDT Summary"]) is None
+
+    def test_bdt_summary_only_resolves_to_none(self):
+        assert _resolve_bdt_sheet_name(["BDT Summary"]) is None
+
+    def test_summary_only_resolves_to_none(self):
+        assert _resolve_bdt_sheet_name(["Summary"]) is None
+
+    def test_bdt_and_summary_resolves_bdt(self):
+        assert _resolve_bdt_sheet_name(["BDT", "Summary"]) == "BDT"
+
+    def test_filename_fallback_with_summary_first_sheet(self):
+        assert _resolve_bdt_sheet_name(
+            ["Summary", "Other"], filename="test_bdt_2026.xlsx"
+        ) is None
+
+    def test_filename_fallback_with_non_summary_first_sheet(self):
+        assert _resolve_bdt_sheet_name(
+            ["Other", "Summary"], filename="test_bdt_2026.xlsx"
+        ) is None
+
 
 def test_load_bdt_photos_handles_missing_file_path():
     bdt = BDTData(file_path="", filename="")
