@@ -83,7 +83,6 @@ def gui_app(monkeypatch, tmp_path):
     monkeypatch.setattr(state_mod2, "_engine", None)
     monkeypatch.setattr(state_mod2, "_SessionFactory", None)
     monkeypatch.setattr("alarm_app.bdt.history._engine", None, raising=False)
-    monkeypatch.setattr("bdt.history._engine", None, raising=False)
 
     # Prevent LocalSyncWorker and bootstrap from kicking off
     monkeypatch.setattr(
