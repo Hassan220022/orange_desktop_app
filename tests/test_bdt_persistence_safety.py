@@ -3,7 +3,7 @@ Integration tests for persistence safety per PRD FR-005.
 
 Tests verify:
 - save_validation_batch has savepoint-per-item isolation in code
-- persist_photo_jobs has savepoint-per-job isolation in code
+- persist_photo_jobs has per-job isolation in code (via ThreadPoolExecutor)
 - Function signatures are correct
 - Function calls match actual repo function signatures
 """
@@ -13,7 +13,7 @@ import inspect
 
 import pytest
 
-from alarm_app.bdt.history import persist_photo_jobs, save_validation_batch
+from alarm_app.bdt.history import save_validation_batch
 
 
 class TestSaveValidationBatchIsolation:
