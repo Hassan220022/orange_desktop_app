@@ -1415,39 +1415,39 @@ class ChatPanel(QWidget):
         if hasattr(viewer, "_set_workspace_view"):
             viewer._set_workspace_view(0)
 
-        if hasattr(viewer, "_edit_site"):
+        if hasattr(viewer, "_ui") and hasattr(viewer._ui, "edit_site"):
             site_ids = result.get("site_ids") if isinstance(result.get("site_ids"), list) else []
             if event.get("name") == "query_backup_times" and site_ids:
                 site_text = ", ".join(str(site).strip() for site in site_ids if str(site).strip())
             else:
                 site_text = str(args.get("site_text") or args.get("site_id") or "").strip()
-            viewer._edit_site.setText(site_text)
-        _set_combo_text(getattr(viewer, "_cb_cat", None), str(args.get("category") or "All"))
-        _set_combo_text(getattr(viewer, "_cb_net", None), str(args.get("network_type") or "All"))
-        _set_combo_text(getattr(viewer, "_cb_vnd", None), str(args.get("vendor") or "All"))
-        if hasattr(viewer, "_chk_mindur"):
-            viewer._chk_mindur.setChecked(False)
-        if hasattr(viewer, "_edit_days"):
-            viewer._edit_days.clear()
+            viewer._ui.edit_site.setText(site_text)
+        _set_combo_text(getattr(viewer._ui, "cb_cat", None), str(args.get("category") or "All"))
+        _set_combo_text(getattr(viewer._ui, "cb_net", None), str(args.get("network_type") or "All"))
+        _set_combo_text(getattr(viewer._ui, "cb_vnd", None), str(args.get("vendor") or "All"))
+        if hasattr(viewer._ui, "chk_mindur"):
+            viewer._ui.chk_mindur.setChecked(False)
+        if hasattr(viewer._ui, "edit_days"):
+            viewer._ui.edit_days.clear()
 
-        if hasattr(viewer, "_chk_date"):
+        if hasattr(viewer._ui, "chk_date"):
             date_from = str(args.get("date_from") or "").strip()
             date_to = str(args.get("date_to") or "").strip()
             use_date = bool(date_from or date_to)
-            viewer._chk_date.setChecked(use_date)
-            if hasattr(viewer, "_chk_date_range"):
-                viewer._chk_date_range.setChecked(use_date)
-            if hasattr(viewer, "_chk_date_days"):
-                viewer._chk_date_days.setChecked(False)
+            viewer._ui.chk_date.setChecked(use_date)
+            if hasattr(viewer._ui, "chk_date_range"):
+                viewer._ui.chk_date_range.setChecked(use_date)
+            if hasattr(viewer._ui, "chk_date_days"):
+                viewer._ui.chk_date_days.setChecked(False)
             if use_date:
-                if date_from and hasattr(viewer, "_d_from"):
+                if date_from and hasattr(viewer._ui, "d_from"):
                     q_from = QDate.fromString(date_from[:10], "yyyy-MM-dd")
                     if q_from.isValid():
-                        viewer._d_from.setDate(q_from)
-                if date_to and hasattr(viewer, "_d_to"):
+                        viewer._ui.d_from.setDate(q_from)
+                if date_to and hasattr(viewer._ui, "d_to"):
                     q_to = QDate.fromString(date_to[:10], "yyyy-MM-dd")
                     if q_to.isValid():
-                        viewer._d_to.setDate(q_to)
+                        viewer._ui.d_to.setDate(q_to)
 
         if hasattr(viewer, "_both_pd_active"):
             viewer._both_pd_active = False

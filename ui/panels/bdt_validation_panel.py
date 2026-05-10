@@ -373,18 +373,18 @@ class BdtValidationPanel(QWidget):
             if viewer._bdt_file_list.item(i).isSelected()
         ] if hasattr(viewer, "_bdt_file_list") else []
 
-        directory = viewer._edit_bdt_dir.text().strip() if hasattr(viewer, "_edit_bdt_dir") else ""
+        directory = viewer._ui.edit_bdt_dir.text().strip() if hasattr(viewer._ui, "edit_bdt_dir") else ""
         if not directory:
             directory = str(getattr(viewer, "_bdt_uploaded_folder_path", "") or "").strip()
         if not directory:
-            directory = viewer._edit_dir.text().strip()
+            directory = viewer._ui.edit_dir.text().strip()
         if not directory:
             directory = str(getattr(viewer, "_uploaded_folder_path", "") or "").strip()
 
-        if directory and hasattr(viewer, "_edit_bdt_dir") and not viewer._edit_bdt_dir.text().strip():
-            viewer._edit_bdt_dir.setText(directory)
-        if directory and not viewer._edit_dir.text().strip():
-            viewer._edit_dir.setText(directory)
+        if directory and hasattr(viewer._ui, "edit_bdt_dir") and not viewer._ui.edit_bdt_dir.text().strip():
+            viewer._ui.edit_bdt_dir.setText(directory)
+        if directory and not viewer._ui.edit_dir.text().strip():
+            viewer._ui.edit_dir.setText(directory)
         if not bdt_files and hasattr(viewer, "_bdt_file_infos") and viewer._bdt_file_infos:
             bdt_files = [str(info.get("path", "")) for info in viewer._bdt_file_infos if info.get("path")]
 
@@ -492,7 +492,7 @@ class BdtValidationPanel(QWidget):
 
         start_dir = (
             getattr(viewer, "_uploaded_folder_path", "")
-            or viewer._edit_dir.text().strip()
+            or viewer._ui.edit_dir.text().strip()
             or str(os.path.expanduser("~"))
         )
         in_path, _ = QFileDialog.getOpenFileName(

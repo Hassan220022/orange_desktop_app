@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import alarm_app.ui.panels.chat_panel as chat_panel_mod
 from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
 from alarm_app.ui.panels.chat_panel import (
@@ -506,17 +508,19 @@ def test_show_alarm_results_in_viewer_applies_exact_alarm_filters():
     viewer = type("Viewer", (), {})()
     viewer._workspace = None
     viewer._set_workspace_view = lambda index: setattr(viewer, "_workspace", index)
-    viewer._edit_site = type("Edit", (), {"setText": lambda self, value: setattr(self, "text", value)})()
-    viewer._cb_cat = _FakeCombo(["All", "Power", "Down"])
-    viewer._cb_net = _FakeCombo(["All", "4G", "5G"])
-    viewer._cb_vnd = _FakeCombo(["All", "HUAWEI", "Nokia"])
-    viewer._chk_mindur = _FakeToggle()
-    viewer._edit_days = type("Days", (), {"clear": lambda self: setattr(self, "cleared", True)})()
-    viewer._chk_date = _FakeToggle()
-    viewer._chk_date_range = _FakeToggle()
-    viewer._chk_date_days = _FakeToggle()
-    viewer._d_from = _FakeDateEdit()
-    viewer._d_to = _FakeDateEdit()
+    viewer._ui = SimpleNamespace(
+        edit_site=type("Edit", (), {"setText": lambda self, value: setattr(self, "text", value)})(),
+        cb_cat=_FakeCombo(["All", "Power", "Down"]),
+        cb_net=_FakeCombo(["All", "4G", "5G"]),
+        cb_vnd=_FakeCombo(["All", "HUAWEI", "Nokia"]),
+        chk_mindur=_FakeToggle(),
+        edit_days=type("Days", (), {"clear": lambda self: setattr(self, "cleared", True)})(),
+        chk_date=_FakeToggle(),
+        chk_date_range=_FakeToggle(),
+        chk_date_days=_FakeToggle(),
+        d_from=_FakeDateEdit(),
+        d_to=_FakeDateEdit(),
+    )
     viewer._both_pd_active = True
     viewer._col_filters = {"alarm_name": {"Power Loss"}}
     viewer._btn_both = type("Btn", (), {"setStyleSheet": lambda self, value: setattr(self, "style", value)})()
@@ -548,16 +552,16 @@ def test_show_alarm_results_in_viewer_applies_exact_alarm_filters():
     panel._show_alarm_results_in_viewer(event)
 
     assert viewer._workspace == 0
-    assert viewer._edit_site.text == "AAA001"
-    assert viewer._cb_cat.current_index == 1
-    assert viewer._cb_net.current_index == 1
-    assert viewer._cb_vnd.current_index == 1
-    assert viewer._chk_mindur.checked is False
-    assert viewer._chk_date.checked is True
-    assert viewer._chk_date_range.checked is True
-    assert viewer._chk_date_days.checked is False
-    assert viewer._d_from.value == "2026-04-01"
-    assert viewer._d_to.value == "2026-04-30"
+    assert viewer._ui.edit_site.text == "AAA001"
+    assert viewer._ui.cb_cat.current_index == 1
+    assert viewer._ui.cb_net.current_index == 1
+    assert viewer._ui.cb_vnd.current_index == 1
+    assert viewer._ui.chk_mindur.checked is False
+    assert viewer._ui.chk_date.checked is True
+    assert viewer._ui.chk_date_range.checked is True
+    assert viewer._ui.chk_date_days.checked is False
+    assert viewer._ui.d_from.value == "2026-04-01"
+    assert viewer._ui.d_to.value == "2026-04-30"
     assert viewer._both_pd_active is False
     assert viewer._col_filters == {}
     assert viewer._page_size == 10
@@ -574,17 +578,19 @@ def test_show_alarm_results_in_viewer_uses_backup_time_site_ids():
     viewer = type("Viewer", (), {})()
     viewer._workspace = None
     viewer._set_workspace_view = lambda index: setattr(viewer, "_workspace", index)
-    viewer._edit_site = type("Edit", (), {"setText": lambda self, value: setattr(self, "text", value)})()
-    viewer._cb_cat = _FakeCombo(["All", "Power", "Down"])
-    viewer._cb_net = _FakeCombo(["All", "4G", "5G"])
-    viewer._cb_vnd = _FakeCombo(["All", "HUAWEI", "Nokia"])
-    viewer._chk_mindur = _FakeToggle()
-    viewer._edit_days = type("Days", (), {"clear": lambda self: setattr(self, "cleared", True)})()
-    viewer._chk_date = _FakeToggle()
-    viewer._chk_date_range = _FakeToggle()
-    viewer._chk_date_days = _FakeToggle()
-    viewer._d_from = _FakeDateEdit()
-    viewer._d_to = _FakeDateEdit()
+    viewer._ui = SimpleNamespace(
+        edit_site=type("Edit", (), {"setText": lambda self, value: setattr(self, "text", value)})(),
+        cb_cat=_FakeCombo(["All", "Power", "Down"]),
+        cb_net=_FakeCombo(["All", "4G", "5G"]),
+        cb_vnd=_FakeCombo(["All", "HUAWEI", "Nokia"]),
+        chk_mindur=_FakeToggle(),
+        edit_days=type("Days", (), {"clear": lambda self: setattr(self, "cleared", True)})(),
+        chk_date=_FakeToggle(),
+        chk_date_range=_FakeToggle(),
+        chk_date_days=_FakeToggle(),
+        d_from=_FakeDateEdit(),
+        d_to=_FakeDateEdit(),
+    )
     viewer._both_pd_active = True
     viewer._col_filters = {"alarm_name": {"Power Loss"}}
     viewer._btn_both = type("Btn", (), {"setStyleSheet": lambda self, value: setattr(self, "style", value)})()
@@ -620,16 +626,16 @@ def test_show_alarm_results_in_viewer_uses_backup_time_site_ids():
     panel._show_alarm_results_in_viewer(event)
 
     assert viewer._workspace == 0
-    assert viewer._edit_site.text == "AAA001, BBB002"
-    assert viewer._cb_cat.current_index == 1
-    assert viewer._cb_net.current_index == 1
-    assert viewer._cb_vnd.current_index == 1
-    assert viewer._chk_mindur.checked is False
-    assert viewer._chk_date.checked is True
-    assert viewer._chk_date_range.checked is True
-    assert viewer._chk_date_days.checked is False
-    assert viewer._d_from.value == "2026-04-01"
-    assert viewer._d_to.value == "2026-04-30"
+    assert viewer._ui.edit_site.text == "AAA001, BBB002"
+    assert viewer._ui.cb_cat.current_index == 1
+    assert viewer._ui.cb_net.current_index == 1
+    assert viewer._ui.cb_vnd.current_index == 1
+    assert viewer._ui.chk_mindur.checked is False
+    assert viewer._ui.chk_date.checked is True
+    assert viewer._ui.chk_date_range.checked is True
+    assert viewer._ui.chk_date_days.checked is False
+    assert viewer._ui.d_from.value == "2026-04-01"
+    assert viewer._ui.d_to.value == "2026-04-30"
     assert viewer._both_pd_active is False
     assert viewer._col_filters == {}
     assert viewer._page_size == 2

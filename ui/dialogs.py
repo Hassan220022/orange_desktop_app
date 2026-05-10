@@ -3,7 +3,7 @@
 from datetime import datetime
 
 import pandas as pd
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -33,12 +34,12 @@ from PyQt5.QtWidgets import (
 
 try:
     from alarm_app.bdt.rule_docs import full_rules_html, iter_rule_docs
-    from alarm_app.constants import BT_HEADERS, BT_WIDTHS
+    from alarm_app.constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS
     from alarm_app.core.backup_time import fmt_td as _fmt_td
     from alarm_app.data import state
 except ImportError:
     from bdt.rule_docs import full_rules_html, iter_rule_docs
-    from constants import BT_HEADERS, BT_WIDTHS
+    from constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS
     from core.backup_time import fmt_td as _fmt_td
     from data import state
 
@@ -471,6 +472,61 @@ class FeatureFlagDialog(QDialog):
         return {k: cb.isChecked() for k, cb in self._checks.items()}
 
 
+class _UpdateCheckWorker(QThread):
+    finished = pyqtSignal(object)
+
+    def run(self):
+        try:
+            from alarm_app.updater import fetch_latest_release
+        except ImportError:
+            from updater import fetch_latest_release
+        release = fetch_latest_release()
+        self.finished.emit(release)
+
+
+class _DownloadWorker(QThread):
+    progress = pyqtSignal(int)
+    finished = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, url, parent=None):
+        super().__init__(parent)
+        self._url = url
+
+    def run(self):
+        try:
+            import os
+            import platform
+            import tempfile
+            import urllib.request
+
+            ext = ".dmg" if platform.system() == "Darwin" else ".exe"
+            asset_name = self._url.rsplit("/", 1)[-1] if "/" in self._url else f"AlarmViewer_Update{ext}"
+            dest = os.path.join(tempfile.gettempdir(), asset_name)
+
+            req = urllib.request.Request(self._url)
+            req.add_header("Accept", "application/octet-stream")
+            req.add_header("User-Agent", "AlarmViewer-UpdateCheck")
+
+            with urllib.request.urlopen(req, timeout=600) as resp:
+                total = int(resp.headers.get("Content-Length", 0))
+                downloaded = 0
+
+                with open(dest, "wb") as f:
+                    while True:
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        if total > 0:
+                            self.progress.emit(int(downloaded * 100 / total))
+
+            self.finished.emit(dest)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 class AppSettingsDialog(QDialog):
     """Central app settings dialog."""
 
@@ -481,6 +537,9 @@ class AppSettingsDialog(QDialog):
         if parent:
             self.setStyleSheet(parent.styleSheet())
         self._settings = dict(settings or {})
+        self._latest_release = None
+        self._update_check_worker = None
+        self._download_thread = None
         self._build()
 
     def _build(self):
@@ -533,6 +592,43 @@ class AppSettingsDialog(QDialog):
         self.chk_bootstrap.setChecked(bool(self._settings.get("bootstrap_on", False)))
         lay.addWidget(self.chk_bootstrap)
 
+        # ── Updates section ──
+        updates_title = QLabel("Updates")
+        updates_title.setObjectName("workspace_card_title")
+        lay.addWidget(updates_title)
+
+        self._lbl_version = QLabel(f"{APP_NAME} v{APP_VERSION}")
+        self._lbl_version.setStyleSheet("color:#89b4fa; font-size:12px; font-weight:600;")
+        lay.addWidget(self._lbl_version)
+
+        check_row = QHBoxLayout()
+        check_row.setSpacing(8)
+        self._btn_check = QPushButton("Check for Updates")
+        self._btn_check.setObjectName("btn_search")
+        self._btn_check.clicked.connect(self._on_check_updates)
+        check_row.addWidget(self._btn_check)
+        check_row.addStretch()
+        lay.addLayout(check_row)
+
+        self._lbl_update_status = QLabel("")
+        self._lbl_update_status.setWordWrap(True)
+        self._lbl_update_status.setStyleSheet("color:#a6e3a1; font-size:11px;")
+        self._lbl_update_status.hide()
+        lay.addWidget(self._lbl_update_status)
+
+        self._btn_update = QPushButton("Update")
+        self._btn_update.setObjectName("btn_search")
+        self._btn_update.clicked.connect(self._on_update)
+        self._btn_update.hide()
+        lay.addWidget(self._btn_update)
+
+        self._progress = QProgressBar()
+        self._progress.setTextVisible(True)
+        self._progress.setFormat("Downloading %p%")
+        self._progress.hide()
+        lay.addWidget(self._progress)
+
+        # ── Buttons ──
         btn_row = QHBoxLayout()
         btn_cancel = QPushButton("Cancel")
         btn_cancel.setObjectName("btn_clear")
@@ -543,6 +639,111 @@ class AppSettingsDialog(QDialog):
         btn_row.addWidget(btn_cancel)
         btn_row.addWidget(btn_save)
         lay.addLayout(btn_row)
+
+    def _on_check_updates(self):
+        self._btn_check.setEnabled(False)
+        self._btn_check.setText("Checking...")
+        self._lbl_update_status.hide()
+        self._btn_update.hide()
+        self._progress.hide()
+
+        self._update_check_worker = _UpdateCheckWorker(self)
+        self._update_check_worker.finished.connect(self._on_check_finished)
+        self._update_check_worker.start()
+
+    def _on_check_finished(self, release):
+        self._btn_check.setEnabled(True)
+        self._btn_check.setText("Check for Updates")
+        self._latest_release = release
+
+        if release is None:
+            self._lbl_update_status.setStyleSheet("color:#f38ba8; font-size:11px;")
+            self._lbl_update_status.setText("Could not reach GitHub. Check your internet connection.")
+            self._lbl_update_status.show()
+            return
+
+        try:
+            from alarm_app.updater import is_update_available
+        except ImportError:
+            from updater import is_update_available
+
+        if is_update_available(release):
+            self._lbl_update_status.setStyleSheet("color:#a6e3a1; font-size:11px;")
+            self._lbl_update_status.setText(
+                f"New version available: {release.display_version}  "
+                f"(you have v{APP_VERSION})"
+            )
+            self._lbl_update_status.show()
+            self._btn_update.show()
+        else:
+            self._lbl_update_status.setStyleSheet("color:#6c7086; font-size:11px;")
+            self._lbl_update_status.setText(
+                f"You are up to date (v{APP_VERSION}).  "
+                f"Latest release: {release.display_version}"
+            )
+            self._lbl_update_status.show()
+
+    def _on_update(self):
+        if self._latest_release is None:
+            return
+
+        try:
+            from alarm_app.updater import get_platform_asset
+        except ImportError:
+            from updater import get_platform_asset
+
+        asset = get_platform_asset(self._latest_release)
+        if asset is None:
+            self._lbl_update_status.setStyleSheet("color:#f38ba8; font-size:11px;")
+            self._lbl_update_status.setText("No downloadable package found for your platform.")
+            self._lbl_update_status.show()
+            return
+
+        download_url = asset.get("browser_download_url", "")
+        if not download_url:
+            self._lbl_update_status.setStyleSheet("color:#f38ba8; font-size:11px;")
+            self._lbl_update_status.setText("Download URL not found in release assets.")
+            self._lbl_update_status.show()
+            return
+
+        self._btn_check.setEnabled(False)
+        self._btn_update.setEnabled(False)
+        self._btn_update.setText("Downloading...")
+        self._progress.setValue(0)
+        self._progress.show()
+
+        self._download_thread = _DownloadWorker(download_url, self)
+        self._download_thread.progress.connect(self._progress.setValue)
+        self._download_thread.finished.connect(self._on_download_finished)
+        self._download_thread.error.connect(self._on_download_error)
+        self._download_thread.start()
+
+    def _on_download_finished(self, filepath):
+        self._progress.hide()
+        self._btn_check.setEnabled(True)
+        self._btn_update.setEnabled(True)
+        self._btn_update.setText("Update")
+        self._lbl_update_status.setStyleSheet("color:#a6e3a1; font-size:11px;")
+        self._lbl_update_status.setText(
+            "Downloaded. Opening installer... Close this app before installing."
+        )
+        self._lbl_update_status.show()
+
+        try:
+            from alarm_app.updater import open_downloaded_file
+        except ImportError:
+            from updater import open_downloaded_file
+
+        open_downloaded_file(filepath)
+
+    def _on_download_error(self, error_msg):
+        self._progress.hide()
+        self._btn_check.setEnabled(True)
+        self._btn_update.setEnabled(True)
+        self._btn_update.setText("Update")
+        self._lbl_update_status.setStyleSheet("color:#f38ba8; font-size:11px;")
+        self._lbl_update_status.setText(f"Download failed: {error_msg}")
+        self._lbl_update_status.show()
 
     def _add_labeled_row(self, parent_layout: QVBoxLayout, label: str, widget):
         row = QHBoxLayout()
