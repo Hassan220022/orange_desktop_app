@@ -1,0 +1,40 @@
+[
+  {
+    "filename": "test_bdt.xlsx",
+    "site_code": "0123AB",
+    "test_date": "2026-01-15",
+    "overall": "Accepted",
+    "rules": [
+      {"rule_id": "R1", "rule_name": "Photos", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R2", "rule_name": "Power Alarm + Duration", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R3", "rule_name": "String vs Bus Bar Ampere", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R5", "rule_name": "Starting I-Battery ampere", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R6", "rule_name": "End Voltage Range", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R7", "rule_name": "V/A Inverse", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R8", "rule_name": "Sizing vs Actual", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R9", "rule_name": "Discharge Current Tolerance", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R10", "rule_name": "Door Alarm Condition", "passed": true, "verdict": "N/A", "detail": ""},
+      {"rule_id": "R11", "rule_name": "Summary Checklist", "passed": true, "verdict": "Accepted", "detail": ""}
+    ],
+    "parse_errors": []
+  },
+  {
+    "filename": "test_bdt2.xlsx",
+    "site_code": "5678DE",
+    "test_date": "2026-02-20",
+    "overall": "Revise",
+    "rules": [
+      {"rule_id": "R1", "rule_name": "Photos", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R2", "rule_name": "Power Alarm + Duration", "passed": false, "verdict": "Rejected", "detail": "No power alarm found"},
+      {"rule_id": "R3", "rule_name": "String vs Bus Bar Ampere", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R5", "rule_name": "Starting I-Battery ampere", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R6", "rule_name": "End Voltage Range", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R7", "rule_name": "V/A Inverse", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R8", "rule_name": "Sizing vs Actual", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R9", "rule_name": "Discharge Current Tolerance", "passed": true, "verdict": "Accepted", "detail": ""},
+      {"rule_id": "R10", "rule_name": "Door Alarm Condition", "passed": true, "verdict": "N/A", "detail": ""},
+      {"rule_id": "R11", "rule_name": "Summary Checklist", "passed": true, "verdict": "Accepted", "detail": ""}
+    ],
+    "parse_errors": []
+  }
+]

@@ -16,6 +16,7 @@ try:
         PMRuleResult,
         PMValidationRun,
     )
+    from alarm_app.db.retry import safe_flush
 except ImportError:
     from constants import BDT_RULE_NAME_BY_CODE
     from db.hashing import compute_canonical_json_sha256
@@ -25,6 +26,7 @@ except ImportError:
         PMRuleResult,
         PMValidationRun,
     )
+    from db.retry import safe_flush
 
 
 def get_or_create_rule_catalog(session: Session) -> dict[str, int]:
@@ -40,7 +42,7 @@ def get_or_create_rule_catalog(session: Session) -> dict[str, int]:
         else:
             r = PMRuleCatalog(rule_code=code, name=name)
             session.add(r)
-            session.flush()
+            safe_flush(session)
             result[code] = r.id
             seeded += 1
     if seeded:
@@ -85,7 +87,7 @@ def get_or_create_parameter_set(session: Session, params: dict) -> int:
         params_json=json.dumps(params, sort_keys=True, default=str),
     )
     session.add(ps)
-    session.flush()
+    safe_flush(session)
     return ps.id
 
 
@@ -111,7 +113,7 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
             ps = PMParameterSet(params_sha256=params_sha,
                                 params_json=json.dumps(params, default=str))
             session.add(ps)
-            session.flush()
+            safe_flush(session)
         param_set_id = ps.id
 
     # SQLite treats NULLs as distinct in unique constraints, so check manually
@@ -134,7 +136,7 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
     )
     session.add(run)
     try:
-        session.flush()
+        safe_flush(session)
     except IntegrityError:
         if autocommit:
             session.rollback()
@@ -159,7 +161,7 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
     if autocommit:
         session.commit()
     else:
-        session.flush()
+        safe_flush(session)
     _log.info("Validation run saved: bdt_test_id=%d, verdict=%s", bdt_test_id, overall_verdict)
     return run
 
@@ -169,6 +171,12 @@ def load_all_validation_results(session: Session) -> list:
 
     Reconstructs the same objects the BDTValidationThread produces,
     so the UI can display them without re-running validation.
+
+    Uses eager loading (joinedload/selectinload) to avoid N+1 queries:
+    - BDTTest joined at query time (no session.get per run)
+    - photos + blob_asset selectinloaded (no lazy load per test)
+    - rule_results selectinloaded (no lazy load per run)
+    - UploadedFile batch-loaded (no session.get per run)
     """
     try:
         from alarm_app.bdt.parser import BDTData
@@ -179,27 +187,50 @@ def load_all_validation_results(session: Session) -> list:
     except ImportError:
         from bdt.validator import RuleResult, ValidationResult
     try:
-        from alarm_app.db.models import BDTTest, UploadedFile
+        from alarm_app.db.models import BDTPhoto, BDTTest, UploadedFile
     except ImportError:
-        from db.models import BDTTest, UploadedFile
+        from db.models import BDTPhoto, BDTTest, UploadedFile
+
+    from sqlalchemy.orm import selectinload
 
     # Build rule_id -> rule_code map
     catalog_rows = session.query(PMRuleCatalog).all()
     id_to_catalog = {r.id: (r.rule_code, r.name) for r in catalog_rows}
 
+    # Eager-load BDTTest, rule_results, photos, and photo blobs in 4 queries total
     runs = (
         session.query(PMValidationRun)
-        .join(BDTTest)
+        .options(
+            selectinload(PMValidationRun.bdt_test)
+            .selectinload(BDTTest.photos)
+            .selectinload(BDTPhoto.blob_asset),
+            selectinload(PMValidationRun.rule_results),
+        )
         .order_by(PMValidationRun.run_at.desc())
         .all()
     )
 
+    # Batch-preload UploadedFile rows referenced by these BDT tests
+    file_ids = {
+        run.bdt_test.file_id
+        for run in runs
+        if run.bdt_test and run.bdt_test.file_id
+    }
+    uploaded_map = {}
+    if file_ids:
+        uploaded_map = {
+            uf.id: uf
+            for uf in session.query(UploadedFile)
+            .filter(UploadedFile.id.in_(file_ids))
+            .all()
+        }
+
     results = []
     for run in runs:
-        bdt_db = session.get(BDTTest, run.bdt_test_id)
+        bdt_db = run.bdt_test
         if not bdt_db:
             continue
-        uploaded_file = session.get(UploadedFile, bdt_db.file_id) if bdt_db.file_id else None
+        uploaded_file = uploaded_map.get(bdt_db.file_id)
 
         # Reconstruct BDTData with fields from DB
         from pathlib import Path
@@ -279,7 +310,7 @@ def load_all_validation_results(session: Session) -> list:
             photo_count=len([s for s in photo_slots if s.image_data or getattr(s, "image_path", "")]),
         )
 
-        # Reconstruct rule results
+        # Reconstruct rule results (already eager-loaded)
         rule_results = []
         for rr in sorted(run.rule_results, key=lambda r: r.rule_id):
             code, catalog_name = id_to_catalog.get(rr.rule_id, (f"R{rr.rule_id}", ""))
@@ -322,8 +353,11 @@ def load_validation_history(session: Session, site_code: str,
     except ImportError:
         from db.models import BDTTest
 
+    from sqlalchemy.orm import selectinload
+
     runs = (
         session.query(PMValidationRun)
+        .options(selectinload(PMValidationRun.rule_results))
         .join(BDTTest)
         .filter(BDTTest.site_code == site_code.strip().upper())
         .order_by(PMValidationRun.run_at.desc())

@@ -8,9 +8,11 @@ from sqlalchemy.orm import Session
 try:
     from alarm_app.db.hashing import compute_image_sha256
     from alarm_app.db.models import BlobAsset
+    from alarm_app.db.retry import safe_flush
 except ImportError:
     from db.hashing import compute_image_sha256
     from db.models import BlobAsset
+    from db.retry import safe_flush
 
 _log = logging.getLogger(__name__)
 
@@ -44,7 +46,7 @@ def store_blob(session: Session, image_bytes: bytes, *,
         local_path=str(blob_path),
     )
     session.add(asset)
-    session.flush()
+    safe_flush(session)
     _log.info("Blob stored: sha256=%s, size=%d", sha[:12], len(image_bytes))
     return asset
 

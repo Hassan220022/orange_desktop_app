@@ -49,6 +49,8 @@ def _isolate_state_paths(tmp_path, monkeypatch):
     # Reset module-level engine state so each test gets a fresh DB
     monkeypatch.setattr(state_mod, "_engine", None)
     monkeypatch.setattr(state_mod, "_SessionFactory", None)
+    monkeypatch.setattr("alarm_app.db.engine._app_engine", None)
+    monkeypatch.setattr("alarm_app.db.engine._app_session_factory", None)
 
 
 def test_process_once_success_marks_synced_and_advances_checkpoint(tmp_path, monkeypatch):

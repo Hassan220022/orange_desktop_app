@@ -23,6 +23,8 @@ def test_bootstrap_local_runtime_creates_state_db_blob_and_duckdb(tmp_path, monk
 
     monkeypatch.setattr(state_mod, "_engine", None)
     monkeypatch.setattr(state_mod, "_SessionFactory", None)
+    monkeypatch.setattr("alarm_app.db.engine._app_engine", None)
+    monkeypatch.setattr("alarm_app.db.engine._app_session_factory", None)
 
     result = bootstrap_local_runtime()
 

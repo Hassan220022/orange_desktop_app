@@ -6,13 +6,19 @@ Data is extracted by known cell positions (row, col) based on the standard
 BDT template.
 """
 
+from __future__ import annotations
+
 import hashlib
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import pandas as pd
 from openpyxl import load_workbook
+
+if TYPE_CHECKING:
+    from alarm_app.bdt._workbook import WorkbookEngine
 
 logger = logging.getLogger(__name__)
 
@@ -477,7 +483,11 @@ def _detect_layout_family(cell_fn, max_row: int, max_col: int, sheet_name: str |
     # Summary/aggregate exclusion check (FR-001)
     normalized_sheets = [str(s).strip().lower() for s in all_sheet_names]
     _BDT_SHEET_VARIANTS = frozenset({"bdt", "rectifier", "discharge", "battery test"})
-    has_bdt_sheet = any(any(variant in s.lower() for variant in _BDT_SHEET_VARIANTS) for s in all_sheet_names)
+    has_bdt_sheet = any(
+        any(variant in s.lower() for variant in _BDT_SHEET_VARIANTS)
+        for s in all_sheet_names
+        if "summary" not in str(s).strip().lower()
+    )
     has_summary = any("summary" in s for s in normalized_sheets)
 
     if all_sheet_names and not has_bdt_sheet and has_summary:
@@ -555,7 +565,11 @@ def _resolve_bdt_sheet_name(sheet_names: list[str],
     # If only Summary sheet exists (or Summary + Config/Power Alarm without BDT), exclude early
     normalized_sheets = [str(s).strip().lower() for s in sheet_names]
     _BDT_SHEET_VARIANTS = frozenset({"bdt", "rectifier", "discharge", "battery test"})
-    has_bdt_sheet = any(any(variant in s.lower() for variant in _BDT_SHEET_VARIANTS) for s in sheet_names)
+    has_bdt_sheet = any(
+        any(variant in s.lower() for variant in _BDT_SHEET_VARIANTS)
+        for s in sheet_names
+        if "summary" not in str(s).strip().lower()
+    )
     has_summary = any("summary" in s for s in normalized_sheets)
 
     if not has_bdt_sheet and has_summary:
@@ -598,14 +612,17 @@ def _resolve_bdt_sheet_name(sheet_names: list[str],
     def _norm(text: str) -> str:
         return "".join(ch for ch in str(text).lower() if ch.isalnum())
 
+    def _has_summary(name: str) -> bool:
+        return "summary" in str(name).strip().lower()
+
     for name in sheet_names:
         nm = _norm(name)
-        if "bdt" in nm and "sheet" in nm:
+        if "bdt" in nm and "sheet" in nm and not _has_summary(name):
             return name
 
     for name in sheet_names:
         nm = _norm(name)
-        if nm.startswith("bdt"):
+        if nm.startswith("bdt") and not _has_summary(name):
             return name
 
     # Last resort for BDT files: many real exports use a generic single/first sheet name.
@@ -657,8 +674,14 @@ def _parse_test_date(cell_val, filename: str) -> datetime | None:
     return None
 
 
-def _parse_summary_sheet(file_path: str, sheet_names: list[str]) -> dict[str, str]:
-    """Read row 2 of the Summary sheet into a header->value dict."""
+def _parse_summary_sheet(file_path: str,
+                          sheet_names: list[str],
+                          engine: WorkbookEngine | None = None) -> dict[str, str]:
+    """Read row 2 of the Summary sheet into a header->value dict.
+
+    If *engine* is provided (a pre-opened WorkbookEngine) reuse it instead
+    of opening the file again.
+    """
     target = None
     for name in sheet_names:
         if str(name).strip().lower() == "summary":
@@ -668,12 +691,19 @@ def _parse_summary_sheet(file_path: str, sheet_names: list[str]) -> dict[str, st
         return {}
 
     rows = None
-    try:
-        import python_calamine
-        wb = python_calamine.CalamineWorkbook.from_path(file_path)
-        rows = wb.get_sheet_by_name(target).to_python()
-    except Exception:
-        pass
+    if engine is not None:
+        try:
+            rows = engine.sheet_rows(target)
+        except Exception:
+            pass
+
+    if rows is None:
+        try:
+            import python_calamine
+            wb = python_calamine.CalamineWorkbook.from_path(file_path)
+            rows = wb.get_sheet_by_name(target).to_python()
+        except Exception:
+            pass
 
     if rows is None:
         try:
@@ -719,44 +749,38 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
         data.errors.append("Cannot open file: missing file path")
         return data
 
-    # ── Read sheet data with calamine (fast path) ────────
-    rows = None
-    all_sheet_names: list[str] = []
+    # ── Open workbook once via WorkbookEngine (calamine-first, lazy) ──
     try:
-        import python_calamine
-        wb = python_calamine.CalamineWorkbook.from_path(file_path)
-        all_sheet_names = list(wb.sheet_names)
-        bdt_sheet_name = _resolve_bdt_sheet_name(all_sheet_names, data.filename)
-        if bdt_sheet_name is None:
-            data.errors.append("Missing 'BDT sheet'")
-            return data
-        rows = wb.get_sheet_by_name(bdt_sheet_name).to_python()
-    except Exception:
-        pass
+        from alarm_app.bdt._workbook import WorkbookEngine
+    except ImportError:
+        from bdt._workbook import WorkbookEngine  # type: ignore[assignment,no-redef]
 
-    # ── Fallback to openpyxl whenever calamine didn't yield rows ──
-    if rows is None:
-        try:
-            owb = load_workbook(file_path, data_only=True)
-        except Exception as e:
-            data.errors.append(f"Cannot open file: {e}")
-            return data
-        all_sheet_names = list(owb.sheetnames)
-        bdt_sheet_name = _resolve_bdt_sheet_name(all_sheet_names, data.filename)
-        if bdt_sheet_name is None:
-            data.errors.append("Missing 'BDT sheet'")
-            owb.close()
-            return data
-        ows = owb[bdt_sheet_name]
-        rows = []
-        for row_cells in ows.iter_rows(min_row=1, max_row=ows.max_row,
-                                        max_col=ows.max_column):
-            rows.append([c.value for c in row_cells])
-        owb.close()
+    # Pass our module-level ``load_workbook`` reference so tests that patch
+    # ``alarm_app.bdt.parser.load_workbook`` still reach the openpyxl
+    # fallback path inside the engine.
+    engine = WorkbookEngine(file_path, load_workbook_fn=load_workbook)
+    rows: list[list] | None = None
+    all_sheet_names: list[str]
+    bdt_sheet_name: str | None
 
-    if rows is None:
-        if not data.errors:
-            data.errors.append("Failed to read BDT sheet")
+    try:
+        all_sheet_names = engine.sheet_names
+    except Exception as exc:
+        data.errors.append(f"Cannot open file: {exc}")
+        engine.close()
+        return data
+
+    bdt_sheet_name = _resolve_bdt_sheet_name(all_sheet_names, data.filename)
+    if bdt_sheet_name is None:
+        data.errors.append("Missing 'BDT sheet'")
+        engine.close()
+        return data
+
+    try:
+        rows = engine.sheet_rows(bdt_sheet_name)
+    except Exception as exc:
+        data.errors.append(f"Failed to read BDT sheet: {exc}")
+        engine.close()
         return data
 
     max_row = len(rows)
@@ -788,6 +812,7 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
     # Skip parsing for summary-only workbooks (FR-001)
     if family == "SUMMARY_EXCLUDED":
         data.errors.append("Summary/aggregate workbook excluded from BDT validation")
+        engine.close()
         return data
     data.site_name = _safe_str(cell(*layout["site_name"]))
     data.site_code = _safe_str(cell(*layout["site_code"]))
@@ -1088,8 +1113,12 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
                               or _safe_str(cell(_r, _c + 1))
                               or _safe_str(cell(_r, _c)))
 
-    # Summary sheet
-    data.summary_data = _parse_summary_sheet(file_path, all_sheet_names)
+    # Summary sheet — reuse the already-opened engine.  After this we no
+    # longer need the engine: photo extraction uses its own OOXML/ZIP
+    # path.  Close eagerly so an unexpected exception in the photo
+    # extraction or trailing logic can't keep the workbook alive.
+    data.summary_data = _parse_summary_sheet(file_path, all_sheet_names, engine=engine)
+    engine.close()
 
     # Photo slots
     if not skip_photos:
@@ -1436,227 +1465,3 @@ def _extract_photo_slots(
     except Exception:
         logger.warning("Structural photo extraction failed", exc_info=True)
         return [], 0, "LAYOUT_PHOTO_6", 6, "low", "structural", []
-
-
-def _extract_photo_slots_layout(file_path: str) -> tuple[list[PhotoSlot], int, str, int, str, str, list[str]]:
-    """Extract labelled photo slots from a BDT xlsx file.
-
-    Returns (list_of_PhotoSlot, total_media_count, photo_layout_id, required_count,
-             mapping_confidence, detection_mode, categories_found).
-    """
-    import xml.etree.ElementTree as ET
-    import zipfile
-
-    ns_xdr = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
-    ns_a = "http://schemas.openxmlformats.org/drawingml/2006/main"
-    ns_r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-
-    try:
-        zf = zipfile.ZipFile(file_path)
-    except Exception:
-        logger.warning("Failed to open xlsx as zip, using conservative 6-photo fallback")
-        return [], 0, "LAYOUT_PHOTO_6", 6, "low", "fallback", []
-
-    try:
-        # Total media count (for backwards compat)
-        media_files = [n for n in zf.namelist() if n.startswith("xl/media/")]
-        total_media = len(media_files)
-
-        # Find the drawing XML that belongs to the BDT sheet only.
-        # Each worksheet references its own drawing via its .rels file.
-        # We must NOT parse drawings from other sheets (e.g. Power Alarm)
-        # because their images (alarm emails, BTS screenshots) would
-        # contaminate the BDT photo grid.
-        all_names = zf.namelist()
-
-        # Step 1: Find which sheet XML file is the BDT sheet
-        ns_ss = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-        bdt_sheet_file = None
-        try:
-            wb_xml = ET.fromstring(zf.read("xl/workbook.xml"))
-            wb_rels_xml = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
-            rid_to_sheet = {}
-            for rel in wb_rels_xml:
-                rid_to_sheet[rel.get("Id", "")] = rel.get("Target", "")
-            bdt_sheet_name = _resolve_bdt_sheet_name(
-                [s.get("name", "") for s in wb_xml.findall(f".//{{{ns_ss}}}sheet")])
-            if bdt_sheet_name:
-                ns_r_wb = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-                for s in wb_xml.findall(f".//{{{ns_ss}}}sheet"):
-                    if s.get("name") == bdt_sheet_name:
-                        rid = s.get(f"{{{ns_r_wb}}}id", "")
-                        target = rid_to_sheet.get(rid, "")
-                        if target:
-                            bdt_sheet_file = "xl/" + target if not target.startswith("xl/") else target
-                        break
-        except Exception:
-            pass
-
-        # Step 2: Find drawing path from BDT sheet's rels
-        drawing_paths = []
-        if bdt_sheet_file:
-            sheet_basename = bdt_sheet_file.rsplit("/", 1)[-1]
-            sheet_rels = f"xl/worksheets/_rels/{sheet_basename}.rels"
-            if sheet_rels in all_names:
-                try:
-                    sr_xml = ET.fromstring(zf.read(sheet_rels))
-                    for rel in sr_xml:
-                        target = rel.get("Target", "")
-                        if "drawing" in target.lower():
-                            # Resolve relative path
-                            dp = "xl/drawings/" + target.rsplit("/", 1)[-1]
-                            if dp in all_names:
-                                drawing_paths.append(dp)
-                except Exception:
-                    pass
-
-        # Fallback: if we couldn't determine the BDT sheet's drawing,
-        # use only drawing1.xml (the first sheet's drawing)
-        if not drawing_paths:
-            fallback = "xl/drawings/drawing1.xml"
-            if fallback in all_names:
-                drawing_paths = [fallback]
-
-        if not drawing_paths:
-            logger.warning("No drawing path found for BDT sheet, using conservative 6-photo fallback")
-            return [], total_media, "LAYOUT_PHOTO_6", 6, "low", "fallback", []
-
-        # Build rId → media zip path map from BDT drawing rels only
-        rid_to_path: dict[str, str] = {}
-        for dp in drawing_paths:
-            dp_basename = dp.rsplit("/", 1)[-1]
-            rels_path = f"xl/drawings/_rels/{dp_basename}.rels"
-            if rels_path in all_names:
-                rels_xml = ET.fromstring(zf.read(rels_path))
-                for rel in rels_xml:
-                    rid = rel.get("Id", "")
-                    target = rel.get("Target", "")
-                    if target.startswith("../media/"):
-                        rid_to_path[rid] = "xl/media/" + target.split("/")[-1]
-
-        # Parse BDT drawing only — extract twoCellAnchor positions + rIds
-        all_slot_images: dict[int, tuple[str, str, int]] = {}
-        valid_anchor_count = 0
-        max_anchor_col = -1
-
-        for dp in drawing_paths:
-            drawing_xml = ET.fromstring(zf.read(dp))
-            for anchor in drawing_xml.findall(f"{{{ns_xdr}}}twoCellAnchor"):
-                frm = anchor.find(f"{{{ns_xdr}}}from")
-                if frm is None:
-                    continue
-                from_col = int(frm.find(f"{{{ns_xdr}}}col").text)
-                from_row = int(frm.find(f"{{{ns_xdr}}}row").text)
-
-                # Skip non-photo anchors (logo at col 0, etc.)
-                if from_col < 11:
-                    continue
-
-                # Find embedded image rId
-                blip = anchor.find(f".//{{{ns_a}}}blip")
-                if blip is None:
-                    continue
-                rid = blip.get(f"{{{ns_r}}}embed", "")
-                if not rid or rid not in rid_to_path:
-                    continue
-
-                slot_idx = _anchor_to_slot(
-                    from_row,
-                    from_col,
-                    _PHOTO_LAYOUTS["LAYOUT_PHOTO_16"]["band_ranges"],
-                    _PHOTO_LAYOUTS["LAYOUT_PHOTO_16"]["col_groups"],
-                )
-                if slot_idx is None:
-                    continue  # Non-slot image, don't count it
-
-                # Only count anchors that map to valid photo slots
-                valid_anchor_count += 1
-                if from_col > max_anchor_col:
-                    max_anchor_col = from_col
-                # On duplicate, keep the anchor whose row is closest to the
-                # slot's expected label row so the right image wins.
-                full_slot_defs = _PHOTO_LAYOUTS["LAYOUT_PHOTO_16"]["slot_defs"]
-                if slot_idx in all_slot_images:
-                    expected_row = full_slot_defs[slot_idx][0] if slot_idx < len(full_slot_defs) else 0
-                    prev_row = all_slot_images[slot_idx][2]
-                    if abs(from_row - expected_row) >= abs(prev_row - expected_row):
-                        continue  # existing anchor is closer, keep it
-
-                all_slot_images[slot_idx] = (rid, rid_to_path[rid], from_row)
-
-        photo_layout_id, required_photo_count = _select_photo_layout(
-            valid_anchor_count,
-            max_anchor_col,
-        )
-        layout = _PHOTO_LAYOUTS[photo_layout_id]
-        slot_defs = layout["slot_defs"]
-        band_categories = layout["band_categories"]
-        target_cols_per_band = len(layout["col_groups"])
-
-        # Remap from full 4-col index to selected layout index when needed.
-        slot_images: dict[int, tuple[str, str, int]] = {}
-        for idx4, meta in all_slot_images.items():
-            band = idx4 // 4
-            col_in_band = idx4 % 4
-            if col_in_band >= target_cols_per_band:
-                continue
-            mapped_idx = band * target_cols_per_band + col_in_band
-            if mapped_idx >= len(slot_defs):
-                continue
-            slot_images[mapped_idx] = meta
-
-        # Read labels from the worksheet and build PhotoSlot list
-        # Re-open with openpyxl just for label reading
-        wb = load_workbook(file_path, data_only=True)
-        sheet_name = _resolve_bdt_sheet_name(list(wb.sheetnames))
-        ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else None
-
-        slots: list[PhotoSlot] = []
-        for idx, (label_row, label_col) in enumerate(slot_defs):
-            # Read label from worksheet
-            label = ""
-            if ws is not None:
-                raw = ws.cell(row=label_row, column=label_col).value
-                label = _safe_str(raw) if raw else ""
-            if not label:
-                label = f"Slot {idx + 1}"
-
-            img_data = None
-            img_ext = ""
-            if idx in slot_images:
-                _, media_path, _ = slot_images[idx]
-                try:
-                    img_data = zf.read(media_path)
-                    img_ext = media_path.rsplit(".", 1)[-1].lower()
-                except Exception:
-                    pass
-
-            slots.append(PhotoSlot(
-                label=label,
-                image_data=img_data,
-                image_ext=img_ext,
-                category=band_categories.get(idx // target_cols_per_band, "other"),
-            ))
-
-        wb.close()
-
-        # Extract category metadata (FR-003, FR-004)
-        categories_found: list[str] = []
-        for slot in slots:
-            if slot.image_data and slot.category:
-                cat = slot.category.lower()
-                if cat not in categories_found:
-                    categories_found.append(cat)
-
-        # Determine mapping confidence based on anchor-to-slot mapping success
-        filled_slots = sum(1 for s in slots if s.image_data)
-        mapping_confidence = "high" if filled_slots >= required_photo_count else "medium"
-        if filled_slots == 0:
-            mapping_confidence = "low"
-
-        detection_mode = "normal"  # Could be "fallback" if we used non-standard mapping
-
-        return slots, total_media, photo_layout_id, required_photo_count, mapping_confidence, detection_mode, categories_found
-
-    finally:
-        zf.close()

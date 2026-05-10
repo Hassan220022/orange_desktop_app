@@ -26,11 +26,12 @@ from alarm_app.bdt.parser import (
 
 
 def test_photo_extraction_uses_structural_only():
-    with patch("alarm_app.bdt.parser._extract_photo_slots_structural") as structural, \
-         patch("alarm_app.bdt.parser._extract_photo_slots_layout") as legacy:
+    # The legacy ``_extract_photo_slots_layout`` was removed; only the
+    # structural OOXML path remains.  Verify the active wrapper still
+    # routes through it.
+    with patch("alarm_app.bdt.parser._extract_photo_slots_structural") as structural:
         structural.return_value = ([], 0, "LAYOUT_PHOTO_6", 6, "low", "structural", [])
         result = _extract_photo_slots("/fake/file.xlsx", family_guess="A", family_confidence="high")
-        legacy.assert_not_called()
         structural.assert_called_once()
         assert result[5] == "structural"
 

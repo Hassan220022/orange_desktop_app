@@ -40,11 +40,16 @@ def bootstrap_local_runtime() -> dict[str, str]:
     db_engine.init_db(engine, include_alarm_records=False)
 
     # Ensure the local DuckDB cache file exists even before the first import.
-    con = alarm_store._connect(read_only=False)
-    try:
+    # Skip the write-lock probe if another backend already owns the file —
+    # that's a normal "second instance / sibling backend" situation, not an
+    # error.  ``_safe_connect`` returns ``None`` in that case.
+    if not alarm_store.ALARM_DB_FILE.exists():
+        con = alarm_store._connect(read_only=False)
         con.close()
-    finally:
-        pass
+    else:
+        con = alarm_store._safe_connect(read_only=False)
+        if con is not None:
+            con.close()
 
     device_id = state_mod.get_or_create_device_id()
     return {

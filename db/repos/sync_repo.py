@@ -93,14 +93,15 @@ def mark_outbox_synced(session: Session, event_ids: list[str],
                        checkpoint_cursor: str | None = None) -> int:
     """Mark events as synced and optionally update checkpoint."""
     try:
-        count = 0
         now = datetime.now()
-        for eid in event_ids:
-            evt = session.query(SyncOutboxEvent).filter_by(event_id=eid).first()
-            if evt and evt.status == "pending":
-                evt.status = "synced"
-                evt.synced_at = now
-                count += 1
+        events = session.query(SyncOutboxEvent).filter(
+            SyncOutboxEvent.event_id.in_(event_ids),
+            SyncOutboxEvent.status == "pending",
+        ).all()
+        for evt in events:
+            evt.status = "synced"
+            evt.synced_at = now
+        count = len(events)
 
         if checkpoint_cursor:
             save_sync_checkpoint(session, checkpoint_cursor)

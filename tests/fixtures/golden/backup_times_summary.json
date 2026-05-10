@@ -1,0 +1,7 @@
+{
+  "columns": ["site_id", "network_type", "vendor", "power_time", "power_cleared", "down_time", "end_event_type", "backup_time"],
+  "row_count": 1,
+  "dtypes": {"site_id": "object", "backup_time": "object"},
+  "category_counts": {},
+  "vendor_counts": {"Huawei": 1}
+}

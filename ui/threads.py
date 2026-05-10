@@ -24,9 +24,8 @@ try:
         deduplicate_alarm_rows,
         parse_alarm_file,
     )
-    from alarm_app.db.engine import create_engine as _db_create_engine
-    from alarm_app.db.engine import get_session_factory as _db_get_session_factory
-    from alarm_app.db.engine import init_db as _db_init_db
+    from alarm_app.db.engine import get_shared_session as _db_get_shared_session
+    from alarm_app.db.engine import init_app_db as _db_init_app_db
     from alarm_app.db.hashing import compute_file_sha256
     from alarm_app.db.repos.file_repo import file_exists as _file_exists
     from alarm_app.db.repos.file_repo import register_file as _register_file
@@ -42,9 +41,8 @@ except ImportError:
         deduplicate_alarm_rows,
         parse_alarm_file,
     )
-    from db.engine import create_engine as _db_create_engine
-    from db.engine import get_session_factory as _db_get_session_factory
-    from db.engine import init_db as _db_init_db
+    from db.engine import get_shared_session as _db_get_shared_session
+    from db.engine import init_app_db as _db_init_app_db
     from db.hashing import compute_file_sha256
     from db.repos.file_repo import file_exists as _file_exists
     from db.repos.file_repo import register_file as _register_file
@@ -75,10 +73,11 @@ def _persist_alarm_cache_and_file_index(
         messages.append("warning: local alarm cache save failed")
 
     try:
-        bg_engine = _db_create_engine()
-        _db_init_db(bg_engine, include_alarm_records=False)
-        bg_factory = _db_get_session_factory(bg_engine)
-        bg_session = bg_factory()
+        try:
+            _db_init_app_db()
+        except Exception:
+            pass
+        bg_session = _db_get_shared_session()
         try:
             for _idx, info in infos_to_parse:
                 fp = info.get("path", "")
@@ -140,10 +139,11 @@ class LoaderThread(QThread):
             # If DB init fails, proceed without dedup (best-effort).
             db_session = None
             try:
-                _engine = _db_create_engine()
-                _db_init_db(_engine, include_alarm_records=False)
-                _factory = _db_get_session_factory(_engine)
-                db_session = _factory()
+                try:
+                    _db_init_app_db()
+                except Exception:
+                    pass
+                db_session = _db_get_shared_session()
             except Exception:
                 _log.warning("DB session init failed; file-level dedup disabled", exc_info=True)
 
@@ -266,17 +266,18 @@ class LoaderThread(QThread):
             # Durable sync journal entries (local outbox) for future cloud migration.
             try:
                 file_hashes = state.compute_file_hashes(file_paths)
+                events = []
                 for fp, file_sha in file_hashes.items():
-                    state.append_outbox_event(
-                        entity_type="uploaded_file",
-                        entity_local_id=fp,
-                        op="upsert",
-                        entity_hash=file_sha,
-                        payload={
+                    events.append({
+                        "entity_type": "uploaded_file",
+                        "entity_local_id": fp,
+                        "op": "upsert",
+                        "entity_hash": file_sha,
+                        "payload": {
                             "filename": os.path.basename(fp),
                             "file_sha256": file_sha,
                         },
-                    )
+                    })
 
                 batch_payload = {
                     "rows": int(len(combined)),
@@ -286,13 +287,15 @@ class LoaderThread(QThread):
                 batch_hash = hashlib.sha256(
                     json.dumps(batch_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 ).hexdigest()
-                state.append_outbox_event(
-                    entity_type="alarm_record_batch",
-                    entity_local_id=str(uuid4()),
-                    op="upsert",
-                    entity_hash=batch_hash,
-                    payload=batch_payload,
-                )
+                events.append({
+                    "entity_type": "alarm_record_batch",
+                    "entity_local_id": str(uuid4()),
+                    "op": "upsert",
+                    "entity_hash": batch_hash,
+                    "payload": batch_payload,
+                })
+
+                state.append_outbox_events(events)
             except Exception:
                 pass
 

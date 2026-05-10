@@ -27,6 +27,7 @@ def upsert_alarms(req: AlarmBatchRequest, db: Session = Depends(get_db)):
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
     inserted, skipped = bulk_upsert_alarms(db, df)
+    db.commit()
     _log.info("Alarm upsert: inserted=%d, skipped=%d", inserted, skipped)
     return AlarmBatchResponse(inserted=inserted, skipped=skipped)
 

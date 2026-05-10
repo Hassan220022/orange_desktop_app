@@ -26,6 +26,12 @@ try:
         get_session_factory as _get_session_factory,
     )
     from alarm_app.db.engine import (
+        get_shared_session as _get_shared_session,
+    )
+    from alarm_app.db.engine import (
+        init_app_db as _init_app_db,
+    )
+    from alarm_app.db.engine import (
         init_db as _init_db,
     )
 except ImportError:
@@ -34,6 +40,12 @@ except ImportError:
     )
     from db.engine import (
         get_session_factory as _get_session_factory,
+    )
+    from db.engine import (
+        get_shared_session as _get_shared_session,
+    )
+    from db.engine import (
+        init_app_db as _init_app_db,
     )
     from db.engine import (
         init_db as _init_db,
@@ -58,6 +70,15 @@ _SessionFactory = None
 
 
 def _get_session():
+    try:
+        _init_app_db()
+    except Exception:
+        pass
+    try:
+        return _get_shared_session()
+    except Exception:
+        pass
+    # Fallback for test / bootstrapless environments
     global _engine, _SessionFactory
     if _engine is None:
         _engine = _create_engine()

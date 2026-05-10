@@ -15,12 +15,19 @@ router = APIRouter(prefix="/v1/pm", tags=["pm"])
 
 @router.get("/runs/{run_id}", response_model=PMRunResponse)
 def get_run(run_id: int, db: Session = Depends(get_db)):
+    from sqlalchemy.orm import selectinload
+
     try:
         from alarm_app.db.models import PMValidationRun
     except ImportError:
         from db.models import PMValidationRun
 
-    run = db.get(PMValidationRun, run_id)
+    run = (
+        db.query(PMValidationRun)
+        .options(selectinload(PMValidationRun.rule_results))
+        .filter_by(id=run_id)
+        .first()
+    )
     if not run:
         raise HTTPException(404, "Run not found")
     _log.info("PM run queried: run_id=%d", run_id)

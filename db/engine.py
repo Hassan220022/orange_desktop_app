@@ -13,6 +13,40 @@ _log = logging.getLogger(__name__)
 STATE_DIR = Path.home() / ".alarm_viewer"
 DB_PATH = STATE_DIR / "alarm_viewer.db"
 
+_app_engine = None
+_app_session_factory = None
+
+
+def get_app_engine():
+    """Return the singleton application engine (defaults to local SQLite).
+
+    All desktop writes must go through this engine so that SQLAlchemy's
+    connection pooling can serialize concurrent writers instead of letting
+    two independent engines fight over the same WAL lock.
+    """
+    global _app_engine, _app_session_factory
+    if _app_engine is None:
+        _app_engine = create_engine()
+        _app_session_factory = sessionmaker(bind=_app_engine)
+    return _app_engine
+
+
+def get_shared_session() -> Session:
+    """Create a new session from the shared application engine.
+
+    Ensures tables exist (idempotent — cheap after first call).
+    """
+    global _app_session_factory
+    if _app_session_factory is None:
+        get_app_engine()
+    return _app_session_factory()
+
+
+def init_app_db():
+    """Initialise DB tables and seed data using the shared engine."""
+    engine = get_app_engine()
+    init_db(engine, include_alarm_records=False)
+
 
 def create_engine(url: str | None = None):
     """Create a SQLAlchemy engine. Defaults to local SQLite."""

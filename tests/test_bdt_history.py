@@ -44,8 +44,10 @@ def history_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "PM_RULE_RESULTS_DIR", tmp_path / "_pm_rule_results")
     monkeypatch.setattr("alarm_app.db.engine.STATE_DIR", tmp_path)
     monkeypatch.setattr("alarm_app.db.engine.DB_PATH", tmp_path / "test.db")
-    monkeypatch.setattr(mod, "_engine", None)
-    monkeypatch.setattr(mod, "_SessionFactory", None)
+    monkeypatch.setattr("alarm_app.db.engine._app_engine", None)
+    monkeypatch.setattr("alarm_app.db.engine._app_session_factory", None)
+    monkeypatch.setattr("alarm_app.data.state._engine", None)
+    monkeypatch.setattr("alarm_app.data.state._SessionFactory", None)
     return tmp_path
 
 

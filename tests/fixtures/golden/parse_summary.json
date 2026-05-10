@@ -1,0 +1,7 @@
+{
+  "columns": ["site_id", "occurred_on", "alarm_name", "alarm_id", "network_type", "vendor", "cleared_on", "duration", "clearance_status", "alarm_source", "site_down_flag", "alarm_category", "file_source", "_category"],
+  "row_count": 3,
+  "dtypes": {"site_id": "object", "occurred_on": "object", "alarm_name": "object"},
+  "category_counts": {"Power": 1, "Down": 1, "Door": 1},
+  "vendor_counts": {"Huawei": 2, "Nokia": 1}
+}

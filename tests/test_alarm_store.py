@@ -21,6 +21,8 @@ def _isolate_alarm_store_paths(tmp_path, monkeypatch):
     monkeypatch.setattr("alarm_app.db.engine.DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr(state_mod, "_engine", None)
     monkeypatch.setattr(state_mod, "_SessionFactory", None)
+    monkeypatch.setattr("alarm_app.db.engine._app_engine", None)
+    monkeypatch.setattr("alarm_app.db.engine._app_session_factory", None)
     alarm_store.set_alarm_db_file(alarm_db)
 
 

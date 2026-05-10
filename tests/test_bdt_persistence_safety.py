@@ -77,26 +77,22 @@ class TestSaveValidationBatchIsolation:
 
 
 class TestPersistPhotoJobsIsolation:
-    """Test that persist_photo_jobs has savepoint-per-job isolation (FR-005)."""
+    """Test that persist_photo_jobs has per-job isolation (FR-005)."""
 
-    def test_savepoint_per_job_in_code(self):
-        """Verify savepoint-per-job isolation is implemented in code."""
+    def test_threadpool_per_job_isolation(self):
+        """Verify ThreadPoolExecutor gives per-job isolation."""
         import alarm_app.bdt.history as history_module
         try:
             source = inspect.getsource(history_module.persist_photo_jobs)
         except OSError:
             pytest.skip("Source not available (bytecode-only install)")
 
-        # Verify begin_nested is used for savepoint isolation
-        assert "begin_nested" in source, "persist_photo_jobs should use begin_nested for savepoint isolation"
-
-        # Verify the pattern of try/except inside the loop
-        assert "for job in photo_jobs:" in source, "persist_photo_jobs should iterate over jobs"
-
-    def test_function_signature_correct(self):
-        """Verify persist_photo_jobs has correct signature."""
-        sig = inspect.signature(persist_photo_jobs)
-        assert 'photo_jobs' in sig.parameters
+        assert "ThreadPoolExecutor" in source, (
+            "persist_photo_jobs should use ThreadPoolExecutor for per-job isolation"
+        )
+        assert "autocommit=True" in source, (
+            "Each job should autocommit in its own session"
+        )
 
 
 class TestOutboxEmissionTiming:

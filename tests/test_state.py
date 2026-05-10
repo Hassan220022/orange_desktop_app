@@ -29,6 +29,8 @@ def _isolate_state_dir(tmp_path, monkeypatch):
     # Reset module-level engine state so each test gets a fresh DB
     monkeypatch.setattr(state_mod, "_engine", None)
     monkeypatch.setattr(state_mod, "_SessionFactory", None)
+    monkeypatch.setattr("alarm_app.db.engine._app_engine", None)
+    monkeypatch.setattr("alarm_app.db.engine._app_session_factory", None)
 
 
 # ── save_state / load_state round-trip ─────────────────────────

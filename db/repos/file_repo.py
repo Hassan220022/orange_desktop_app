@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session
 
 try:
     from alarm_app.db.models import UploadedFile
+    from alarm_app.db.retry import safe_flush
 except ImportError:
     from db.models import UploadedFile
+    from db.retry import safe_flush
 
 _log = logging.getLogger(__name__)
 
@@ -41,7 +43,7 @@ def register_file(session: Session, *, file_sha256: str, original_path: str,
         parsed_at=datetime.now(),
     )
     session.add(record)
-    session.flush()
+    safe_flush(session)
     _log.info("File registered: name=%s, sha256=%s, size=%d", original_name, file_sha256[:12], file_size)
     return record
 

@@ -25,6 +25,8 @@ def _isolate_alarm_store_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(state_mod, "DEVICE_ID_FILE", tmp_path / "device_id.txt")
     monkeypatch.setattr(state_mod, "_engine", None)
     monkeypatch.setattr(state_mod, "_SessionFactory", None)
+    monkeypatch.setattr("alarm_app.db.engine._app_engine", None)
+    monkeypatch.setattr("alarm_app.db.engine._app_session_factory", None)
     alarm_store.set_alarm_db_file(alarm_db)
 
 

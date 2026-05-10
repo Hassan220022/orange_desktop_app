@@ -25,9 +25,8 @@ def test_alarm_cache_save_survives_sqlite_file_index_failure(monkeypatch, tmp_pa
             return None
 
     monkeypatch.setattr(threads.state, "save_dataframe", _save_dataframe)
-    monkeypatch.setattr(threads, "_db_create_engine", lambda: object())
-    monkeypatch.setattr(threads, "_db_init_db", lambda engine, include_alarm_records=False: None)
-    monkeypatch.setattr(threads, "_db_get_session_factory", lambda engine: (lambda: _DummySession()))
+    monkeypatch.setattr(threads, "_db_init_app_db", lambda: None)
+    monkeypatch.setattr(threads, "_db_get_shared_session", lambda: _DummySession())
     monkeypatch.setattr(threads, "compute_file_sha256", lambda fp: "sha")
 
     def _raise_register(*args, **kwargs):
@@ -52,9 +51,12 @@ def test_alarm_cache_message_reports_duckdb_failure(monkeypatch):
         "save_dataframe",
         lambda df: (_ for _ in ()).throw(RuntimeError("duckdb failed")),
     )
-    monkeypatch.setattr(threads, "_db_create_engine", lambda: object())
-    monkeypatch.setattr(threads, "_db_init_db", lambda engine, include_alarm_records=False: None)
-    monkeypatch.setattr(threads, "_db_get_session_factory", lambda engine: (lambda: type("S", (), {"commit": lambda self: None, "close": lambda self: None})()))
+    monkeypatch.setattr(threads, "_db_init_app_db", lambda: None)
+    monkeypatch.setattr(
+        threads,
+        "_db_get_shared_session",
+        lambda: type("S", (), {"commit": lambda self: None, "close": lambda self: None})(),
+    )
 
     msg = threads._persist_alarm_cache_and_file_index(
         pd.DataFrame({"site_id": ["A001"]}),

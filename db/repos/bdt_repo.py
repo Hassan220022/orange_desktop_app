@@ -9,9 +9,11 @@ from sqlalchemy.orm import Session
 try:
     from alarm_app.db.hashing import compute_bdt_content_hash
     from alarm_app.db.models import BDTPhoto, BDTTest
+    from alarm_app.db.retry import safe_flush
 except ImportError:
     from db.hashing import compute_bdt_content_hash
     from db.models import BDTPhoto, BDTTest
+    from db.retry import safe_flush
 
 _log = logging.getLogger(__name__)
 
@@ -27,7 +29,7 @@ def save_bdt_test(session: Session, bdt_dict: dict,
     if existing:
         if file_id is not None and existing.file_id is None:
             existing.file_id = file_id
-            session.flush()
+            safe_flush(session)
         return existing
 
     test_date = bdt_dict.get("test_date")
@@ -75,7 +77,7 @@ def save_bdt_test(session: Session, bdt_dict: dict,
         content_hash=content_hash,
     )
     session.add(record)
-    session.flush()
+    safe_flush(session)
     _log.info("BDT test saved: site_code=%s, test_date=%s", record.site_code, record.test_date)
     return record
 
@@ -120,6 +122,6 @@ def save_bdt_photo(session: Session, bdt_test_id: int, slot_index: int,
         blob_asset_id=blob_asset_id,
     )
     session.add(photo)
-    session.flush()
+    safe_flush(session)
     _log.info("BDT photo linked: bdt_test_id=%d, slot_index=%d", bdt_test_id, slot_index)
     return photo

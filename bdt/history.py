@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -27,41 +28,19 @@ PM_RULE_RESULTS_DIR = HISTORY_DIR / "_pm_rule_results"
 _log = logging.getLogger(__name__)
 
 
-_engine = None
-_SessionFactory = None
-
-
 def _get_session():
-    global _engine, _SessionFactory
-    if _engine is None:
-        try:
-            from alarm_app.db.engine import (
-                create_engine as _create_engine,
-            )
-        except ImportError:
-            from db.engine import (
-                create_engine as _create_engine,
-            )
-        try:
-            from alarm_app.db.engine import (
-                get_session_factory as _get_session_factory,
-            )
-        except ImportError:
-            from db.engine import (
-                get_session_factory as _get_session_factory,
-            )
-        try:
-            from alarm_app.db.engine import (
-                init_db as _init_db,
-            )
-        except ImportError:
-            from db.engine import (
-                init_db as _init_db,
-            )
-        _engine = _create_engine()
-        _init_db(_engine, include_alarm_records=False)
-        _SessionFactory = _get_session_factory(_engine)
-    return _SessionFactory()
+    try:
+        from alarm_app.db.engine import get_shared_session, init_app_db
+    except ImportError:
+        from db.engine import get_shared_session, init_app_db
+
+    # Ensure tables exist (idempotent, cheap after first call)
+    try:
+        init_app_db()
+    except Exception:
+        pass
+
+    return get_shared_session()
 
 
 @dataclass
@@ -735,10 +714,14 @@ def save_validation_batch(
 
 
 def persist_photo_jobs(photo_jobs: list[dict]) -> int:
-    """Persist queued BDT photo jobs with savepoint-per-job isolation.
+    """Persist queued BDT photo jobs with per-job isolation.
 
-    Returns count of successfully persisted photos. Individual job failures
-    are logged but do not roll back other jobs in the batch.
+    Each job runs in its own thread with its own session so that
+    concurrent photo writes saturate the disk I/O without contending
+    for a single session object.
+
+    Returns count of successfully persisted photos. Individual job
+    failures are logged but do not roll back other jobs in the batch.
     """
     if not photo_jobs:
         return 0
@@ -748,33 +731,47 @@ def persist_photo_jobs(photo_jobs: list[dict]) -> int:
     except ImportError:
         from db.repos.photo_service import persist_bdt_photos
 
-    session = _get_session()
-    total = 0
-    try:
-        for job in photo_jobs:
-            bdt_test_id = int(job.get("bdt_test_id") or 0)
-            photo_slots = list(job.get("photo_slots") or [])
-            if not bdt_test_id or not photo_slots:
-                continue
+    def _persist_one_job(job: dict) -> int:
+        bdt_test_id = int(job.get("bdt_test_id") or 0)
+        photo_slots = list(job.get("photo_slots") or [])
+        if not bdt_test_id or not photo_slots:
+            return 0
 
+        session = _get_session()
+        try:
+            job_count = persist_bdt_photos(
+                session,
+                bdt_test_id,
+                photo_slots,
+                autocommit=True,
+            )
+            return job_count or 0
+        except Exception:
+            _log.error(
+                "Failed to persist photos for bdt_test_id=%d",
+                bdt_test_id, exc_info=True,
+            )
             try:
-                with session.begin_nested():
-                    job_count = persist_bdt_photos(
-                        session,
-                        bdt_test_id,
-                        photo_slots,
-                        autocommit=False,  # Don't commit inside savepoint
-                    )
-                    total += job_count
+                session.rollback()
             except Exception:
-                _log.error("Failed to persist photos for bdt_test_id=%d", bdt_test_id, exc_info=True)
-                # Savepoint rolls back this job only; continue with remaining jobs
+                pass
+            return 0
+        finally:
+            session.close()
 
-        session.commit()
-    except Exception:
-        session.rollback()
-        _log.error("Deferred BDT photo persistence batch failed", exc_info=True)
-        raise
-    finally:
-        session.close()
+    total = 0
+    max_workers = min(len(photo_jobs), 8)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_persist_one_job, job): job for job in photo_jobs}
+        for future in as_completed(futures):
+            try:
+                total += future.result()
+            except Exception:
+                job = futures[future]
+                _log.error(
+                    "Photo job failed for bdt_test_id=%d",
+                    int(job.get("bdt_test_id") or 0), exc_info=True,
+                )
+
+    _log.info("Photo persistence batch complete: %d photos stored", total)
     return total
