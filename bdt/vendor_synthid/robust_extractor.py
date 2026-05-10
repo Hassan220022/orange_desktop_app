@@ -15,7 +15,7 @@ import os
 import pickle
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -68,7 +68,7 @@ class RobustSynthIDExtractor:
         self.scales = scales
         self.wavelets = wavelets
         self.n_carriers = n_carriers
-        self.codebook = None
+        self.codebook: Optional[Dict[str, Any]] = None
 
         # Empirically verified SynthID carriers at 512px resolution.
         # Extracted from 291 Gemini-generated images (black, white, nb_pro).
@@ -290,11 +290,11 @@ class RobustSynthIDExtractor:
         weights.append(0.6)
 
         # Weighted fusion
-        noises = np.array(noises)
-        weights = np.array(weights) / sum(weights)
+        noises_arr = np.array(noises)
+        weights_arr = np.array(weights) / sum(weights)
 
         # Use weighted average (more stable than weighted median)
-        fused = np.tensordot(weights, noises, axes=([0], [0]))
+        fused = np.tensordot(weights_arr, noises_arr, axes=([0], [0]))
 
         return fused
 
@@ -368,6 +368,11 @@ class RobustSynthIDExtractor:
 
             n_images += 1
 
+        if n_images == 0:
+            return {}
+
+        assert magnitude_sum is not None
+        assert phase_sum is not None
         avg_magnitude = magnitude_sum / n_images
         phase_coherence = np.abs(phase_sum) / n_images
         avg_phase = np.angle(phase_sum)
@@ -400,7 +405,7 @@ class RobustSynthIDExtractor:
         Carriers that appear consistently across scales are more reliable.
         Falls back to known carriers if voting doesn't find reliable ones.
         """
-        all_carriers = defaultdict(lambda: {'votes': 0, 'total_score': 0, 'scales': [], 'infos': []})
+        all_carriers: defaultdict = defaultdict(lambda: {'votes': 0, 'total_score': 0, 'scales': [], 'infos': []})
         base_scale = 512
 
         for scale in self.scales:
@@ -641,6 +646,7 @@ class RobustSynthIDExtractor:
             self.save_codebook(save_path)
             print(f"Codebook saved to {save_path}")
 
+        assert self.codebook is not None
         return self.codebook
 
     # ================================================================

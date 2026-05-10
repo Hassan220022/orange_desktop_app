@@ -39,6 +39,7 @@ def get_shared_session() -> Session:
     global _app_session_factory
     if _app_session_factory is None:
         get_app_engine()
+    assert _app_session_factory is not None
     return _app_session_factory()
 
 

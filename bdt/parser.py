@@ -12,7 +12,7 @@ import hashlib
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -940,8 +940,8 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
     discharge_start_row = None
     for r in range(1, max_row + 1):
         for c in range(1, min(max_col, 8) + 1):
-            v = _safe_str(cell(r, c))
-            if "batteries discharge test" in v.lower():
+            cell_text = _safe_str(cell(r, c))
+            if "batteries discharge test" in cell_text.lower():
                 discharge_start_row = r
                 break
         if discharge_start_row is not None:
@@ -1297,7 +1297,7 @@ def _select_photo_layout(anchor_count: int, max_anchor_col: int) -> tuple[str, i
             else:
                 layout_id = "LAYOUT_PHOTO_6"
 
-    required = int(_PHOTO_LAYOUTS[layout_id]["required_count"])
+    required = cast(int, _PHOTO_LAYOUTS[layout_id]["required_count"])
     return layout_id, required
 
 

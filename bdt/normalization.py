@@ -76,7 +76,7 @@ def resolve_section_category(header_text, nearby_texts) -> str:
             if keyword in merged:
                 scores[category] += 1
 
-    winner = max(scores, key=scores.get)
+    winner = max(scores, key=lambda k: scores[k])
     if scores[winner] <= 0:
         return "other"
     return winner

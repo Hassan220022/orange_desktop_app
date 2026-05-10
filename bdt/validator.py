@@ -8,6 +8,7 @@ data to detect fraudulent or incorrect test submissions.
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -795,9 +796,9 @@ def _rule_2_power_alarm_match(bdt: BDTData,
 
     for a in attempts:
         a["passed"] = (
-            a["start_diff_min"] <= tol_min
-            and a["end_diff_min"] <= tol_min
-            and a["duration_diff_min"] <= tol_min
+            cast(float, a["start_diff_min"]) <= tol_min
+            and cast(float, a["end_diff_min"]) <= tol_min
+            and cast(float, a["duration_diff_min"]) <= tol_min
         )
 
     passed_attempts = [a for a in attempts if a["passed"]]

@@ -15,6 +15,7 @@ import hashlib
 import io
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -27,7 +28,7 @@ except Exception:  # pragma: no cover - optional runtime dependency
 try:
     from .vendor_synthid.robust_extractor import RobustSynthIDExtractor
 except Exception:  # pragma: no cover - optional runtime dependency
-    RobustSynthIDExtractor = None
+    RobustSynthIDExtractor: Any = None  # type: ignore[assignment,no-redef]
 
 
 _CODEBOOK_PATH = Path(__file__).resolve().parent / "vendor_synthid" / "robust_codebook.pkl"

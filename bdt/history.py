@@ -440,9 +440,9 @@ def compare_tests(current_bdt, previous: BDTTestRecord) -> BDTComparison:
         ("Number of Strings", current_bdt.num_strings, previous.num_strings),
     ]
 
-    for label, curr, prev in _spec:
-        if curr is not None and prev is not None and curr != prev:
-            differences.append(f"{label}: {prev} -> {curr}")
+    for s_label, s_curr, s_prev in _spec:
+        if s_curr is not None and s_prev is not None and s_curr != s_prev:
+            differences.append(f"{s_label}: {s_prev} -> {s_curr}")
 
     return BDTComparison(
         previous=previous,
