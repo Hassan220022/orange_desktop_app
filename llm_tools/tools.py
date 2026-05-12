@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from .service import LocalDataService
@@ -158,12 +159,12 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             },
             "format": {"type": "string", "enum": ["csv", "xlsx"]},
             "name": {"type": "string"},
-            "source_file_path": {
+            "source_file_id": {
                 "type": "string",
                 "description": (
-                    "Local path to a user-uploaded CSV/XLSX list. Required for "
-                    "site_alarm_report and accepted_pm_report; optional for bdt_export "
-                    "to restrict the export to uploaded site codes."
+                    "Opaque upload ID from the chat context. Required for site_alarm_report "
+                    "and accepted_pm_report when the file was uploaded through chat; optional "
+                    "for bdt_export to restrict the export to uploaded site codes."
                 ),
             },
             "health_pct": {
@@ -210,14 +211,85 @@ def tool_definitions_for_openrouter() -> list[dict[str, Any]]:
     ]
 
 
-def dispatch_tool(service: LocalDataService, name: str, arguments: dict[str, Any] | None = None) -> Any:
-    args = dict(arguments or {})
+def _type_matches(value: Any, expected_type: str) -> bool:
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "integer":
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        return isinstance(value, float) and value.is_integer()
+    if expected_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    return True
+
+
+def _validate_tool_arguments(arguments: Any, input_schema: dict[str, Any]) -> dict[str, Any] | str:
+    if arguments is None:
+        args: dict[str, Any] = {}
+    elif isinstance(arguments, dict):
+        args = dict(arguments)
+    else:
+        return "arguments must be an object"
+
+    if input_schema.get("type") == "object" and not isinstance(args, dict):
+        return "arguments must be an object"
+
+    properties = input_schema.get("properties", {})
+    for field in input_schema.get("required", []):
+        if field not in args:
+            return f"missing required property: {field}"
+
+    if input_schema.get("additionalProperties") is False:
+        for field in args:
+            if field not in properties:
+                return f"unexpected property: {field}"
+
+    for field, value in args.items():
+        field_schema = properties.get(field, {})
+        expected_type = field_schema.get("type")
+        if expected_type == "number" and isinstance(value, float) and not math.isfinite(value):
+            return f"{field} must be finite"
+        if expected_type == "integer" and isinstance(value, float) and math.isinf(value):
+            return f"{field} must be finite"
+        if expected_type and not _type_matches(value, expected_type):
+            return f"{field} must be {expected_type}"
+        if expected_type == "integer" and isinstance(value, float):
+            value = int(value)
+            args[field] = value
+
+        enum_values = field_schema.get("enum")
+        if enum_values is not None and value not in enum_values:
+            return f"{field} must be one of: {', '.join(str(item) for item in enum_values)}"
+
+        if expected_type in {"integer", "number"}:
+            minimum = field_schema.get("minimum")
+            if minimum is not None and value < minimum:
+                return f"{field} must be >= {minimum}"
+            maximum = field_schema.get("maximum")
+            if maximum is not None and value > maximum:
+                return f"{field} must be <= {maximum}"
+
+    return args
+
+
+def dispatch_tool(service: LocalDataService, name: str, arguments: Any = None) -> Any:
     if name not in TOOL_SCHEMAS:
         return {"error": f"unknown tool: {name}"}
+
+    validated_args = _validate_tool_arguments(arguments, TOOL_SCHEMAS[name]["inputSchema"])
+    if isinstance(validated_args, str):
+        return {"error": f"invalid arguments for {name}: {validated_args}"}
+
     method = getattr(service, name, None)
     if method is None or not callable(method):
         return {"error": f"tool unavailable: {name}"}
     try:
-        return method(**args)
+        return method(**validated_args)
     except Exception as exc:
         return {"error": f"{name} failed: {exc}"}

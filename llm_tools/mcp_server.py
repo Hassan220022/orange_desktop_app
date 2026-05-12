@@ -6,6 +6,7 @@ import json
 import sys
 from typing import Any
 
+from .openrouter_agent import _model_safe_tool_result
 from .service import LocalDataService
 from .tools import dispatch_tool, tool_definitions_for_mcp
 
@@ -27,7 +28,8 @@ class AlarmViewerMcpServer:
     def handle(self, request: dict[str, Any]) -> dict[str, Any] | None:
         method = request.get("method")
         request_id = request.get("id")
-        params = request.get("params") or {}
+        raw_params = request.get("params")
+        params = raw_params if isinstance(raw_params, dict) else ({} if raw_params is None else None)
 
         if method == "initialize":
             return _response(request_id, {
@@ -43,14 +45,16 @@ class AlarmViewerMcpServer:
             return _response(request_id, {"tools": tool_definitions_for_mcp()})
 
         if method == "tools/call":
+            if params is None:
+                return _error(request_id, -32602, "tools/call params must be an object")
             name = str(params.get("name") or "")
-            arguments = params.get("arguments") or {}
+            arguments = params.get("arguments") if "arguments" in params else {}
             result = dispatch_tool(self.service, name, arguments)
             return _response(request_id, {
                 "content": [
                     {
                         "type": "text",
-                        "text": json.dumps(result, default=str, ensure_ascii=False),
+                        "text": json.dumps(_model_safe_tool_result(result), default=str, ensure_ascii=False),
                     }
                 ],
                 "isError": isinstance(result, dict) and "error" in result,

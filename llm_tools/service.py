@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +67,7 @@ except ImportError:
 
 MAX_QUERY_LIMIT = 500
 MAX_BLOB_BYTES = 5 * 1024 * 1024
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 EXPORT_DIR = Path.home() / ".alarm_viewer" / "exports"
 ALLOWED_UPLOAD_SUFFIXES = {".csv", ".xls", ".xlsx"}
 
@@ -125,16 +128,52 @@ def _safe_export_path(base_dir: Path, name: str, suffix: str) -> Path:
     if not stem:
         stem = "export"
     suffix = suffix if suffix.startswith(".") else f".{suffix}"
-    return base_dir / f"{stem[:80]}{suffix}"
+    stem = stem[:80]
+    path = base_dir / f"{stem}{suffix}"
+    index = 1
+    while path.exists():
+        path = base_dir / f"{stem}_{index}{suffix}"
+        index += 1
+    return path
 
 
-def _safe_source_file_path(path: str | Path) -> Path:
-    resolved = Path(path).expanduser()
-    if not resolved.is_file():
-        raise ValueError(f"source file not found: {resolved}")
-    if resolved.suffix.lower() not in ALLOWED_UPLOAD_SUFFIXES:
-        raise ValueError("source_file_path must be a CSV or Excel file")
-    return resolved
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _validate_allowlisted_source_file(upload: dict[str, Any]) -> tuple[Path | None, str | None]:
+    path_value = str(upload.get("path") or "").strip()
+    expected_suffix = str(upload.get("suffix") or "").lower()
+    expected_sha = str(upload.get("sha256") or "").strip().lower()
+    expected_size = upload.get("size")
+    if not path_value or not expected_suffix or expected_size in (None, "") or not expected_sha:
+        return None, "uploaded file integrity metadata is missing"
+    try:
+        expected_size_int = int(expected_size)
+    except (TypeError, ValueError):
+        return None, "uploaded file integrity metadata is missing"
+
+    path = Path(path_value).expanduser()
+    if not path.is_file():
+        return None, "uploaded file is no longer available"
+    suffix = path.suffix.lower()
+    if suffix not in ALLOWED_UPLOAD_SUFFIXES:
+        return None, "uploaded file type is not allowed"
+    size = path.stat().st_size
+    if size > MAX_UPLOAD_BYTES:
+        return None, "uploaded file is too large"
+    if size != expected_size_int:
+        return None, "uploaded file changed after upload"
+
+    if expected_suffix != suffix:
+        return None, "uploaded file changed after upload"
+    if _file_sha256(path) != expected_sha:
+        return None, "uploaded file changed after upload"
+    return path, None
 
 
 def _df_records(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -150,8 +189,29 @@ def _df_records(df: pd.DataFrame) -> list[dict[str, Any]]:
 class LocalDataService:
     """Read-only app-data facade with controlled export actions."""
 
-    def __init__(self, *, export_dir: Path | None = None):
+    def __init__(self, *, export_dir: Path | None = None, upload_allowlist: dict[str, Any] | None = None):
         self.export_dir = Path(export_dir) if export_dir else EXPORT_DIR
+        self.upload_allowlist: dict[str, dict[str, Any]] = {}
+        for upload_id, upload in (upload_allowlist or {}).items():
+            clean_id = str(upload_id or "").strip()
+            if not clean_id:
+                continue
+            if isinstance(upload, dict):
+                path = str(upload.get("path") or "").strip()
+                name = str(upload.get("name") or "").strip()
+                clean_upload: dict[str, Any] = {"path": path, "name": name}
+                if "size" in upload:
+                    clean_upload["size"] = upload.get("size")
+                if "suffix" in upload:
+                    clean_upload["suffix"] = str(upload.get("suffix") or "").lower()
+                if "sha256" in upload:
+                    clean_upload["sha256"] = str(upload.get("sha256") or "").lower()
+            else:
+                path = str(upload or "").strip()
+                name = ""
+                clean_upload = {"path": path, "name": name}
+            if path:
+                self.upload_allowlist[clean_id] = clean_upload
 
     def list_data_sources(self) -> dict[str, Any]:
         sqlite_tables: list[dict[str, Any]] = []
@@ -506,23 +566,45 @@ class LocalDataService:
             session.close()
 
     def read_photo_blob(self, **kwargs) -> dict[str, Any]:
-        sha256 = str(kwargs.get("sha256") or "").strip()
+        sha256 = str(kwargs.get("sha256") or "").strip().lower()
         if not sha256:
             return {"error": "sha256 is required"}
         session = db_engine.get_session()
         try:
             blob = session.query(BlobAsset).filter(BlobAsset.sha256 == sha256).first()
-            if not blob or not blob.local_path:
+            if not blob:
                 return {"error": "blob not found"}
-            path = Path(blob.local_path)
-            if not path.exists():
+            local_path = str(blob.local_path or "").strip()
+            if not local_path:
+                return {"error": "blob not found"}
+            path = Path(local_path).expanduser().resolve(strict=False)
+            blob_dir = Path(blob_repo.BLOB_DIR).expanduser().resolve(strict=False)
+            if not path.is_relative_to(blob_dir):
+                return {"error": "blob file is outside blob storage"}
+            if not path.is_file():
                 return {"error": "blob file missing"}
+            mime_type = str(blob.mime_type or "").strip()
+            if not mime_type:
+                return {"error": "blob mime type is required"}
+            if not mime_type.lower().startswith("image/"):
+                return {"error": "blob mime type is not an image"}
             if path.stat().st_size > MAX_BLOB_BYTES:
                 return {"error": f"blob too large; max {MAX_BLOB_BYTES} bytes"}
+            content = path.read_bytes()
+            if len(content) > MAX_BLOB_BYTES:
+                return {"error": f"blob too large; max {MAX_BLOB_BYTES} bytes"}
+            actual_sha = hashlib.sha256(content).hexdigest()
+            stored_sha = str(blob.sha256 or "").strip().lower()
+            if actual_sha != sha256 or actual_sha != stored_sha:
+                return {"error": "blob hash mismatch"}
+            try:
+                Image.open(BytesIO(content)).verify()
+            except Exception:
+                return {"error": "blob content is not a valid image"}
             return {
-                "sha256": blob.sha256,
-                "mime_type": blob.mime_type or "application/octet-stream",
-                "base64": base64.b64encode(path.read_bytes()).decode("ascii"),
+                "sha256": stored_sha,
+                "mime_type": mime_type,
+                "base64": base64.b64encode(content).decode("ascii"),
             }
         finally:
             session.close()
@@ -646,10 +728,11 @@ class LocalDataService:
         return {"path": str(path), "rows": len(df), "format": fmt, "report_type": report_type}
 
     def _export_site_alarm_report(self, *, fmt: str, name: str, **kwargs) -> dict[str, Any]:
-        source_file_path = str(kwargs.get("source_file_path") or "").strip()
-        if not source_file_path:
-            return {"error": "source_file_path is required for site_alarm_report"}
-        source_path = _safe_source_file_path(source_file_path)
+        source_path, source_file_id, error = self._resolve_source_file(kwargs, required=True)
+        if error:
+            return {"error": error}
+        if source_path is None:
+            return {"error": "source_file_id is required"}
         site_df, sheet_name, site_col = self._read_site_list(source_path)
         site_keys = collect_site_sheet_keys(site_df, site_col)
         alarm_df = self._alarm_rows_for_sites(
@@ -665,7 +748,7 @@ class LocalDataService:
             "rows": len(report_df),
             "format": fmt,
             "report_type": "site_alarm_report",
-            "source_file_path": str(source_path),
+            "source_file_id": source_file_id,
             "sheet_name": sheet_name,
             "site_column": site_col,
             "site_count": len(site_keys),
@@ -673,10 +756,11 @@ class LocalDataService:
         }
 
     def _export_accepted_pm_report(self, *, fmt: str, name: str, **kwargs) -> dict[str, Any]:
-        source_file_path = str(kwargs.get("source_file_path") or "").strip()
-        if not source_file_path:
-            return {"error": "source_file_path is required for accepted_pm_report"}
-        source_path = _safe_source_file_path(source_file_path)
+        source_path, source_file_id, error = self._resolve_source_file(kwargs, required=True)
+        if error:
+            return {"error": error}
+        if source_path is None:
+            return {"error": "source_file_id is required"}
         reference_df = self._alarm_reference_df()
         pm_df, sheet_name, site_col, date_col, status_col = read_pm_accept_sheet(
             str(source_path),
@@ -701,7 +785,7 @@ class LocalDataService:
             "rows": len(report_df),
             "format": fmt,
             "report_type": "accepted_pm_report",
-            "source_file_path": str(source_path),
+            "source_file_id": source_file_id,
             "sheet_name": sheet_name,
             "site_column": site_col,
             "date_column": date_col,
@@ -715,10 +799,10 @@ class LocalDataService:
         if fmt != "xlsx":
             return {"error": "bdt_export supports xlsx only because it contains multiple sheets"}
         site_keys: set[str] | None = None
-        source_file_path = str(kwargs.get("source_file_path") or "").strip()
-        source_path = None
-        if source_file_path:
-            source_path = _safe_source_file_path(source_file_path)
+        source_path, source_file_id, error = self._resolve_source_file(kwargs, required=False)
+        if error:
+            return {"error": error}
+        if source_path:
             site_df, _sheet_name, site_col = self._read_site_list(source_path)
             site_keys = collect_site_sheet_keys(site_df, site_col)
         bdt_results = self._load_validation_results(site_keys=site_keys)
@@ -735,11 +819,28 @@ class LocalDataService:
             "rows": sum(len(df) for df in sheets.values()),
             "format": "xlsx",
             "report_type": "bdt_export",
-            "source_file_path": str(source_path) if source_path else "",
+            "source_file_id": source_file_id,
             "site_count": len(site_keys or set()),
             "bdt_results": len(bdt_results),
             "sheets": list(sheets.keys()),
         }
+
+    def _resolve_source_file(self, kwargs: dict[str, Any], *, required: bool) -> tuple[Path | None, str, str | None]:
+        source_file_id = str(kwargs.get("source_file_id") or "").strip()
+        if source_file_id:
+            upload = self.upload_allowlist.get(source_file_id)
+            if upload is None:
+                return None, source_file_id, f"unknown source_file_id: {source_file_id}"
+            source_path, error = _validate_allowlisted_source_file(upload)
+            return source_path, source_file_id, error
+
+        source_file_path = str(kwargs.get("source_file_path") or "").strip()
+        if source_file_path:
+            return None, "", "source_file_id is required"
+
+        if required:
+            return None, "", "source_file_id is required"
+        return None, "", None
 
     def _read_site_list(self, source_path: Path) -> tuple[pd.DataFrame, str, str]:
         if source_path.suffix.lower() == ".csv":

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -55,15 +56,51 @@ def _chat_message(role: str, content: str) -> dict[str, Any]:
     }
 
 
+LOCAL_PATH_REDACTION = "[local path redacted]"
+LOCAL_PATH_PATTERN = re.compile(r"(?<![\w:])(?:/(?:Users|private|var|tmp|Volumes|home)/.*|[A-Za-z]:\\.*)")
+PATH_KEYS = {"path", "local_path", "source_file_path"}
+
+
+def _redact_model_bound_text(value: str) -> str:
+    text = str(value)
+    if os.path.isabs(text.strip()):
+        return LOCAL_PATH_REDACTION
+    return LOCAL_PATH_PATTERN.sub(LOCAL_PATH_REDACTION, text)
+
+
+def _model_safe_tool_result(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text in PATH_KEYS or key_text.endswith("_path"):
+                redacted[key_text] = LOCAL_PATH_REDACTION if item else item
+            else:
+                redacted[key_text] = _model_safe_tool_result(item)
+        return redacted
+    if isinstance(value, list):
+        return [_model_safe_tool_result(item) for item in value]
+    if isinstance(value, str):
+        return _redact_model_bound_text(value)
+    return value
+
+
 class OpenRouterToolSupportError(RuntimeError):
     """Raised when OpenRouter cannot route tool calls for the selected model."""
 
 
 class OpenRouterAgent:
-    def __init__(self, *, api_key: str, model: str = DEFAULT_MODEL, service: LocalDataService | None = None):
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str = DEFAULT_MODEL,
+        service: LocalDataService | None = None,
+        upload_allowlist: dict[str, Any] | None = None,
+    ):
         self.api_key = api_key
         self.model = normalize_free_model_id(model)
-        self.service = service or LocalDataService()
+        self.service = service or LocalDataService(upload_allowlist=upload_allowlist)
 
     def ask(
         self,
@@ -110,11 +147,18 @@ class OpenRouterAgent:
             for call in tool_calls:
                 function = call.get("function") or {}
                 name = str(function.get("name") or "")
-                raw_args = function.get("arguments") or "{}"
+                raw_args = function.get("arguments", {})
+                if raw_args is None:
+                    raw_args = {}
+                args_error = ""
                 try:
-                    args = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
                 except (TypeError, json.JSONDecodeError):
                     args = {}
+                    args_error = "arguments must be valid JSON"
+                if not args_error and not isinstance(args, dict):
+                    args = {}
+                    args_error = "arguments must be an object"
                 if on_tool_event is not None:
                     on_tool_event({
                         "status": "running",
@@ -122,7 +166,10 @@ class OpenRouterAgent:
                         "name": name,
                         "args": args,
                     })
-                result = dispatch_tool(self.service, name, args)
+                if args_error:
+                    result = {"error": f"invalid arguments for {name}: {args_error}"}
+                else:
+                    result = dispatch_tool(self.service, name, args)
                 if on_tool_event is not None:
                     on_tool_event({
                         "status": "error" if isinstance(result, dict) and "error" in result else "complete",
@@ -135,7 +182,7 @@ class OpenRouterAgent:
                     "role": "tool",
                     "tool_call_id": call.get("id"),
                     "name": name,
-                    "content": json.dumps(result, default=str, ensure_ascii=False),
+                    "content": json.dumps(_model_safe_tool_result(result), default=str, ensure_ascii=False),
                 })
         return "The agent reached the tool-call limit before producing a final answer."
 

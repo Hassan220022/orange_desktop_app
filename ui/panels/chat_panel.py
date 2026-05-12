@@ -41,6 +41,7 @@ from PyQt5.QtWidgets import (
 
 try:
     from alarm_app.constants import DISPLAY_COLUMNS
+    from alarm_app.llm_tools.service import ALLOWED_UPLOAD_SUFFIXES, MAX_UPLOAD_BYTES, _file_sha256
     from alarm_app.llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message
     from alarm_app.llm_tools.openrouter_models import (
         FALLBACK_FREE_MODELS,
@@ -51,6 +52,7 @@ try:
     from alarm_app.ui.flow_layout import FlowLayout
 except ImportError:
     from constants import DISPLAY_COLUMNS
+    from llm_tools.service import ALLOWED_UPLOAD_SUFFIXES, MAX_UPLOAD_BYTES, _file_sha256
     from llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message
     from llm_tools.openrouter_models import (
         FALLBACK_FREE_MODELS,
@@ -70,6 +72,8 @@ _TABLE_SEP_RE = re.compile(r"^\|\s*(:?-+:?\s*\|\s*)+$")
 MAX_SAVED_SESSIONS = 50
 CHAT_SUMMARY_TRIGGER_TURNS = 14
 CHAT_SUMMARY_BATCH_TURNS = 6
+LOCAL_PATH_REDACTION = "[local path redacted]"
+LOCAL_PATH_PATTERN = re.compile(r"(?<![\w:])(?:/(?:Users|private|var|tmp|Volumes|home)/.*|[A-Za-z]:\\.*)")
 
 
 def _format_inline_markdown(text: str) -> str:
@@ -77,6 +81,21 @@ def _format_inline_markdown(text: str) -> str:
     safe = _BOLD_RE.sub(r"<b>\1</b>", safe)
     safe = _INLINE_CODE_RE.sub(r"<code>\1</code>", safe)
     return safe
+
+
+def _safe_rich_text(text: object) -> str:
+    return html.escape(str(text))
+
+
+def _safe_upload_display_name(name: object) -> str:
+    return json.dumps(str(name or "file"), ensure_ascii=False)
+
+
+def _redact_local_paths(text: object) -> str:
+    value = str(text or "")
+    if Path(value.strip()).is_absolute():
+        return LOCAL_PATH_REDACTION
+    return LOCAL_PATH_PATTERN.sub(LOCAL_PATH_REDACTION, value)
 
 
 def _parse_table_cells(row: str) -> list[str]:
@@ -230,6 +249,102 @@ def _photo_group_summary(rows: list[dict]) -> str:
 
 def _json_output_text(value: object) -> str:
     return json.dumps(value, indent=2, ensure_ascii=False, default=str)
+
+
+def _sanitize_uploaded_files(uploads: list[dict[str, str]]) -> list[dict[str, str]]:
+    sanitized: list[dict[str, str]] = []
+    for item in uploads:
+        if not isinstance(item, dict):
+            continue
+        upload_id = str(item.get("id") or uuid.uuid4()).strip()
+        name = str(item.get("name") or item.get("display_name") or Path(str(item.get("path") or "file")).name).strip()
+        kind = str(item.get("kind") or "uploaded_list").strip()
+        if upload_id and name:
+            sanitized.append({"id": upload_id, "name": name, "kind": kind})
+    return sanitized
+
+
+def _build_upload_metadata(upload_id: str, file_path: str | Path) -> tuple[dict[str, str], dict[str, object]]:
+    path = Path(file_path).expanduser()
+    suffix = path.suffix.lower()
+    if suffix not in ALLOWED_UPLOAD_SUFFIXES:
+        raise ValueError("uploaded file type is not allowed")
+    if not path.is_file():
+        raise ValueError("uploaded file is no longer available")
+    size = path.stat().st_size
+    if size > MAX_UPLOAD_BYTES:
+        raise ValueError("uploaded file is too large")
+
+    upload = {
+        "id": str(upload_id),
+        "name": path.name,
+        "kind": "uploaded_list",
+    }
+    allowlist_entry = {
+        "path": str(path),
+        "name": path.name,
+        "size": size,
+        "suffix": suffix,
+        "sha256": _file_sha256(path),
+    }
+    return upload, allowlist_entry
+
+
+def _sanitize_saved_sessions(sessions: list[dict]) -> list[dict]:
+    sanitized: list[dict] = []
+    for session in sessions:
+        if not isinstance(session, dict):
+            continue
+        clean: dict[str, object] = {}
+        for key in ("id", "saved_at", "model"):
+            if key in session:
+                clean[key] = str(session.get(key) or "")
+        for key in ("title", "summary"):
+            if key in session:
+                clean[key] = _redact_local_paths(session.get(key))
+        messages = session.get("messages")
+        if isinstance(messages, list):
+            clean["messages"] = _sanitize_chat_messages(messages)
+        uploads = session.get("uploaded_files")
+        if isinstance(uploads, list):
+            clean["uploaded_files"] = _sanitize_uploaded_files([item for item in uploads if isinstance(item, dict)])
+        sanitized.append(clean)
+    return sanitized[:MAX_SAVED_SESSIONS]
+
+
+def _sanitize_chat_messages(messages: list[object]) -> list[dict[str, str]]:
+    clean: list[dict[str, str]] = []
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "").strip().lower()
+        content = _redact_local_paths(item.get("content") or "").strip()
+        if role in {"user", "assistant"} and content:
+            clean.append({
+                "role": role,
+                "content": content,
+                "timestamp": str(item.get("timestamp") or ""),
+            })
+    return clean
+
+
+def _tool_available_uploads(uploads: list[dict[str, str]], allowlist: dict[str, dict[str, object]]) -> list[dict[str, str]]:
+    available: list[dict[str, str]] = []
+    for upload in uploads:
+        upload_id = str(upload.get("id") or "").strip()
+        if upload_id and upload_id in allowlist:
+            available.append(upload)
+    return available
+
+
+def _build_upload_context_lines(uploads: list[dict[str, str]]) -> list[str]:
+    if not uploads:
+        return []
+    lines = ["Uploaded local files available to tools by ID:"]
+    for idx, upload in enumerate(uploads[-5:], start=1):
+        lines.append(f"{idx}. id={upload['id']} name={_safe_upload_display_name(upload.get('name'))}")
+    lines.append("When using an uploaded file, pass its id as source_file_id.")
+    return lines
 
 
 def _output_paths(value: object) -> list[str]:
@@ -479,6 +594,7 @@ class ChatRequestThread(QThread):
         history: list[dict] | None = None,
         summary: str = "",
         system_context: str = "",
+        upload_allowlist: dict[str, dict[str, object]] | None = None,
     ):
         super().__init__()
         self.prompt = prompt
@@ -487,6 +603,7 @@ class ChatRequestThread(QThread):
         self.history = list(history or [])
         self.summary = summary
         self.system_context = system_context
+        self.upload_allowlist = dict(upload_allowlist or {})
 
     def run(self):
         api_key = self.api_key.strip()
@@ -494,7 +611,11 @@ class ChatRequestThread(QThread):
             self.error.emit("OpenRouter API key is not set in Settings.")
             return
         try:
-            answer = OpenRouterAgent(api_key=api_key, model=self.model).ask(
+            answer = OpenRouterAgent(
+                api_key=api_key,
+                model=self.model,
+                upload_allowlist=self.upload_allowlist,
+            ).ask(
                 self.prompt,
                 history=self.history,
                 summary=self.summary,
@@ -636,6 +757,7 @@ class ChatPanel(QWidget):
         self._pending_tool_order: list[str] = []
         self._pending_tool_seq = 0
         self._uploaded_files: list[dict[str, str]] = []
+        self._upload_allowlist: dict[str, dict[str, object]] = {}
         self._saved_sessions: list[dict] = []
         self._models_thread: FreeModelsThread | None = None
         self._model = DEFAULT_MODEL
@@ -853,6 +975,7 @@ class ChatPanel(QWidget):
         self._pending_tool_order.clear()
         self._pending_tool_seq = 0
         self._uploaded_files.clear()
+        self._upload_allowlist.clear()
         while self._history_layout.count() > 1:
             item = self._history_layout.takeAt(0)
             widget = item.widget()
@@ -903,13 +1026,14 @@ class ChatPanel(QWidget):
             "Untitled chat",
         )
         title = (first_user[:60] + "…") if len(first_user) > 60 else first_user
+        title = _redact_local_paths(title)
         session = {
             "id": str(uuid.uuid4()),
             "title": title,
             "saved_at": datetime.now().isoformat(timespec="seconds"),
-            "messages": list(self._messages),
-            "summary": self._conversation_summary,
-            "uploaded_files": list(self._uploaded_files),
+            "messages": _sanitize_chat_messages(list(self._messages)),
+            "summary": _redact_local_paths(self._conversation_summary),
+            "uploaded_files": _sanitize_uploaded_files(self._uploaded_files),
             "model": self._model,
         }
         self._saved_sessions.insert(0, session)
@@ -927,6 +1051,7 @@ class ChatPanel(QWidget):
         self._pending_tool_order.clear()
         self._pending_tool_seq = 0
         self._uploaded_files.clear()
+        self._upload_allowlist.clear()
         while self._history_layout.count() > 1:
             item = self._history_layout.takeAt(0)
             widget = item.widget()
@@ -944,10 +1069,10 @@ class ChatPanel(QWidget):
 
     def chat_state(self) -> dict[str, object]:
         return {
-            "summary": self._conversation_summary,
-            "messages": list(self._messages),
-            "uploaded_files": list(self._uploaded_files),
-            "saved_sessions": list(self._saved_sessions),
+            "summary": _redact_local_paths(self._conversation_summary),
+            "messages": _sanitize_chat_messages(list(self._messages)),
+            "uploaded_files": _sanitize_uploaded_files(self._uploaded_files),
+            "saved_sessions": _sanitize_saved_sessions(self._saved_sessions),
             "model": self._model,
         }
 
@@ -957,37 +1082,26 @@ class ChatPanel(QWidget):
         model = str(data.get("model") or "").strip()
         if model:
             self.set_model(model)
-        self._conversation_summary = str(data.get("summary") or "")
+        self._conversation_summary = _redact_local_paths(data.get("summary") or "")
         messages = data.get("messages")
         if isinstance(messages, list):
-            restored: list[dict[str, str]] = []
+            restored: list[dict[str, str]] = _sanitize_chat_messages([item for item in messages if isinstance(item, dict)])
             for item in messages:
-                if isinstance(item, dict):
-                    role = str(item.get("role") or "").strip().lower()
-                    content = str(item.get("content") or "").strip()
-                    if role in {"user", "assistant"} and content:
-                        restored.append({
-                            "role": role,
-                            "content": content,
-                            "timestamp": str(item.get("timestamp") or ""),
-                        })
-                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
                     role_name = str(item[0]).strip().lower()
                     role = "assistant" if role_name == "assistant" else "user"
-                    content = str(item[1]).strip()
+                    content = _redact_local_paths(item[1]).strip()
                     if content:
                         restored.append(_chat_message(role, content))
             self._messages = restored
         uploads = data.get("uploaded_files")
+        self._uploaded_files = []
+        self._upload_allowlist.clear()
         if isinstance(uploads, list):
-            self._uploaded_files = [
-                {"name": str(item.get("name") or ""), "path": str(item.get("path") or ""), "kind": str(item.get("kind") or "")}
-                for item in uploads
-                if isinstance(item, dict) and item.get("path")
-            ]
+            self._uploaded_files = _sanitize_uploaded_files([item for item in uploads if isinstance(item, dict)])
         sessions = data.get("saved_sessions")
         if isinstance(sessions, list):
-            self._saved_sessions = [s for s in sessions if isinstance(s, dict)][:MAX_SAVED_SESSIONS]
+            self._saved_sessions = _sanitize_saved_sessions([s for s in sessions if isinstance(s, dict)])
         self._rehydrate_history()
 
     def _on_free_models_loaded(self, options: object):
@@ -1032,16 +1146,19 @@ class ChatPanel(QWidget):
         if not path:
             return
         file_path = Path(path).expanduser()
-        upload = {
-            "name": file_path.name,
-            "path": str(file_path),
-            "kind": "uploaded_list",
-        }
+        upload_id = str(uuid.uuid4())
+        try:
+            upload, allowlist_entry = _build_upload_metadata(upload_id, file_path)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Upload rejected", str(exc))
+            return
+
+        self._upload_allowlist[upload_id] = allowlist_entry
         self._uploaded_files.append(upload)
         self._append_system(
             "Uploaded list available to the assistant tools:\n"
-            f"Name: {upload['name']}\n"
-            f"Path: {upload['path']}\n"
+            f"ID: {upload['id']}\n"
+            f"Name: {_safe_upload_display_name(upload.get('name'))}\n"
             "Ask me to generate a VIP site alarm report, Accepted PM report, or BDT export from it."
         )
         self.input.setFocus(Qt.OtherFocusReason)
@@ -1087,6 +1204,7 @@ class ChatPanel(QWidget):
             history=history,
             summary=summary,
             system_context=self._build_system_context(),
+            upload_allowlist=self._upload_allowlist,
         )
         self._thread.tool_event.connect(self._on_tool_event)
         self._thread.finished.connect(self._on_answer)
@@ -1110,11 +1228,7 @@ class ChatPanel(QWidget):
             "Use generate_graph when the user asks for graphs/charts/trends; it creates a PNG chart from local data.",
             "Use query_backup_times when the user asks for backup time, backup duration, or battery hold-up between Power and Down alarms.",
         ]
-        if self._uploaded_files:
-            lines.append("Uploaded local files available to tools:")
-            for idx, upload in enumerate(self._uploaded_files[-5:], start=1):
-                lines.append(f"{idx}. {upload['name']} -> {upload['path']}")
-            lines.append("When using an uploaded file, pass its path as source_file_path.")
+        lines.extend(_build_upload_context_lines(_tool_available_uploads(self._uploaded_files, self._upload_allowlist)))
         return "\n".join(lines)
 
     def _rehydrate_history(self):
@@ -1132,8 +1246,12 @@ class ChatPanel(QWidget):
         if self._conversation_summary.strip():
             self._append_system("Earlier chat summarized and will be included in future replies.")
         if self._uploaded_files:
-            names = ", ".join(str(upload.get("name") or upload.get("path") or "file") for upload in self._uploaded_files[-5:])
-            self._append_system(f"Restored uploaded files available to tools: {names}")
+            available = _tool_available_uploads(self._uploaded_files, self._upload_allowlist)
+            names = ", ".join(_safe_upload_display_name(upload.get("name")) for upload in self._uploaded_files[-5:])
+            if available:
+                self._append_system(f"Restored uploaded files available to tools: {names}")
+            else:
+                self._append_system(f"Restored uploaded files need to be re-uploaded before assistant tools can use them: {names}")
         for item in self._messages:
             role = str(item.get("role") or "").strip().lower()
             content = str(item.get("content") or "")
@@ -1207,7 +1325,7 @@ class ChatPanel(QWidget):
     def _on_summary_ready(self, summary: str, keep_tail: int):
         summary = summary.strip()
         if summary:
-            self._conversation_summary = summary
+            self._conversation_summary = _redact_local_paths(summary)
             if keep_tail > 0:
                 self._messages = self._messages[-keep_tail:]
             else:
@@ -1295,7 +1413,7 @@ class ChatPanel(QWidget):
 
         result = event.get("result")
         if isinstance(result, dict) and "error" in result:
-            layout.addWidget(self._make_rich_label(str(result.get("error")), object_name="tool_error"))
+            layout.addWidget(self._make_rich_label(_safe_rich_text(result.get("error")), object_name="tool_error"))
             return
 
         rendered = self._tool_result_widget(name, result)
@@ -1340,7 +1458,7 @@ class ChatPanel(QWidget):
 
     def _tool_result_widget(self, name: str, result: object) -> QWidget | None:
         if not isinstance(result, dict):
-            return self._make_rich_label(html.escape(str(result)), object_name="tool_body")
+            return self._make_rich_label(_safe_rich_text(result), object_name="tool_body")
         if name == "alarm_stats":
             return self._stats_widget(result)
         if name == "list_data_sources":
@@ -1879,8 +1997,10 @@ class ChatPanel(QWidget):
         grid.setVerticalSpacing(4)
         for idx, (key, value) in enumerate(data.items()):
             key_label = QLabel(str(key).replace("_", " ").title())
+            key_label.setTextFormat(Qt.PlainText)
             key_label.setObjectName("tool_kv_key")
             value_label = QLabel(self._format_tool_value(value))
+            value_label.setTextFormat(Qt.PlainText)
             value_label.setObjectName("tool_kv_value")
             value_label.setWordWrap(True)
             value_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
