@@ -91,6 +91,35 @@ BT_WIDTHS = {
     "down_time": 185, "end_event_type": 130, "backup_time": 160,
 }
 
+TEMP_HEADERS = {
+    "site_id": "Site ID",
+    "network_type": "Network",
+    "vendor": "Vendor",
+    "power_time": "Power Alarm",
+    "power_cleared": "Power Cleared",
+    "x_duration": "X Duration",
+    "y_margin": "Y Margin",
+    "temp_time": "Temp Alarm",
+    "temp_cleared": "Temp Cleared",
+    "temp_delay_after_power": "Temp After Power",
+    "temp_delay_after_power_clearance": "Temp After Clearance",
+    "temp_clear_duration": "Temp Clear Duration",
+    "temp_alarm_name": "Temp Alarm Name",
+    "temp_alarm_source": "Temp Alarm Source",
+    "temp_clearance_status": "Status",
+    "match_window": "Matched Window",
+}
+
+TEMP_WIDTHS = {
+    "site_id": 90, "network_type": 70, "vendor": 80,
+    "power_time": 175, "power_cleared": 175, "x_duration": 105,
+    "y_margin": 90, "temp_time": 175, "temp_cleared": 175,
+    "temp_delay_after_power": 140, "temp_delay_after_power_clearance": 165,
+    "temp_clear_duration": 135, "temp_alarm_name": 220,
+    "temp_alarm_source": 240, "temp_clearance_status": 90,
+    "match_window": 120,
+}
+
 # ── BDT validation constants ──────────────────────────────
 BDT_DEFAULT_TOLERANCE = 0.15   # 15% — fractional sizing tolerance for R8
 BDT_DEFAULT_HEALTH_PCT = 0.80  # 80% default battery health (lead-acid)

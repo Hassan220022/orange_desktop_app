@@ -308,6 +308,13 @@ class SearchPanel(QWidget):
         self.btn_backup.clicked.connect(viewer._show_backup_times)
         row3.addWidget(self.btn_backup)
 
+        self.btn_temp = QPushButton("Temp Alarm")
+        self.btn_temp.setObjectName("btn_backup")
+        self.btn_temp.setCursor(Qt.PointingHandCursor)
+        self._mark_compact(self.btn_temp)
+        self.btn_temp.clicked.connect(viewer._show_temp_alarms)
+        row3.addWidget(self.btn_temp)
+
         self.btn_site_sheet = QPushButton("Upload Site Sheet")
         self.btn_site_sheet.setObjectName("btn_dir")
         self.btn_site_sheet.setCursor(Qt.PointingHandCursor)

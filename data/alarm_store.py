@@ -445,6 +445,7 @@ def stats(q: AlarmQuery | None = None) -> dict[str, int | float]:
         "power": 0,
         "down": 0,
         "door": 0,
+        "temp": 0,
         "sites": 0,
         "avg_duration_secs": 0.0,
     }
@@ -466,6 +467,7 @@ def stats(q: AlarmQuery | None = None) -> dict[str, int | float]:
                 SUM(CASE WHEN alarm_category = 'Power' THEN 1 ELSE 0 END) AS power,
                 SUM(CASE WHEN alarm_category = 'Down' THEN 1 ELSE 0 END) AS down,
                 SUM(CASE WHEN alarm_category = 'Door' THEN 1 ELSE 0 END) AS door,
+                SUM(CASE WHEN alarm_category = 'Temp' THEN 1 ELSE 0 END) AS temp,
                 COUNT(DISTINCT site_id) AS sites,
                 COALESCE(AVG(_duration_secs), 0) AS avg_duration_secs
             FROM {ALARM_TABLE}{where_sql}
@@ -477,8 +479,9 @@ def stats(q: AlarmQuery | None = None) -> dict[str, int | float]:
             "power": int(row[1] or 0),
             "down": int(row[2] or 0),
             "door": int(row[3] or 0),
-            "sites": int(row[4] or 0),
-            "avg_duration_secs": float(row[5] or 0.0),
+            "temp": int(row[4] or 0),
+            "sites": int(row[5] or 0),
+            "avg_duration_secs": float(row[6] or 0.0),
         }
     finally:
         con.close()

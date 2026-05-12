@@ -111,6 +111,70 @@ def test_replace_alarm_table_persists_derived_fields(monkeypatch):
     assert door["site_down_flag"] == "No"
 
 
+def test_replace_alarm_table_persists_temp_category(monkeypatch):
+    monkeypatch.setattr(
+        alarm_store,
+        "_load_alarm_ids",
+        lambda: {"power": ["65036"], "down": [], "door": []},
+    )
+    df = pd.DataFrame(
+        [
+            {
+                "site_id": "0810CA",
+                "alarm_id": "65036",
+                "alarm_name": "Shelter High Temperature",
+                "network_type": "4G",
+                "vendor": "HUAWEI",
+                "occurred_on": datetime(2026, 2, 27, 23, 59, 3),
+                "cleared_on": datetime(2026, 2, 28, 0, 1, 30),
+                "duration": "00:02:27",
+                "clearance_status": "Cleared",
+                "alarm_source": "U_G_0810CA_TALBEYA-MAIN",
+                "file_source": "HT-FEB-2026.xlsx",
+                "alarm_category": "",
+            }
+        ]
+    )
+
+    alarm_store.replace_alarm_table(df)
+
+    loaded = alarm_store.load_all_alarms()
+    assert len(loaded) == 1
+    assert loaded.iloc[0]["alarm_category"] == "Temp"
+
+
+def test_stats_counts_temp_category(monkeypatch):
+    monkeypatch.setattr(
+        alarm_store,
+        "_load_alarm_ids",
+        lambda: {"power": ["100"], "down": ["200"], "door": ["300"]},
+    )
+    df = pd.concat([
+        _seed_df(),
+        pd.DataFrame([
+            {
+                "site_id": "T04",
+                "alarm_id": "65036",
+                "alarm_name": "Shelter High Temperature",
+                "network_type": "RAN",
+                "vendor": "Huawei",
+                "occurred_on": datetime(2025, 1, 4, 8, 0, 0),
+                "cleared_on": datetime(2025, 1, 4, 8, 30, 0),
+                "duration": "00:30:00",
+                "clearance_status": "Cleared",
+                "alarm_source": "T04 / shelter",
+                "file_source": "temp.csv",
+                "alarm_category": "Temp",
+            }
+        ]),
+    ], ignore_index=True)
+    alarm_store.replace_alarm_table(df)
+
+    summary = alarm_store.stats()
+
+    assert summary["temp"] == 1
+
+
 def test_query_count_distinct_and_stats(monkeypatch):
     monkeypatch.setattr(
         alarm_store,

@@ -11,8 +11,6 @@ Optimisations:
  - datetime conversion uses format= hint when possible.
 """
 
-import hashlib
-import json
 import os
 
 import numpy as np
@@ -401,7 +399,9 @@ def parse_alarm_file(info: dict) -> pd.DataFrame | None:
 
     df = df.rename(columns=rmap)
     fname_lower = fname.lower()
-    if "power" in fname_lower:
+    if "temp" in fname_lower:
+        df["alarm_category"] = "Temp"
+    elif "power" in fname_lower:
         df["alarm_category"] = "Power"
     elif "down" in fname_lower:
         df["alarm_category"] = "Down"
@@ -439,36 +439,22 @@ _ROW_HASH_COLUMNS = (
 )
 
 
-def _canonical_hash_value(value) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, pd.Timestamp):
-        if pd.isna(value):
-            return ""
-        return value.isoformat(sep=" ", timespec="seconds")
-    if pd.isna(value):
-        return ""
-    return str(value).strip().lower()
-
-
-def _row_sha256(row: pd.Series) -> str:
-    payload = {
-        col: _canonical_hash_value(row.get(col, ""))
-        for col in _ROW_HASH_COLUMNS
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-
-
 def deduplicate_alarm_rows(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
-    """Drop duplicate canonical rows using deterministic row hash."""
+    """Drop duplicate canonical rows using vectorized key columns."""
     if df is None or df.empty:
         return df, 0
 
-    marked = df.copy()
-    marked["_row_hash"] = marked.apply(_row_sha256, axis=1)
-    before = len(marked)
-    deduped = marked.drop_duplicates(subset=["_row_hash"], keep="first")
-    dropped = before - len(deduped)
-    deduped = deduped.drop(columns=["_row_hash"])
-    return deduped, dropped
+    key_parts: dict[str, pd.Series] = {}
+    for col in _ROW_HASH_COLUMNS:
+        if col not in df.columns:
+            key_parts[col] = pd.Series("", index=df.index, dtype="object")
+            continue
+        values = df[col]
+        if pd.api.types.is_datetime64_any_dtype(values):
+            key_parts[col] = values.dt.strftime("%Y-%m-%d %H:%M:%S").fillna("")
+        else:
+            key_parts[col] = values.where(values.notna(), "").astype(str).str.strip().str.lower()
+
+    duplicate_mask = pd.DataFrame(key_parts, index=df.index).duplicated(keep="first")
+    dropped = int(duplicate_mask.sum())
+    return df.loc[~duplicate_mask].copy(), dropped

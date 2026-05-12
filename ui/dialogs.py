@@ -34,13 +34,25 @@ from PyQt5.QtWidgets import (
 
 try:
     from alarm_app.bdt.rule_docs import full_rules_html, iter_rule_docs
-    from alarm_app.constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS
+    from alarm_app.constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS, TEMP_HEADERS, TEMP_WIDTHS
     from alarm_app.core.backup_time import fmt_td as _fmt_td
+    from alarm_app.core.temp_alarm import (
+        compute_temp_alarm_matches,
+        export_temp_alarm_workbook,
+        filter_temp_matches_to_query,
+        filter_temp_matches_to_selected_temps,
+    )
     from alarm_app.data import state
 except ImportError:
     from bdt.rule_docs import full_rules_html, iter_rule_docs
-    from constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS
+    from constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS, TEMP_HEADERS, TEMP_WIDTHS
     from core.backup_time import fmt_td as _fmt_td
+    from core.temp_alarm import (
+        compute_temp_alarm_matches,
+        export_temp_alarm_workbook,
+        filter_temp_matches_to_query,
+        filter_temp_matches_to_selected_temps,
+    )
     from data import state
 
 
@@ -1544,6 +1556,157 @@ class BackupTimeDialog(QDialog):
         try:
             self._df.drop(columns=["backup_td"], errors="ignore").to_excel(
                 fp, index=False, engine="openpyxl")
+            QMessageBox.information(self, "Export OK", f"Saved to:\n{fp}")
+        except Exception as e:
+            QMessageBox.critical(self, "Export Failed", str(e))
+
+
+class TempAlarmDialog(QDialog):
+    def __init__(self, df: pd.DataFrame, source_df: pd.DataFrame, margin_minutes: int = 60, result_filter_query=None, selected_temp_df: pd.DataFrame | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Temp Alarm Analysis")
+        self.resize(1180, 700)
+        if parent:
+            self.setStyleSheet(parent.styleSheet())
+        self._source_df = source_df
+        self._result_filter_query = result_filter_query
+        self._selected_temp_df = selected_temp_df
+        self._df = df
+        self._margin_minutes = max(0, min(int(margin_minutes or 0), 60))
+        self._tbl = None
+        self._summary_strip = None
+        self._table_host = None
+        self._build()
+
+    def _build(self):
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+        lay.setContentsMargins(12, 10, 12, 10)
+
+        top = QFrame()
+        top.setStyleSheet("background:#313244; border-radius:6px; padding:6px;")
+        tl = QHBoxLayout(top)
+        tl.setSpacing(18)
+
+        margin_label = QLabel("Y margin after Power clearance")
+        margin_label.setStyleSheet("color:#6c7086; font-size:11px;")
+        tl.addWidget(margin_label)
+
+        self._spn_margin = QSpinBox()
+        self._spn_margin.setRange(0, 60)
+        self._spn_margin.setSuffix(" min")
+        self._spn_margin.setValue(self._margin_minutes)
+        self._spn_margin.valueChanged.connect(self._recompute)
+        tl.addWidget(self._spn_margin)
+
+        self._summary_strip = QHBoxLayout()
+        self._summary_strip.setSpacing(26)
+        tl.addLayout(self._summary_strip, 1)
+
+        btn_exp = QPushButton("Export XLSX")
+        btn_exp.setObjectName("btn_export")
+        btn_exp.clicked.connect(self._export)
+        tl.addWidget(btn_exp)
+        lay.addWidget(top)
+
+        note = QLabel(
+            "Temp alarms are matched when they occur after the Power alarm starts, "
+            "inside X (Power occurrence to Power clearance), or inside Y after clearance. "
+            "Y defaults to 60 minutes and cannot exceed 60 minutes.")
+        note.setStyleSheet("color:#6c7086; font-size:11px;")
+        note.setWordWrap(True)
+        lay.addWidget(note)
+
+        self._table_host = QVBoxLayout()
+        lay.addLayout(self._table_host, 1)
+        self._render_summary()
+        self._render_table()
+
+    def _recompute(self, value: int):
+        self._margin_minutes = value
+        result, err = compute_temp_alarm_matches(self._source_df, margin_minutes=value)
+        result = filter_temp_matches_to_query(result, self._result_filter_query)
+        if self._selected_temp_df is not None:
+            result = filter_temp_matches_to_selected_temps(result, self._selected_temp_df)
+        self._df = result if not err else pd.DataFrame(columns=list(TEMP_HEADERS))
+        self._render_summary()
+        self._render_table()
+
+    def _render_summary(self):
+        while self._summary_strip.count():
+            item = self._summary_strip.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        df = self._df
+        n = len(df)
+        site_count = df["site_id"].nunique() if n and "site_id" in df.columns else 0
+        y_count = int((df["match_window"] == "Y margin").sum()) if n and "match_window" in df.columns else 0
+        duration = pd.to_timedelta(df["temp_clear_duration"], errors="coerce") if n and "temp_clear_duration" in df.columns else pd.Series(dtype="timedelta64[ns]")
+        for label, val, color in [
+            ("Matched temp alarms", f"{n:,}", "#f38ba8"),
+            ("Unique sites", f"{site_count:,}", "#a6e3a1"),
+            ("Y-margin matches", f"{y_count:,}", "#fab387"),
+            ("Total clear duration", _fmt_td(duration.sum()) if not duration.empty else "-", "#94e2d5"),
+        ]:
+            box = QWidget()
+            vb = QVBoxLayout(box)
+            vb.setContentsMargins(0, 0, 0, 0)
+            lv = QLabel(val)
+            lv.setAlignment(Qt.AlignCenter)
+            lv.setFont(QFont("Segoe UI", 13, QFont.Bold))
+            lv.setStyleSheet(f"color:{color};")
+            lt = QLabel(label)
+            lt.setAlignment(Qt.AlignCenter)
+            lt.setStyleSheet("color:#6c7086; font-size:11px;")
+            vb.addWidget(lv)
+            vb.addWidget(lt)
+            self._summary_strip.addWidget(box)
+        self._summary_strip.addStretch()
+
+    def _render_table(self):
+        if self._tbl is not None:
+            self._table_host.removeWidget(self._tbl)
+            self._tbl.deleteLater()
+        df = self._df
+        cols = [c for c in TEMP_HEADERS if c in df.columns]
+        self._tbl = QTableWidget(len(df), len(cols))
+        self._tbl.setHorizontalHeaderLabels([TEMP_HEADERS[c] for c in cols])
+        self._tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self._tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._tbl.setAlternatingRowColors(True)
+        self._tbl.setSortingEnabled(False)
+        self._tbl.verticalHeader().setDefaultSectionSize(24)
+        self._tbl.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        hdr = self._tbl.horizontalHeader()
+        for i, c in enumerate(cols):
+            hdr.resizeSection(i, TEMP_WIDTHS.get(c, 120))
+        hdr.setStretchLastSection(True)
+        for r, row in df.iterrows():
+            for ci, c in enumerate(cols):
+                val = row.get(c, "")
+                item = QTableWidgetItem("" if pd.isna(val) else str(val))
+                item.setTextAlignment(Qt.AlignCenter if c.endswith("duration") or c.endswith("margin") else Qt.AlignLeft | Qt.AlignVCenter)
+                if c == "site_id":
+                    item.setForeground(QColor("#cba6f7"))
+                elif c == "match_window" and val == "Y margin":
+                    item.setForeground(QColor("#fab387"))
+                elif c == "match_window":
+                    item.setForeground(QColor("#a6e3a1"))
+                self._tbl.setItem(r, ci, item)
+        self._tbl.setSortingEnabled(True)
+        self._table_host.addWidget(self._tbl)
+
+    def _export(self):
+        fp, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Temp Alarm Analysis",
+            f"temp_alarm_analysis_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+            "Excel Files (*.xlsx)",
+        )
+        if not fp:
+            return
+        try:
+            export_temp_alarm_workbook(self._df, fp)
             QMessageBox.information(self, "Export OK", f"Saved to:\n{fp}")
         except Exception as e:
             QMessageBox.critical(self, "Export Failed", str(e))

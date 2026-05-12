@@ -1294,14 +1294,30 @@ def _normalize_summary_key(key) -> str:
 
 def _summary_lookup_value(summary_data: dict[str, str], canonical_key: str) -> str:
     normalized = {}
+    raw_entries = []
     for key, value in summary_data.items():
+        raw_key = str(key or "").strip()
         nk = _normalize_summary_key(key)
+        raw_entries.append((raw_key, value))
         if nk and nk not in normalized:
             normalized[nk] = value
-    for alias in _SUMMARY_KEY_ALIASES.get(canonical_key, (canonical_key,)):
-        val = normalized.get(_normalize_summary_key(alias))
+    aliases = list(_SUMMARY_KEY_ALIASES.get(canonical_key, (canonical_key,)))
+    normalized_aliases = [_normalize_summary_key(alias) for alias in aliases]
+    for alias in normalized_aliases:
+        val = normalized.get(alias)
         if val is not None:
             return str(val)
+    for alias in aliases:
+        alias_text = " ".join(str(alias or "").strip().casefold().split())
+        if not alias_text:
+            continue
+        for raw_key, value in raw_entries:
+            key_text = " ".join(raw_key.casefold().split())
+            if not key_text.startswith(alias_text):
+                continue
+            suffix = key_text[len(alias_text):]
+            if not suffix or not suffix[0].isalnum():
+                return str(value)
     return ""
 
 

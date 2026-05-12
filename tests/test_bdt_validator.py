@@ -1160,6 +1160,51 @@ class TestR11SummaryChecklist:
         r = _rule_11_summary_checklist(bdt)
         assert r.verdict == "Accepted"
 
+    def test_verbose_summary_header_prefix_matches(self):
+        bdt = _make_bdt(
+            site_code="",
+            pld_value="47.5",
+            rectifier_brand="",
+            battery_brand="",
+            battery_voltage=None,
+            num_strings=None,
+            start_voltage=None,
+            start_ampere=None,
+            end_voltage=None,
+            end_ampere=None,
+            discharge_minutes=0.0,
+            ibat_before_test=None,
+            test_date=None,
+            summary_data={
+                "PLVD Value (LLVD For Huawei) adjusted after finishing the test ": "47.5",
+            },
+        )
+        r = _rule_11_summary_checklist(bdt)
+        assert r.verdict == "Accepted"
+
+    def test_verbose_summary_header_prefix_requires_boundary(self):
+        bdt = _make_bdt(
+            site_code="",
+            pld_value="47.5",
+            rectifier_brand="",
+            battery_brand="",
+            battery_voltage=None,
+            num_strings=None,
+            start_voltage=None,
+            start_ampere=None,
+            end_voltage=None,
+            end_ampere=None,
+            discharge_minutes=0.0,
+            ibat_before_test=None,
+            test_date=None,
+            summary_data={
+                "PLVD Valued By": "wrong",
+                "PLVD Value (LLVD For Huawei) adjusted after finishing the test ": "47.5",
+            },
+        )
+        r = _rule_11_summary_checklist(bdt)
+        assert r.verdict == "Accepted"
+
 
 # ── R3 String vs Bus Bar Ampere ────────────────────────────────
 

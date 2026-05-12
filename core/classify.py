@@ -3,6 +3,14 @@
 import pandas as pd
 
 
+TEMP_ALARM_NAMES = {
+    "base station external alarm notification",
+    "external al 9",
+    "shelter high temperature",
+    "switch room 2 high temperature",
+}
+
+
 def classify_by_alarm_id(df: pd.DataFrame, alarm_ids: dict) -> pd.DataFrame:
     """Classify alarm_category based on alarm_id matching configured ID lists.
 
@@ -12,18 +20,24 @@ def classify_by_alarm_id(df: pd.DataFrame, alarm_ids: dict) -> pd.DataFrame:
     Returns:
         DataFrame with updated 'alarm_category' column.
     """
-    if df.empty or "alarm_id" not in df.columns:
+    if df.empty:
         return df
+    df = df.copy()
+    if "alarm_category" not in df.columns:
+        df["alarm_category"] = ""
+
+    existing_temp = df["alarm_category"].fillna("").astype(str).str.strip().str.lower().eq("temp")
     power_set = set(alarm_ids.get("power", []))
     down_set  = set(alarm_ids.get("down", []))
     door_set  = set(alarm_ids.get("door", []))
-    # Normalize: floats like 300.0 -> "300", strings stay as-is
-    aid = (df["alarm_id"].fillna("").astype(str).str.strip()
-           .str.replace(r'\.0$', '', regex=True))
-    df = df.copy()
-    df.loc[aid.isin(power_set), "alarm_category"] = "Power"
-    df.loc[aid.isin(down_set),  "alarm_category"] = "Down"
-    df.loc[aid.isin(door_set),  "alarm_category"] = "Door"
+
+    if "alarm_id" in df.columns:
+        # Normalize: floats like 300.0 -> "300", strings stay as-is
+        aid = (df["alarm_id"].fillna("").astype(str).str.strip()
+               .str.replace(r'\.0$', '', regex=True))
+        df.loc[aid.isin(power_set) & ~existing_temp, "alarm_category"] = "Power"
+        df.loc[aid.isin(down_set) & ~existing_temp, "alarm_category"] = "Down"
+        df.loc[aid.isin(door_set) & ~existing_temp, "alarm_category"] = "Door"
 
     # Heuristic fallback so door alarms are visible even without configured IDs.
     door_mask = pd.Series(False, index=df.index)
@@ -32,7 +46,19 @@ def classify_by_alarm_id(df: pd.DataFrame, alarm_ids: dict) -> pd.DataFrame:
         if col in df.columns:
             door_mask |= df[col].astype(str).str.contains(
                 door_rx, case=False, na=False, regex=True)
-    df.loc[door_mask, "alarm_category"] = "Door"
+    df.loc[door_mask & ~existing_temp, "alarm_category"] = "Door"
+
+    if "alarm_name" in df.columns:
+        temp_mask = (
+            df["alarm_name"]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin(TEMP_ALARM_NAMES)
+        )
+        df.loc[temp_mask, "alarm_category"] = "Temp"
+
     return df
 
 

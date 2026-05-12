@@ -61,6 +61,7 @@ class UIBridge:
     btn_clear_days: QPushButton
     btn_export: QPushButton
     btn_backup: QPushButton
+    btn_temp: QPushButton
     btn_site_sheet: QPushButton
     btn_site_report: QPushButton
     btn_both: QPushButton
@@ -103,6 +104,7 @@ class UIBridge:
             btn_clear_days=search_panel.btn_clear_days,
             btn_export=search_panel.btn_export,
             btn_backup=search_panel.btn_backup,
+            btn_temp=search_panel.btn_temp,
             btn_site_sheet=search_panel.btn_site_sheet,
             btn_site_report=search_panel.btn_site_report,
             btn_both=search_panel.btn_both,

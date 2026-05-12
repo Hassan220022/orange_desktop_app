@@ -465,6 +465,35 @@ class TestParseAlarmFile:
         assert result is not None
         assert (result["alarm_category"] == "Door").all()
 
+    def test_category_temp_from_filename(self, tmp_path):
+        cols = list(SCHEMA_1_MAP.keys())
+        rows = [["src1", "SiteA", "2024-01-01 10:00", "2024-01-01 11:00",
+                 "01:00:00", "65036", "Shelter High Temperature", "Cleared", "LTE", "Huawei"]]
+        info = self._write_csv(tmp_path, "temp_alarms_2024.csv", cols, rows)
+        result = parse_alarm_file(info)
+        assert result is not None
+        assert (result["alarm_category"] == "Temp").all()
+
+    def test_category_temp_filename_takes_precedence(self, tmp_path):
+        cols = list(SCHEMA_1_MAP.keys())
+        rows = [["src1", "SiteA", "2024-01-01 10:00", "2024-01-01 11:00",
+                 "01:00:00", "65036", "Shelter High Temperature", "Cleared", "LTE", "Huawei"]]
+        info = self._write_csv(tmp_path, "power_temp_alarms.csv", cols, rows)
+        result = parse_alarm_file(info)
+        assert result is not None
+        assert (result["alarm_category"] == "Temp").all()
+
+    def test_category_temp_filename_survives_id_classification(self, tmp_path):
+        cols = list(SCHEMA_1_MAP.keys())
+        rows = [["src1", "SiteA", "2024-01-01 10:00", "2024-01-01 11:00",
+                 "01:00:00", "65036", "Power Fail", "Cleared", "LTE", "Huawei"]]
+        info = self._write_csv(tmp_path, "power_temp_alarms.csv", cols, rows)
+        result = parse_alarm_file(info)
+        assert result is not None
+
+        classified = classify_by_alarm_id(result, {"power": ["65036"], "down": [], "door": []})
+        assert (classified["alarm_category"] == "Temp").all()
+
     def test_category_empty_when_no_keyword(self, tmp_path):
         cols = list(SCHEMA_1_MAP.keys())
         rows = [["src1", "SiteA", "2024-01-01 10:00", "2024-01-01 11:00",
@@ -553,6 +582,38 @@ class TestClassifyByAlarmId:
         assert result.loc[0, "alarm_category"] == "Door"   # alarm_name contains door
         assert result.loc[1, "alarm_category"] == "Door"   # file_source contains door
         assert result.loc[2, "alarm_category"] == ""       # 'Outdoor' must not match
+
+    def test_temp_alarm_names_classified(self):
+        names = [
+            "BASE STATION EXTERNAL ALARM NOTIFICATION",
+            "EXTERNAL AL 9",
+            "Shelter High Temperature",
+            "Switch Room 2 High Temperature",
+        ]
+        df = pd.DataFrame({
+            "alarm_id": ["1", "2", "3", "4"],
+            "alarm_category": ["", "", "", ""],
+            "alarm_name": names,
+        })
+        result = classify_by_alarm_id(df, {"power": [], "down": [], "door": []})
+        assert (result["alarm_category"] == "Temp").all()
+
+    def test_temp_alarm_name_overrides_configured_id_category(self):
+        df = pd.DataFrame({
+            "alarm_id": ["100"],
+            "alarm_category": [""],
+            "alarm_name": ["EXTERNAL AL 9"],
+        })
+        result = classify_by_alarm_id(df, {"power": ["100"], "down": [], "door": []})
+        assert result.loc[0, "alarm_category"] == "Temp"
+
+    def test_temp_alarm_name_classified_without_alarm_id(self):
+        df = pd.DataFrame({
+            "alarm_category": [""],
+            "alarm_name": ["Shelter High Temperature"],
+        })
+        result = classify_by_alarm_id(df, {"power": ["65036"], "down": [], "door": []})
+        assert result.loc[0, "alarm_category"] == "Temp"
 
     def test_float_ids_normalized(self):
         """IDs like 300.0 (from Excel numeric parsing) become '300'."""
@@ -822,6 +883,53 @@ class TestDeduplicateAlarmRows:
         ], columns=ALL_INTERNAL_COLS)
 
         deduped, dropped = deduplicate_alarm_rows(df)
+        assert dropped == 1
+        assert len(deduped) == 1
+
+    def test_deduplicate_uses_vectorized_keys(self, monkeypatch):
+        df = pd.DataFrame([
+            {
+                "site_id": "0167DE",
+                "alarm_name": "Power",
+                "alarm_id": "1001",
+                "network_type": "4G",
+                "vendor": "Huawei",
+                "occurred_on": pd.Timestamp("2026-01-11 08:00:00"),
+                "cleared_on": pd.Timestamp("2026-01-11 09:00:00"),
+                "duration": "01:00:00",
+                "clearance_status": "Cleared",
+                "alarm_source": "Node-A",
+                "site_down_flag": "No",
+                "alarm_category": "Power",
+                "file_source": "a.csv",
+            },
+            {
+                "site_id": "0167DE",
+                "alarm_name": "Power",
+                "alarm_id": "1001",
+                "network_type": "4G",
+                "vendor": "Huawei",
+                "occurred_on": pd.Timestamp("2026-01-11 08:00:00"),
+                "cleared_on": pd.Timestamp("2026-01-11 09:00:00"),
+                "duration": "01:00:00",
+                "clearance_status": "Cleared",
+                "alarm_source": "Node-A",
+                "site_down_flag": "No",
+                "alarm_category": "Power",
+                "file_source": "b.csv",
+            },
+        ], columns=ALL_INTERNAL_COLS)
+
+        original_apply = pd.DataFrame.apply
+
+        def fail_row_apply(self, *args, **kwargs):
+            if kwargs.get("axis") == 1:
+                raise AssertionError("row-wise DataFrame.apply should not be used")
+            return original_apply(self, *args, **kwargs)
+
+        monkeypatch.setattr(pd.DataFrame, "apply", fail_row_apply)
+        deduped, dropped = deduplicate_alarm_rows(df)
+
         assert dropped == 1
         assert len(deduped) == 1
 

@@ -124,7 +124,7 @@ class LeftPanel(QWidget):
         self.stats: dict[str, QLabel] = {}
         stat_obj_names = {
             "total": "stat_total", "power": "stat_power",
-            "down": "stat_down", "door": "stat_door",
+            "down": "stat_down", "door": "stat_door", "temp": "stat_temp",
             "sites": "stat_sites", "avg_dur": "stat_avg_dur",
         }
         for key, label in (
@@ -132,6 +132,7 @@ class LeftPanel(QWidget):
             ("power",    "Power Alarms"),
             ("down",     "Down Alarms"),
             ("door",     "Door Alarms"),
+            ("temp",     "Temp Alarms"),
             ("sites",    "Unique Sites"),
             ("avg_dur",  "Avg Duration"),
         ):
