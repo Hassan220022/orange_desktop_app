@@ -10,6 +10,10 @@ import pytest
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
 
+from alarm_app.ui.dialogs import AppSettingsDialog
+from alarm_app.ui.state_manager import StateManager
+from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorStatus
+
 # ── global QApplication singleton ─────────────────────────────────
 _app: QApplication | None = None
 
@@ -162,6 +166,205 @@ class TestAlarmViewerGUI:
         monkeypatch.setattr(QDialog, "exec_", _set_theme_and_accept)
         gui_app._show_settings()
         assert gui_app._theme_mode == "dark"
+
+    def test_settings_dialog_uses_cloudflare_only_connector_controls(self, gui_app):
+        dialog = AppSettingsDialog({}, gui_app)
+
+        assert dialog.edit_chatgpt_url.isReadOnly()
+        assert dialog.edit_chatgpt_url.placeholderText() == "Generated after Cloudflare Quick Tunnel starts"
+        assert dialog._btn_chatgpt_setup.text() == "Copy URL and Open ChatGPT"
+        assert not hasattr(dialog, "_btn_copy_local_mcp")
+        assert "Local MCP endpoint" not in dialog._lbl_chatgpt_status.text()
+
+    def test_chatgpt_setup_requires_enabled_quick_tunnel(self, gui_app, monkeypatch):
+        opened = []
+        monkeypatch.setattr("alarm_app.ui.dialogs.webbrowser.open", lambda *args, **kwargs: opened.append(args))
+        dialog = AppSettingsDialog({}, gui_app)
+
+        dialog._copy_public_url_and_open_chatgpt()
+
+        assert opened == []
+        assert "Enable the Cloudflare Quick Tunnel" in dialog._lbl_chatgpt_status.text()
+
+    def test_chatgpt_setup_copies_tokenized_url_and_persists_token(self, gui_app, monkeypatch):
+        saved_states = []
+        monkeypatch.setattr("alarm_app.ui.dialogs.webbrowser.open", lambda *args, **kwargs: True)
+        monkeypatch.setattr("alarm_app.ui.dialogs.state.load_state", lambda: {"theme_mode": "auto"})
+        monkeypatch.setattr("alarm_app.ui.dialogs.state.save_state", lambda data: saved_states.append(dict(data)))
+        dialog = AppSettingsDialog(
+            {
+                "chatgpt_mcp_enabled": True,
+                "chatgpt_mcp_public_url": "https://alarm.example/mcp",
+            },
+            gui_app,
+        )
+
+        dialog._copy_public_url_and_open_chatgpt()
+
+        copied = QApplication.clipboard().text()
+        assert copied.startswith("https://alarm.example/mcp?token=")
+        assert saved_states[-1]["chatgpt_mcp_public_url"] == "https://alarm.example/mcp"
+        assert saved_states[-1]["chatgpt_mcp_token"]
+
+    def test_chatgpt_setup_uses_env_token_when_configured(self, gui_app, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "env-token")
+        saved_states = []
+        monkeypatch.setattr("alarm_app.ui.dialogs.webbrowser.open", lambda *args, **kwargs: True)
+        monkeypatch.setattr("alarm_app.ui.dialogs.state.load_state", lambda: {})
+        monkeypatch.setattr("alarm_app.ui.dialogs.state.save_state", lambda data: saved_states.append(dict(data)))
+        dialog = AppSettingsDialog(
+            {
+                "chatgpt_mcp_enabled": True,
+                "chatgpt_mcp_public_url": "https://alarm.example/mcp",
+            },
+            gui_app,
+        )
+
+        dialog._copy_public_url_and_open_chatgpt()
+
+        assert QApplication.clipboard().text() == "https://alarm.example/mcp?token=env-token"
+        assert "chatgpt_mcp_token" not in saved_states[-1]
+
+    def test_chatgpt_setup_persists_public_url_without_stale_token(self, gui_app, monkeypatch):
+        saved_states = []
+        monkeypatch.setattr("alarm_app.ui.dialogs.webbrowser.open", lambda *args, **kwargs: True)
+        monkeypatch.setattr("alarm_app.ui.dialogs.state.load_state", lambda: {})
+        monkeypatch.setattr("alarm_app.ui.dialogs.state.save_state", lambda data: saved_states.append(dict(data)))
+        dialog = AppSettingsDialog(
+            {
+                "chatgpt_mcp_enabled": True,
+                "chatgpt_mcp_public_url": "https://alarm.example/mcp?foo=1&token=old",
+            },
+            gui_app,
+        )
+
+        dialog._copy_public_url_and_open_chatgpt()
+
+        assert saved_states[-1]["chatgpt_mcp_public_url"] == "https://alarm.example/mcp?foo=1"
+        assert "token=old" not in QApplication.clipboard().text()
+
+    def test_chatgpt_enable_toggle_starts_manager_and_shows_public_url(self, gui_app, monkeypatch):
+        saved_state = {"chatgpt_mcp_token": "generated-token"}
+        monkeypatch.setattr("alarm_app.ui.dialogs.state.load_state", lambda: dict(saved_state))
+
+        class _Manager:
+            def __init__(self):
+                self.enable_calls = 0
+
+            def enable(self):
+                self.enable_calls += 1
+                return ChatGPTConnectorStatus(
+                    enabled=True,
+                    public_url="https://alarm-test.trycloudflare.com/mcp",
+                    connector_url="https://alarm-test.trycloudflare.com/mcp?token=generated-token",
+                    token_from_env=False,
+                )
+
+            def disable(self):
+                raise AssertionError("disable should not be called")
+
+        manager = _Manager()
+        dialog = AppSettingsDialog({}, gui_app, connector_manager=manager)
+
+        dialog.chk_chatgpt_mcp_enabled.setChecked(True)
+
+        assert manager.enable_calls == 1
+        assert dialog.edit_chatgpt_url.text() == "https://alarm-test.trycloudflare.com/mcp"
+        assert dialog.get_settings()["chatgpt_mcp_enabled"] is True
+
+    def test_chatgpt_disable_toggle_stops_manager_and_clears_public_url(self, gui_app):
+        class _Manager:
+            def __init__(self):
+                self.disable_calls = 0
+
+            def enable(self):
+                raise AssertionError("enable should not be called")
+
+            def disable(self):
+                self.disable_calls += 1
+                return ChatGPTConnectorStatus(
+                    enabled=False,
+                    public_url="",
+                    connector_url="",
+                    token_from_env=False,
+                )
+
+        manager = _Manager()
+        dialog = AppSettingsDialog(
+            {
+                "chatgpt_mcp_enabled": True,
+                "chatgpt_mcp_public_url": "https://alarm-test.trycloudflare.com/mcp",
+                "chatgpt_mcp_token": "saved-token",
+            },
+            gui_app,
+            connector_manager=manager,
+        )
+
+        dialog.chk_chatgpt_mcp_enabled.setChecked(False)
+
+        assert manager.disable_calls == 1
+        assert dialog.edit_chatgpt_url.text() == ""
+        assert dialog.get_settings()["chatgpt_mcp_enabled"] is False
+
+    def test_state_manager_collects_chatgpt_connector_url(self, gui_app):
+        gui_app._chatgpt_mcp_public_url = "https://alarm.example/mcp"
+        gui_app._chatgpt_mcp_token = "secret-token"
+        gui_app._chatgpt_mcp_enabled = True
+
+        state = StateManager.collect(gui_app)
+
+        assert state["chatgpt_mcp_public_url"] == "https://alarm.example/mcp"
+        assert state["chatgpt_mcp_token"] == "secret-token"
+        assert state["chatgpt_mcp_enabled"] is True
+
+    def test_state_manager_does_not_persist_env_chatgpt_token(self, gui_app, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "env-token")
+        gui_app._chatgpt_mcp_public_url = "https://alarm.example/mcp"
+        gui_app._chatgpt_mcp_token = "env-token"
+
+        state = StateManager.collect(gui_app)
+
+        assert state["chatgpt_mcp_token"] == ""
+
+    def test_state_manager_does_not_restore_stale_quick_tunnel_enabled(self, gui_app):
+        StateManager.apply(gui_app, {
+            "chatgpt_mcp_enabled": True,
+            "chatgpt_mcp_public_url": "https://old.trycloudflare.com/mcp",
+            "chatgpt_mcp_token": "saved-token",
+        })
+
+        assert gui_app._chatgpt_mcp_enabled is False
+
+    def test_close_event_stops_active_chatgpt_connector(self, gui_app):
+        class _Manager:
+            def __init__(self):
+                self.disable_calls = 0
+
+            def disable(self):
+                self.disable_calls += 1
+                return ChatGPTConnectorStatus(False, "", "", False)
+
+        class _Event:
+            def __init__(self):
+                self.accepted = False
+                self.ignored = False
+
+            def accept(self):
+                self.accepted = True
+
+            def ignore(self):
+                self.ignored = True
+
+        manager = _Manager()
+        gui_app._chatgpt_connector_manager = manager
+        gui_app._chatgpt_mcp_enabled = True
+        event = _Event()
+
+        gui_app.closeEvent(event)
+
+        assert manager.disable_calls == 1
+        assert gui_app._chatgpt_mcp_enabled is False
+        assert event.accepted is True
 
     def test_load_alarm_csv_file(self, gui_app, tmp_path):
         csv_content = (

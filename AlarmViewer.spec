@@ -18,12 +18,22 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 # The repo scripts/workflows `cd` into the project root before invoking this spec.
 ROOT = Path.cwd().resolve()
 IS_MAC = sys.platform == "darwin"
+IS_WIN = sys.platform == "win32"
 ICON_PATH = ROOT / "assets" / ("app_icon.icns" if IS_MAC else "app_icon.ico")
 
 datas = [
     (str(ROOT / "assets" / "app_icon.png"), "assets"),
     (str(ROOT / "VERSION"), "."),
 ]
+
+cloudflared_name = "cloudflared.exe" if IS_WIN else "cloudflared"
+binaries = []
+for cloudflared_path in (
+    ROOT / "vendor" / "cloudflared" / cloudflared_name,
+    ROOT / "bin" / cloudflared_name,
+):
+    if cloudflared_path.exists():
+        binaries.append((str(cloudflared_path), "bin"))
 datas += collect_data_files(
     "alarm_app.bdt.vendor_synthid",
     includes=["*.pkl"],
@@ -76,17 +86,17 @@ hiddenimports = [
     "ui.panels.bdt_workspace_panel", "ui.panels.chat_panel",
     "ui.panels.left_panel", "ui.panels.search_panel",
     "web.app", "web.config", "web.deps", "web.schemas",
-    "web.routers.alarms", "web.routers.pm", "web.routers.sync",
+    "web.routers.alarms", "web.routers.mcp", "web.routers.pm", "web.routers.sync",
     "llm_tools.mcp_server", "llm_tools.openrouter_agent",
     "llm_tools.openrouter_models", "llm_tools.service", "llm_tools.tools",
-    "runtime.bootstrap", "runtime.env",
+    "runtime.bootstrap", "runtime.chatgpt_connector", "runtime.env", "runtime.tunnels",
 ]
 
 
 a = Analysis(
     ["scripts/pyinstaller_entry.py"],
     pathex=[str(ROOT)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

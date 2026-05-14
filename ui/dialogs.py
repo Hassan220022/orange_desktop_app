@@ -1,5 +1,9 @@
 """Standalone dialog windows."""
 
+import os
+import secrets
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+import webbrowser
 from datetime import datetime
 
 import pandas as pd
@@ -7,6 +11,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -43,6 +48,8 @@ try:
         filter_temp_matches_to_selected_temps,
     )
     from alarm_app.data import state
+    from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorManager
+    from alarm_app.runtime.tunnels import TunnelStartError
 except ImportError:
     from bdt.rule_docs import full_rules_html, iter_rule_docs
     from constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS, TEMP_HEADERS, TEMP_WIDTHS
@@ -54,6 +61,8 @@ except ImportError:
         filter_temp_matches_to_selected_temps,
     )
     from data import state
+    from runtime.chatgpt_connector import ChatGPTConnectorManager
+    from runtime.tunnels import TunnelStartError
 
 
 def _resolved_parent_theme_mode(parent) -> str:
@@ -69,6 +78,12 @@ def _resolved_parent_theme_mode(parent) -> str:
             return str(mode)
         current = current.parent() if hasattr(current, "parent") else None
     return "dark"
+
+
+def _local_mcp_base_url() -> str:
+    host = os.environ.get("ALARM_BACKEND_HOST", "127.0.0.1")
+    port = os.environ.get("ALARM_BACKEND_PORT", "8787")
+    return f"http://{host}:{port}"
 
 
 class ColumnFilterPopup(QDialog):
@@ -542,13 +557,18 @@ class _DownloadWorker(QThread):
 class AppSettingsDialog(QDialog):
     """Central app settings dialog."""
 
-    def __init__(self, settings: dict, parent=None):
+    def __init__(self, settings: dict, parent=None, *, connector_manager=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumWidth(420)
         if parent:
             self.setStyleSheet(parent.styleSheet())
         self._settings = dict(settings or {})
+        self._connector_manager = connector_manager or ChatGPTConnectorManager(local_base_url=_local_mcp_base_url())
+        self._chatgpt_enabled = bool(self._settings.get("chatgpt_mcp_enabled", False))
+        env_token = os.environ.get("ALARM_MCP_TOKEN", "").strip()
+        self._chatgpt_token_from_env = bool(env_token)
+        self._chatgpt_token = env_token or str(self._settings.get("chatgpt_mcp_token") or "") or secrets.token_urlsafe(32)
         self._latest_release = None
         self._update_check_worker = None
         self._download_thread = None
@@ -639,6 +659,38 @@ class AppSettingsDialog(QDialog):
         self._progress.setFormat("Downloading %p%")
         self._progress.hide()
         lay.addWidget(self._progress)
+
+        chatgpt_title = QLabel("ChatGPT Connector")
+        chatgpt_title.setObjectName("workspace_card_title")
+        lay.addWidget(chatgpt_title)
+
+        self.chk_chatgpt_mcp_enabled = QCheckBox("Enable ChatGPT MCP via Cloudflare Quick Tunnel")
+        self.chk_chatgpt_mcp_enabled.setChecked(self._chatgpt_enabled)
+        self.chk_chatgpt_mcp_enabled.stateChanged.connect(self._on_chatgpt_enabled_changed)
+        lay.addWidget(self.chk_chatgpt_mcp_enabled)
+
+        self.edit_chatgpt_url = QLineEdit()
+        self.edit_chatgpt_url.setObjectName("filter_input")
+        self.edit_chatgpt_url.setReadOnly(True)
+        self.edit_chatgpt_url.setPlaceholderText("Generated after Cloudflare Quick Tunnel starts")
+        self.edit_chatgpt_url.setText(str(self._settings.get("chatgpt_mcp_public_url") or ""))
+        self._add_labeled_row(lay, "Cloudflare URL", self.edit_chatgpt_url)
+
+        self._lbl_chatgpt_status = QLabel(
+            "Turn this on to start a Cloudflare Quick Tunnel. Alarm Viewer generates the ChatGPT connector URL for you."
+        )
+        self._lbl_chatgpt_status.setWordWrap(True)
+        self._lbl_chatgpt_status.setStyleSheet("color:#6c7086; font-size:11px;")
+        lay.addWidget(self._lbl_chatgpt_status)
+
+        chatgpt_row = QHBoxLayout()
+        chatgpt_row.setSpacing(8)
+        self._btn_chatgpt_setup = QPushButton("Copy URL and Open ChatGPT")
+        self._btn_chatgpt_setup.setObjectName("btn_search")
+        self._btn_chatgpt_setup.setEnabled(self._chatgpt_enabled and bool(self.edit_chatgpt_url.text().strip()))
+        self._btn_chatgpt_setup.clicked.connect(self._copy_public_url_and_open_chatgpt)
+        chatgpt_row.addWidget(self._btn_chatgpt_setup)
+        lay.addLayout(chatgpt_row)
 
         # ── Buttons ──
         btn_row = QHBoxLayout()
@@ -766,12 +818,89 @@ class AppSettingsDialog(QDialog):
         row.addWidget(widget, 1)
         parent_layout.addLayout(row)
 
+    def _on_chatgpt_enabled_changed(self, state_value):
+        enabled = state_value == Qt.Checked
+        if enabled:
+            try:
+                status = self._connector_manager.enable()
+            except TunnelStartError as exc:
+                self.chk_chatgpt_mcp_enabled.blockSignals(True)
+                self.chk_chatgpt_mcp_enabled.setChecked(False)
+                self.chk_chatgpt_mcp_enabled.blockSignals(False)
+                self._chatgpt_enabled = False
+                self._btn_chatgpt_setup.setEnabled(False)
+                self._lbl_chatgpt_status.setStyleSheet("color:#f38ba8; font-size:11px;")
+                self._lbl_chatgpt_status.setText(str(exc))
+                return
+            self._chatgpt_enabled = True
+            self.edit_chatgpt_url.setText(status.public_url)
+            self._btn_chatgpt_setup.setEnabled(True)
+            if not status.token_from_env:
+                saved = state.load_state() or {}
+                self._chatgpt_token = str(saved.get("chatgpt_mcp_token") or self._chatgpt_token)
+            self._sync_chatgpt_parent(status.public_url)
+            self._lbl_chatgpt_status.setStyleSheet("color:#a6e3a1; font-size:11px;")
+            self._lbl_chatgpt_status.setText("Cloudflare Quick Tunnel is active. Copy the URL to finish setup in ChatGPT.")
+            return
+
+        status = self._connector_manager.disable()
+        self._chatgpt_enabled = False
+        self.edit_chatgpt_url.setText(status.public_url)
+        self._btn_chatgpt_setup.setEnabled(False)
+        if not self._chatgpt_token_from_env:
+            self._chatgpt_token = ""
+        self._sync_chatgpt_parent(status.public_url)
+        self._lbl_chatgpt_status.setStyleSheet("color:#6c7086; font-size:11px;")
+        self._lbl_chatgpt_status.setText("Cloudflare Quick Tunnel is disabled.")
+
+    def _sync_chatgpt_parent(self, public_url: str):
+        parent = self.parent()
+        if parent is not None:
+            setattr(parent, "_chatgpt_mcp_enabled", self._chatgpt_enabled)
+            setattr(parent, "_chatgpt_mcp_public_url", public_url)
+            setattr(parent, "_chatgpt_mcp_token", "" if self._chatgpt_token_from_env else self._chatgpt_token)
+
+    def _persist_chatgpt_connector(self, public_url: str):
+        saved = state.load_state() or {}
+        saved["chatgpt_mcp_enabled"] = self.chk_chatgpt_mcp_enabled.isChecked()
+        saved["chatgpt_mcp_public_url"] = public_url
+        if self._chatgpt_token_from_env:
+            saved.pop("chatgpt_mcp_token", None)
+        else:
+            saved["chatgpt_mcp_token"] = self._chatgpt_token
+        state.save_state(saved)
+        parent = self.parent()
+        if parent is not None:
+            setattr(parent, "_chatgpt_mcp_enabled", self.chk_chatgpt_mcp_enabled.isChecked())
+            setattr(parent, "_chatgpt_mcp_public_url", public_url)
+            setattr(parent, "_chatgpt_mcp_token", "" if self._chatgpt_token_from_env else self._chatgpt_token)
+
+    def _copy_public_url_and_open_chatgpt(self):
+        url = self.edit_chatgpt_url.text().strip()
+        parsed = urlparse(url)
+        if not self.chk_chatgpt_mcp_enabled.isChecked() or parsed.scheme != "https" or not parsed.path.endswith("/mcp"):
+            self._lbl_chatgpt_status.setStyleSheet("color:#f38ba8; font-size:11px;")
+            self._lbl_chatgpt_status.setText("Enable the Cloudflare Quick Tunnel before opening ChatGPT setup.")
+            return
+        query_items = [(key, value) for key, value in parse_qsl(parsed.query) if key != "token"]
+        safe_public_url = urlunparse(parsed._replace(query=urlencode(query_items)))
+        query_items.append(("token", self._chatgpt_token))
+        connector_url = urlunparse(parsed._replace(query=urlencode(query_items)))
+        self._persist_chatgpt_connector(safe_public_url)
+        QApplication.clipboard().setText(connector_url)
+        webbrowser.open("https://chatgpt.com/#settings/Connectors", new=2)
+        self._lbl_chatgpt_status.setStyleSheet("color:#a6e3a1; font-size:11px;")
+        self._lbl_chatgpt_status.setText("Connector URL copied. In ChatGPT, create a connector and paste it as the Connector URL.")
+
     def get_settings(self) -> dict:
         return {
             "theme_mode": str(self.cmb_theme.currentData() or "auto"),
             "assistant_open": self.chk_assistant.isChecked(),
             "skip_photos": self.chk_skip_photos.isChecked(),
             "openrouter_api_key": self.edit_api_key.text().strip(),
+            "chatgpt_mcp_enabled": self.chk_chatgpt_mcp_enabled.isChecked(),
+            "chatgpt_mcp_public_url": self.edit_chatgpt_url.text().strip(),
+            "chatgpt_mcp_token": "" if self._chatgpt_token_from_env else self._chatgpt_token,
             "sync_on": self.chk_sync.isChecked(),
             "cloud_read_on": self.chk_cloud.isChecked(),
             "bootstrap_on": self.chk_bootstrap.isChecked(),

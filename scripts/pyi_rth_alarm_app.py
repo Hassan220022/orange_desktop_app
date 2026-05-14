@@ -44,17 +44,18 @@ def _register_alarm_app_namespace():
         "bdt.section_parser", "bdt.image_assigner", "bdt.parser",
         "bdt.validator", "bdt.rule_docs", "bdt.export", "bdt.history",
         "bdt.photo_auth",
-        # Tier 6: ui, depends on everything above
+        # Tier 6: runtime helpers used by ui.dialogs
+        "runtime.env", "runtime.bootstrap", "runtime.tunnels", "runtime.chatgpt_connector",
+        # Tier 7: ui, depends on everything above
         "ui.flow_layout", "ui.model", "ui.bridge", "ui.filter_state",
         "ui.state_manager", "ui.threads", "ui.dialogs",
         "ui.panels.left_panel", "ui.panels.search_panel",
         "ui.panels.bdt_workspace_panel", "ui.panels.bdt_validation_panel",
         "ui.panels.bdt_detail_panel", "ui.panels.chat_panel", "ui.viewer",
-        # Tier 7: web, runtime, llm_tools
+        # Tier 8: web and llm_tools
         "web.config", "web.deps", "web.schemas",
-        "web.routers.alarms", "web.routers.pm", "web.routers.sync",
+        "web.routers.alarms", "web.routers.mcp", "web.routers.pm", "web.routers.sync",
         "web.app",
-        "runtime.env", "runtime.bootstrap",
         "llm_tools.openrouter_models", "llm_tools.service",
         "llm_tools.tools", "llm_tools.openrouter_agent",
         "llm_tools.mcp_server",

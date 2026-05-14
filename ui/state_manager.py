@@ -1,5 +1,7 @@
 """Handles save/restore of UI state to/from persistent storage."""
 
+import os
+
 from PyQt5.QtCore import QDate
 
 try:
@@ -60,6 +62,9 @@ class StateManager:
             "ui_zoom_pct": viewer._app_zoom_pct,
             "theme_mode": viewer._theme_mode,
             "skip_photos": viewer._skip_photos,
+            "chatgpt_mcp_enabled": bool(getattr(viewer, "_chatgpt_mcp_enabled", False)),
+            "chatgpt_mcp_public_url": str(getattr(viewer, "_chatgpt_mcp_public_url", "") or ""),
+            "chatgpt_mcp_token": "" if os.environ.get("ALARM_MCP_TOKEN", "").strip() else str(getattr(viewer, "_chatgpt_mcp_token", "") or ""),
             # API keys are never persisted in plaintext; caller handles _openrouter_api_key separately
             "chat_model": viewer._chat_panel.model() if hasattr(viewer, "_chat_panel") else "",
             "chat_state": viewer._chat_panel.chat_state() if hasattr(viewer, "_chat_panel") else {},
@@ -84,6 +89,9 @@ class StateManager:
             viewer._theme_mode = s["theme_mode"]
             viewer._update_theme_button_label()
         viewer._skip_photos = bool(s.get("skip_photos", viewer._skip_photos))
+        viewer._chatgpt_mcp_enabled = False
+        viewer._chatgpt_mcp_public_url = str(s.get("chatgpt_mcp_public_url") or "")
+        viewer._chatgpt_mcp_token = str(s.get("chatgpt_mcp_token") or "")
         if hasattr(viewer, "_chat_panel"):
             viewer._chat_panel.refresh_settings()
         if "chat_model" in s and hasattr(viewer, "_chat_panel"):

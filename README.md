@@ -64,6 +64,22 @@ pip install -r requirements.txt
 | pyarrow     | Parquet serialization (state cache) |
 | pyinstaller | Build standalone Windows executable |
 
+## ChatGPT Connector
+
+Alarm Viewer manages the local MCP endpoint internally and exposes it to ChatGPT through Cloudflare Quick Tunnel only. ChatGPT receives a generated `https://*.trycloudflare.com/mcp` connector URL with a private token. Tunnel-marked requests can only reach `/mcp`; other local API routes return `403` through the tunnel.
+
+In the desktop app:
+
+1. Open `Settings`.
+2. Turn on `Enable ChatGPT MCP via Cloudflare Quick Tunnel`.
+3. Wait for the generated `https://*.trycloudflare.com/mcp` URL.
+4. Click `Copy URL and Open ChatGPT`.
+5. In ChatGPT, create a connector and paste the copied tokenized URL as the connector URL.
+
+The MCP tools read local Alarm Viewer data. Export and chart tools create files under Alarm Viewer's controlled local export paths.
+
+Packaged builds can bundle the official Cloudflare binary by placing it at `vendor/cloudflared/cloudflared` on macOS/Linux or `vendor/cloudflared/cloudflared.exe` on Windows before running PyInstaller. If the binary is not bundled, Alarm Viewer expects `cloudflared` on `PATH`.
+
 ## Web Stack (Migration Target)
 
 The desktop app remains fully supported. For the new web runtime/deployment artifacts, use:

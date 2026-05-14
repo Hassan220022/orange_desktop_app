@@ -114,6 +114,165 @@ class TestHealthE2E:
 
 
 # ---------------------------------------------------------------------------
+# ChatGPT MCP connector
+# ---------------------------------------------------------------------------
+
+
+class TestMcpConnectorE2E:
+    def test_tunnel_origin_header_blocks_non_mcp_routes(self, client):
+        r = client.get(
+            "/v1/alarms/query",
+            headers={"Host": "alarm-viewer-mcp.local"},
+        )
+
+        assert r.status_code == 403
+        assert r.json()["detail"] == "Tunnel access is limited to the MCP endpoint"
+
+    def test_tunnel_origin_header_allows_mcp_route(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post(
+            "/mcp?token=secret-token",
+            headers={"Host": "alarm-viewer-mcp.local"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {},
+            },
+        )
+
+        assert r.status_code == 200
+
+    def test_mcp_requires_connector_token(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post("/mcp", json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {},
+        })
+
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Unauthorized"
+
+    def test_mcp_rejects_wrong_connector_token(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post("/mcp?token=wrong", json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {},
+        })
+
+        assert r.status_code == 401
+        assert r.json()["detail"] == "Unauthorized"
+
+    def test_mcp_accepts_saved_connector_token(self, client, monkeypatch):
+        monkeypatch.delenv("ALARM_MCP_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "alarm_app.web.routers.mcp.state.load_state",
+            lambda: {"chatgpt_mcp_token": "saved-token"},
+        )
+
+        r = client.post("/mcp?token=saved-token", json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {},
+        })
+
+        assert r.status_code == 200
+
+    def test_mcp_returns_503_when_connector_token_missing(self, client, monkeypatch):
+        monkeypatch.delenv("ALARM_MCP_TOKEN", raising=False)
+        monkeypatch.setattr("alarm_app.web.routers.mcp.state.load_state", lambda: {})
+
+        r = client.post("/mcp", json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {},
+        })
+
+        assert r.status_code == 503
+        assert r.json()["detail"] == "ChatGPT MCP connector token is not configured"
+
+    def test_mcp_accepts_lowercase_bearer_token(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post(
+            "/mcp",
+            headers={"Authorization": "bearer secret-token"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {},
+            },
+        )
+
+        assert r.status_code == 200
+
+    def test_mcp_initialize_over_http(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post("/mcp?token=secret-token", json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {},
+        })
+
+        assert r.status_code == 200
+        payload = r.json()
+        assert payload["jsonrpc"] == "2.0"
+        assert payload["id"] == 1
+        assert payload["result"]["serverInfo"]["name"] == "alarm-viewer-local-data"
+        assert payload["result"]["capabilities"] == {"tools": {}}
+
+    def test_mcp_tools_list_includes_chatgpt_safety_annotations(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post("/mcp?token=secret-token", json={
+            "jsonrpc": "2.0",
+            "id": "tools",
+            "method": "tools/list",
+            "params": {},
+        })
+
+        assert r.status_code == 200
+        tools = {tool["name"]: tool for tool in r.json()["result"]["tools"]}
+        assert tools["query_alarms"]["annotations"] == {"readOnlyHint": True}
+        assert tools["export_report"]["annotations"] == {
+            "readOnlyHint": False,
+            "openWorldHint": False,
+            "destructiveHint": False,
+        }
+
+    def test_mcp_notification_returns_empty_202(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post("/mcp?token=secret-token", json={
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        })
+
+        assert r.status_code == 202
+        assert r.content == b""
+
+    def test_mcp_invalid_json_rpc_returns_400(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post("/mcp?token=secret-token", json={"method": "tools/list"})
+
+        assert r.status_code == 400
+        assert r.json()["detail"] == "MCP requests must use JSON-RPC 2.0"
+
+
+# ---------------------------------------------------------------------------
 # Alarm upsert + query
 # ---------------------------------------------------------------------------
 

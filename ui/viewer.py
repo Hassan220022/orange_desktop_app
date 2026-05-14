@@ -61,6 +61,7 @@ try:
         read_site_sheet,
     )
     from alarm_app.data.sync import LocalSyncWorker
+    from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorManager
     from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
     from alarm_app.ui.bridge import UIBridge
     from alarm_app.ui.dialogs import (
@@ -100,6 +101,7 @@ except ImportError:
         read_site_sheet,
     )
     from data.sync import LocalSyncWorker
+    from runtime.chatgpt_connector import ChatGPTConnectorManager
     from styles import STYLE_DARK, STYLE_LIGHT
     from ui.bridge import UIBridge
     from ui.dialogs import (
@@ -132,6 +134,12 @@ def _format_count_label(start: int, end: int, total: int) -> str:
         f"{start:,}" if start == end else f"{start:,}-{end:,}"
     )
     return f"Showing  {range_text}  of  {total:,} records"
+
+
+def _local_mcp_base_url() -> str:
+    host = os.environ.get("ALARM_BACKEND_HOST", "127.0.0.1")
+    port = os.environ.get("ALARM_BACKEND_PORT", "8787")
+    return f"http://{host}:{port}"
 
 
 class AlarmViewer(QMainWindow):
@@ -173,6 +181,10 @@ class AlarmViewer(QMainWindow):
         self._theme_mode = "auto"  # will be overridden by state restore
         self._skip_photos = False  # skip photo extraction toggle state
         self._openrouter_api_key = ""
+        self._chatgpt_mcp_enabled = False
+        self._chatgpt_mcp_public_url = ""
+        self._chatgpt_mcp_token = ""
+        self._chatgpt_connector_manager = ChatGPTConnectorManager(local_base_url=_local_mcp_base_url())
         self._build_ui()
         self._setup_zoom_shortcuts()
         self.setStyleSheet(self._resolve_theme_style())
@@ -913,6 +925,7 @@ class AlarmViewer(QMainWindow):
             return
 
         self._stop_sync_worker()
+        self._stop_chatgpt_connector_if_enabled()
         if not self._wait_for_background_threads():
             event.ignore()
             QMessageBox.information(
@@ -930,6 +943,17 @@ class AlarmViewer(QMainWindow):
             print(f"[AlarmViewer] save error: {e}")
 
         event.accept()
+
+    def _stop_chatgpt_connector_if_enabled(self):
+        if not getattr(self, "_chatgpt_mcp_enabled", False):
+            return
+        try:
+            status = self._chatgpt_connector_manager.disable()
+            self._chatgpt_mcp_enabled = False
+            self._chatgpt_mcp_public_url = status.public_url
+            self._chatgpt_mcp_token = ""
+        except Exception as exc:
+            _log.warning("Failed to stop ChatGPT MCP connector: %s", exc)
 
     def keyPressEvent(self, event):
         """Keyboard shortcuts: sidebar/copy + app zoom."""
@@ -1278,9 +1302,12 @@ class AlarmViewer(QMainWindow):
             "assistant_open": bool(getattr(self, "_assistant_open", True)),
             "skip_photos": self._skip_photos,
             "openrouter_api_key": self._openrouter_api_key,
+            "chatgpt_mcp_enabled": self._chatgpt_mcp_enabled,
+            "chatgpt_mcp_public_url": self._chatgpt_mcp_public_url,
+            "chatgpt_mcp_token": self._chatgpt_mcp_token,
             **self._sync_flags,
         }
-        dlg = AppSettingsDialog(settings, self)
+        dlg = AppSettingsDialog(settings, self, connector_manager=self._chatgpt_connector_manager)
         if dlg.exec_() != QDialog.Accepted:
             return
         self._apply_app_settings(dlg.get_settings())
@@ -1292,6 +1319,9 @@ class AlarmViewer(QMainWindow):
             self._set_theme(theme_mode)
         self._skip_photos = bool(settings.get("skip_photos", False))
         self._openrouter_api_key = str(settings.get("openrouter_api_key") or "").strip()
+        self._chatgpt_mcp_enabled = bool(settings.get("chatgpt_mcp_enabled", False))
+        self._chatgpt_mcp_public_url = str(settings.get("chatgpt_mcp_public_url") or "").strip()
+        self._chatgpt_mcp_token = str(settings.get("chatgpt_mcp_token") or "").strip()
         self._sync_flags.update({
             "sync_on": bool(settings.get("sync_on", False)),
             "cloud_read_on": bool(settings.get("cloud_read_on", False)),

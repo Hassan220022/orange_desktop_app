@@ -185,6 +185,18 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     },
 }
 
+_WRITE_TOOL_NAMES = {"export_report", "generate_graph", "get_site_dossier"}
+
+
+def _mcp_annotations(name: str) -> dict[str, Any]:
+    if name in _WRITE_TOOL_NAMES:
+        return {
+            "readOnlyHint": False,
+            "openWorldHint": False,
+            "destructiveHint": False,
+        }
+    return {"readOnlyHint": True}
+
 
 def tool_definitions_for_mcp() -> list[dict[str, Any]]:
     return [
@@ -192,6 +204,7 @@ def tool_definitions_for_mcp() -> list[dict[str, Any]]:
             "name": name,
             "description": schema["description"],
             "inputSchema": schema["inputSchema"],
+            "annotations": _mcp_annotations(name),
         }
         for name, schema in TOOL_SCHEMAS.items()
     ]
