@@ -54,7 +54,16 @@ jobs:
         run: |
           uv venv .venv --python python
           uv pip install --python .venv -r requirements.txt pytest
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Add virtual environment to PATH (Unix)
+        if: runner.os != 'Windows'
+        run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Add virtual environment to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "$PWD\.venv\Scripts" >> $env:GITHUB_PATH
 
       - name: Run tests (Linux — with offscreen display)
         if: runner.os == 'Linux'

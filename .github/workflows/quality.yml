@@ -58,6 +58,3 @@ jobs:
 
       - name: Test (unit + integration)
         run: xvfb-run python -m pytest tests/ -q --ignore=tests/test_e2e_gui_viewer.py --ignore=tests/test_e2e_gui_bdt.py -x
-
-      - name: Test (GUI E2E — offscreen)
-        run: xvfb-run python -m pytest tests/test_e2e_gui_viewer.py tests/test_e2e_gui_bdt.py -q -x
