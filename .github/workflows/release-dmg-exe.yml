@@ -4,13 +4,10 @@ permissions:
   contents: read
 
 on:
-  workflow_dispatch:
-    inputs:
-      bump_version:
-        description: "Commit the next patch VERSION after publishing"
-        required: false
-        default: false
-        type: boolean
+  push:
+    branches: [main]
+    paths:
+      - "VERSION"
 
 concurrency:
   group: release-main
@@ -230,52 +227,3 @@ jobs:
             release-assets/AlarmViewer-macOS.dmg
           fail_on_unmatched_files: true
           make_latest: true
-
-  bump-next-version:
-    runs-on: ubuntu-latest
-    needs: [prepare-version, publish-release]
-    if: ${{ github.ref == 'refs/heads/main' && inputs.bump_version }}
-    permissions:
-      contents: write
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          version: "0.11.14"
-
-      - name: Bump VERSION to next patch
-        id: bump
-        env:
-          CURRENT_VERSION: ${{ needs.prepare-version.outputs.version }}
-        run: |
-          NEXT_VERSION=$(python - <<'PY'
-          import os
-          import re
-
-          current = os.environ["CURRENT_VERSION"].strip()
-          match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", current)
-          if not match:
-              raise SystemExit(f"Invalid current version: {current}")
-          major, minor, patch = map(int, match.groups())
-          print(f"{major}.{minor}.{patch + 1}")
-          PY
-          )
-          printf '%s\n' "$NEXT_VERSION" > VERSION
-          echo "value=${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Commit next development version
-        env:
-          NEXT_VERSION: ${{ steps.bump.outputs.value }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add VERSION
-          git commit -m "chore: bump version to ${NEXT_VERSION} [skip ci]"
-          git push
