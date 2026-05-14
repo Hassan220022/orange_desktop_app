@@ -1,8 +1,8 @@
 """Temp alarm correlation against Power alarm windows."""
 
-from pathlib import Path
 from dataclasses import replace
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 from openpyxl import load_workbook

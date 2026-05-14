@@ -17,6 +17,12 @@ if errorlevel 1 (
     popd & exit /b 1
 )
 
+uv --version >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: uv not found on PATH. Install uv and try again.
+    popd & exit /b 1
+)
+
 where iscc >nul 2>&1
 if errorlevel 1 (
     echo ERROR: Inno Setup compiler (iscc) not found on PATH.
@@ -25,16 +31,16 @@ if errorlevel 1 (
 )
 
 echo [1/7] Creating virtual environment...
-python -m venv .venv_build
+uv venv .venv_build --python python
 call .venv_build\Scripts\activate.bat
 
 echo.
 echo [2/7] Installing dependencies...
-python -m pip install --upgrade pip -q
-python -m pip install -r requirements.txt -q
+uv pip install -r requirements.txt -q
 
 echo.
 echo [3/7] Cleaning previous bundle output...
+if /I not "%ALARM_SKIP_CLOUDFLARED_DOWNLOAD%"=="1" python scripts\install_cloudflared.py
 rmdir /s /q dist\AlarmViewer 2>nul
 rmdir /s /q build 2>nul
 

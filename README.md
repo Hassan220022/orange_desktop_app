@@ -78,7 +78,7 @@ In the desktop app:
 
 The MCP tools read local Alarm Viewer data. Export and chart tools create files under Alarm Viewer's controlled local export paths.
 
-Packaged builds can bundle the official Cloudflare binary by placing it at `vendor/cloudflared/cloudflared` on macOS/Linux or `vendor/cloudflared/cloudflared.exe` on Windows before running PyInstaller. If the binary is not bundled, Alarm Viewer expects `cloudflared` on `PATH`.
+Packaged builds bundle the pinned official Cloudflare binary through `scripts/install_cloudflared.py`. The script verifies SHA-256 before placing the binary at `vendor/cloudflared/cloudflared` on macOS/Linux or `vendor/cloudflared/cloudflared.exe` on Windows. If the binary is not bundled, Alarm Viewer expects `cloudflared` on `PATH`.
 
 ## Web Stack (Migration Target)
 

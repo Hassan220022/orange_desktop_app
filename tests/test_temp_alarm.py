@@ -8,8 +8,8 @@ from alarm_app.core.temp_alarm import (
     compute_temp_alarm_matches,
     compute_temp_alarm_matches_for_query,
     export_temp_alarm_workbook,
-    filter_temp_matches_to_selected_temps,
     filter_temp_matches_to_query,
+    filter_temp_matches_to_selected_temps,
 )
 from alarm_app.data.alarm_store import AlarmQuery
 from alarm_app.ui.viewer import AlarmViewer

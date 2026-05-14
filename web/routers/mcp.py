@@ -9,11 +9,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, Response
 
 try:
-    from alarm_app.llm_tools.mcp_server import AlarmViewerMcpServer
     from alarm_app.data import state
+    from alarm_app.llm_tools.mcp_server import AlarmViewerMcpServer
 except ImportError:
-    from llm_tools.mcp_server import AlarmViewerMcpServer  # type: ignore[no-redef]
     from data import state  # type: ignore[no-redef]
+    from llm_tools.mcp_server import AlarmViewerMcpServer  # type: ignore[no-redef]
 
 
 router = APIRouter(tags=["mcp"])

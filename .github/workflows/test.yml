@@ -1,5 +1,8 @@
 name: Tests
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: ["main"]
@@ -7,10 +10,15 @@ on:
     branches: ["**"]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
 
     strategy:
       fail-fast: false
@@ -27,6 +35,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.14"
+          enable-cache: true
+          cache-dependency-glob: |
+            requirements.txt
+            pyproject.toml
+
       - name: Install Linux system deps
         if: runner.os == 'Linux'
         run: |
@@ -35,19 +52,19 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest
+          uv venv .venv --python python
+          uv pip install --python .venv -r requirements.txt pytest
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run tests (Linux — with offscreen display)
         if: runner.os == 'Linux'
-        run: xvfb-run pytest tests/ -q -x
+        run: xvfb-run python -m pytest tests/ -q -x
 
       - name: Run tests (macOS — offscreen Qt)
         if: runner.os == 'macOS'
         env:
           QT_QPA_PLATFORM: offscreen
-        run: pytest tests/ -q -x
+        run: python -m pytest tests/ -q -x
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'
@@ -56,4 +73,4 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           # Skip GUI E2E tests on Windows (no real display, offscreen may be flaky)
-          pytest tests/ -q --ignore=tests/test_e2e_gui_viewer.py --ignore=tests/test_e2e_gui_bdt.py -x
+          python -m pytest tests/ -q --ignore=tests/test_e2e_gui_viewer.py --ignore=tests/test_e2e_gui_bdt.py -x

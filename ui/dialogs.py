@@ -2,9 +2,9 @@
 
 import os
 import secrets
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import webbrowser
 from datetime import datetime
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import pandas as pd
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
@@ -856,9 +856,9 @@ class AppSettingsDialog(QDialog):
     def _sync_chatgpt_parent(self, public_url: str):
         parent = self.parent()
         if parent is not None:
-            setattr(parent, "_chatgpt_mcp_enabled", self._chatgpt_enabled)
-            setattr(parent, "_chatgpt_mcp_public_url", public_url)
-            setattr(parent, "_chatgpt_mcp_token", "" if self._chatgpt_token_from_env else self._chatgpt_token)
+            parent._chatgpt_mcp_enabled = self._chatgpt_enabled
+            parent._chatgpt_mcp_public_url = public_url
+            parent._chatgpt_mcp_token = "" if self._chatgpt_token_from_env else self._chatgpt_token
 
     def _persist_chatgpt_connector(self, public_url: str):
         saved = state.load_state() or {}
@@ -871,9 +871,9 @@ class AppSettingsDialog(QDialog):
         state.save_state(saved)
         parent = self.parent()
         if parent is not None:
-            setattr(parent, "_chatgpt_mcp_enabled", self.chk_chatgpt_mcp_enabled.isChecked())
-            setattr(parent, "_chatgpt_mcp_public_url", public_url)
-            setattr(parent, "_chatgpt_mcp_token", "" if self._chatgpt_token_from_env else self._chatgpt_token)
+            parent._chatgpt_mcp_enabled = self.chk_chatgpt_mcp_enabled.isChecked()
+            parent._chatgpt_mcp_public_url = public_url
+            parent._chatgpt_mcp_token = "" if self._chatgpt_token_from_env else self._chatgpt_token
 
     def _copy_public_url_and_open_chatgpt(self):
         url = self.edit_chatgpt_url.text().strip()

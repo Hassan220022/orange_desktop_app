@@ -15,21 +15,28 @@ echo "============================================"
 echo
 
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "ERROR: python3 not found on PATH. Install Python 3.9+ and try again."
+  echo "ERROR: python3 not found on PATH. Install Python 3.11+ and try again."
+  exit 1
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "ERROR: uv not found on PATH. Install uv and try again."
   exit 1
 fi
 
 echo "[1/5] Creating virtual environment..."
-python3 -m venv .venv_build
+uv venv .venv_build --python python3
 source .venv_build/bin/activate
 
 echo
 echo "[2/5] Installing dependencies..."
-python -m pip install --upgrade pip -q
-python -m pip install -r requirements.txt -q
+uv pip install -r requirements.txt -q
 
 echo
 echo "[3/5] Building macOS app bundle with PyInstaller spec..."
+if [[ "${ALARM_SKIP_CLOUDFLARED_DOWNLOAD:-0}" != "1" ]]; then
+  python scripts/install_cloudflared.py
+fi
 chmod -R u+w dist/AlarmViewer dist/AlarmViewer.app build 2>/dev/null || true
 rm -rf dist/AlarmViewer dist/AlarmViewer.app build
 

@@ -2,7 +2,6 @@
 
 import pandas as pd
 
-
 TEMP_ALARM_NAMES = {
     "base station external alarm notification",
     "external al 9",

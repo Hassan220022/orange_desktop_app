@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import re
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading

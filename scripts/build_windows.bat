@@ -18,21 +18,27 @@ echo.
 :: Check Python
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: Python not found on PATH. Install Python 3.9+ and try again.
+    echo ERROR: Python not found on PATH. Install Python 3.11+ and try again.
+    popd & pause & exit /b 1
+)
+
+uv --version >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: uv not found on PATH. Install uv and try again.
     popd & pause & exit /b 1
 )
 
 echo [1/5] Creating virtual environment...
-python -m venv .venv_build
+uv venv .venv_build --python python
 call .venv_build\Scripts\activate.bat
 
 echo.
 echo [2/5] Installing dependencies...
-pip install --upgrade pip -q
-pip install -r alarm_app\requirements.txt -q
+uv pip install -r alarm_app\requirements.txt -q
 
 echo.
 echo [3/5] Building installed bundle with PyInstaller spec...
+if /I not "%ALARM_SKIP_CLOUDFLARED_DOWNLOAD%"=="1" python alarm_app\scripts\install_cloudflared.py
 rmdir /s /q alarm_app\dist\AlarmViewer 2>nul
 rmdir /s /q alarm_app\build 2>nul
 pushd alarm_app

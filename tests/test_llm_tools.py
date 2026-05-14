@@ -16,7 +16,7 @@ from alarm_app.llm_tools.openrouter_models import (
     is_free_model_id,
     normalize_free_model_id,
 )
-from alarm_app.llm_tools.service import LocalDataService, MAX_UPLOAD_BYTES, _jsonable, _limit, _safe_export_path
+from alarm_app.llm_tools.service import MAX_UPLOAD_BYTES, LocalDataService, _jsonable, _limit, _safe_export_path
 from alarm_app.llm_tools.tools import (
     dispatch_tool,
     tool_definitions_for_mcp,
@@ -30,7 +30,6 @@ from alarm_app.ui.panels.chat_panel import (
     _safe_upload_display_name,
     _sanitize_uploaded_files,
 )
-
 
 TINY_PNG_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"

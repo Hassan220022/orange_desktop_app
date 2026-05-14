@@ -4,8 +4,8 @@ import logging
 import os
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .config import CORS_ORIGINS
 from .schemas import HealthResponse

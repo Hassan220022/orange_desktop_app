@@ -10,9 +10,9 @@ import pytest
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
 
+from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorStatus
 from alarm_app.ui.dialogs import AppSettingsDialog
 from alarm_app.ui.state_manager import StateManager
-from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorStatus
 
 # ── global QApplication singleton ─────────────────────────────────
 _app: QApplication | None = None

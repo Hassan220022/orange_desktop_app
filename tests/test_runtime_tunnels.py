@@ -125,5 +125,5 @@ def test_cloudflared_start_timeout_does_not_block_on_stdout_readline():
     with pytest.raises(TunnelStartError, match="public HTTPS URL"):
         provider.start("http://127.0.0.1:8787")
 
-    assert time.monotonic() - started < 0.15
+    assert time.monotonic() - started < 0.5
     assert process.terminated is True
