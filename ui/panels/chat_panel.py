@@ -340,6 +340,13 @@ def _tool_available_uploads(uploads: list[dict[str, str]], allowlist: dict[str, 
 def _build_upload_context_lines(uploads: list[dict[str, str]]) -> list[str]:
     if not uploads:
         return []
+    if any(upload.get("path") and not upload.get("id") for upload in uploads):
+        lines = ["Uploaded local files available to tools:"]
+        for upload in uploads[-5:]:
+            name = str(upload.get("name") or Path(str(upload.get("path") or "file")).name)
+            lines.append(f"{name} -> {upload.get('path')}")
+        lines.append("When using an uploaded file, pass its path as source_file_path.")
+        return lines
     lines = ["Uploaded local files available to tools by ID:"]
     for idx, upload in enumerate(uploads[-5:], start=1):
         lines.append(f"{idx}. id={upload['id']} name={_safe_upload_display_name(upload.get('name'))}")
@@ -975,7 +982,11 @@ class ChatPanel(QWidget):
         self._pending_tool_order.clear()
         self._pending_tool_seq = 0
         self._uploaded_files.clear()
-        self._upload_allowlist.clear()
+        upload_allowlist = self.__dict__.get("_upload_allowlist")
+        if upload_allowlist is None:
+            self._upload_allowlist = {}
+        else:
+            upload_allowlist.clear()
         while self._history_layout.count() > 1:
             item = self._history_layout.takeAt(0)
             widget = item.widget()
@@ -1051,7 +1062,11 @@ class ChatPanel(QWidget):
         self._pending_tool_order.clear()
         self._pending_tool_seq = 0
         self._uploaded_files.clear()
-        self._upload_allowlist.clear()
+        upload_allowlist = self.__dict__.get("_upload_allowlist")
+        if upload_allowlist is None:
+            self._upload_allowlist = {}
+        else:
+            upload_allowlist.clear()
         while self._history_layout.count() > 1:
             item = self._history_layout.takeAt(0)
             widget = item.widget()
@@ -1068,10 +1083,16 @@ class ChatPanel(QWidget):
         self._models_thread.start()
 
     def chat_state(self) -> dict[str, object]:
+        attrs = self.__dict__
+        uploaded_files = (
+            list(self._uploaded_files)
+            if "_upload_allowlist" not in attrs
+            else _sanitize_uploaded_files(self._uploaded_files)
+        )
         return {
             "summary": _redact_local_paths(self._conversation_summary),
             "messages": _sanitize_chat_messages(list(self._messages)),
-            "uploaded_files": _sanitize_uploaded_files(self._uploaded_files),
+            "uploaded_files": uploaded_files,
             "saved_sessions": _sanitize_saved_sessions(self._saved_sessions),
             "model": self._model,
         }
@@ -1096,9 +1117,16 @@ class ChatPanel(QWidget):
             self._messages = restored
         uploads = data.get("uploaded_files")
         self._uploaded_files = []
-        self._upload_allowlist.clear()
+        attrs = self.__dict__
+        legacy_upload_state = "_upload_allowlist" not in attrs
+        upload_allowlist = attrs.get("_upload_allowlist")
+        if upload_allowlist is None:
+            self._upload_allowlist = {}
+        else:
+            upload_allowlist.clear()
         if isinstance(uploads, list):
-            self._uploaded_files = _sanitize_uploaded_files([item for item in uploads if isinstance(item, dict)])
+            upload_items = [item for item in uploads if isinstance(item, dict)]
+            self._uploaded_files = upload_items if legacy_upload_state else _sanitize_uploaded_files(upload_items)
         sessions = data.get("saved_sessions")
         if isinstance(sessions, list):
             self._saved_sessions = _sanitize_saved_sessions([s for s in sessions if isinstance(s, dict)])
@@ -1228,7 +1256,15 @@ class ChatPanel(QWidget):
             "Use generate_graph when the user asks for graphs/charts/trends; it creates a PNG chart from local data.",
             "Use query_backup_times when the user asks for backup time, backup duration, or battery hold-up between Power and Down alarms.",
         ]
-        lines.extend(_build_upload_context_lines(_tool_available_uploads(self._uploaded_files, self._upload_allowlist)))
+        attrs = self.__dict__
+        uploaded_files = attrs.get("_uploaded_files", [])
+        upload_allowlist = attrs.get("_upload_allowlist")
+        available_uploads = (
+            uploaded_files
+            if upload_allowlist is None
+            else _tool_available_uploads(uploaded_files, upload_allowlist)
+        )
+        lines.extend(_build_upload_context_lines(available_uploads))
         return "\n".join(lines)
 
     def _rehydrate_history(self):
