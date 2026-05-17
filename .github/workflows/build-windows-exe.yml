@@ -32,11 +32,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -47,36 +42,37 @@ jobs:
             pyproject.toml
 
       - name: Install build dependencies
-        shell: pwsh
+        shell: powershell
         run: |
-          uv venv .venv --python python
+          uv python install 3.11
+          uv venv .venv --python 3.11
           uv pip install --python .venv -r requirements.txt pytest
           "$PWD\.venv\Scripts" >> $env:GITHUB_PATH
 
       - name: Run tests before packaging
-        shell: pwsh
+        shell: powershell
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           python -m pytest tests/ -q --ignore=tests/test_e2e_gui_viewer.py --ignore=tests/test_e2e_gui_bdt.py -x
 
       - name: Bundle cloudflared
-        shell: pwsh
+        shell: powershell
         run: python scripts/install_cloudflared.py
 
       - name: Build app bundle
-        shell: pwsh
+        shell: powershell
         run: |
           pyinstaller --noconfirm AlarmViewer.spec
 
       - name: Smoke test bundled app
-        shell: pwsh
+        shell: powershell
         run: |
           dist\AlarmViewer\AlarmViewer.exe --version
           dist\AlarmViewer\AlarmViewer.exe --smoke-test
 
       - name: Zip internal bundle
-        shell: pwsh
+        shell: powershell
         run: Compress-Archive -Path dist\AlarmViewer\* -DestinationPath dist\AlarmViewer-windows-bundle.zip -Force
 
       - name: Upload internal bundle artifact

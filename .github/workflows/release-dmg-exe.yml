@@ -15,16 +15,12 @@ concurrency:
 
 jobs:
   prepare-version:
-    runs-on: orange-linux
+    runs-on: windows-k3s
     timeout-minutes: 10
     outputs:
       version: ${{ steps.read.outputs.value }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -33,10 +29,12 @@ jobs:
 
       - name: Read current app version
         id: read
+        shell: powershell
         run: |
-          VERSION=$(python scripts/print_version.py)
-          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Building release for version ${VERSION}"
+          uv python install 3.11
+          $version = uv run --python 3.11 python scripts/print_version.py
+          "value=$version" >> $env:GITHUB_OUTPUT
+          "Building release for version $version"
 
   build-windows-installer:
     runs-on: windows-k3s
@@ -46,13 +44,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set release version
-        shell: pwsh
+        shell: powershell
         run: |
           Set-Content -Path VERSION -Value "${{ needs.prepare-version.outputs.version }}"
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -64,40 +58,41 @@ jobs:
             pyproject.toml
 
       - name: Install dependencies
-        shell: pwsh
+        shell: powershell
         run: |
-          uv venv .venv --python python
+          uv python install 3.11
+          uv venv .venv --python 3.11
           uv pip install --python .venv -r requirements.txt pytest
           "$PWD\.venv\Scripts" >> $env:GITHUB_PATH
 
       - name: Run tests before packaging
-        shell: pwsh
+        shell: powershell
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
           python -m pytest tests/ -q --ignore=tests/test_e2e_gui_viewer.py --ignore=tests/test_e2e_gui_bdt.py -x
 
       - name: Bundle cloudflared
-        shell: pwsh
+        shell: powershell
         run: python scripts/install_cloudflared.py
 
       - name: Build Windows app bundle
-        shell: pwsh
+        shell: powershell
         run: |
           pyinstaller --noconfirm AlarmViewer.spec
 
       - name: Smoke test bundled app
-        shell: pwsh
+        shell: powershell
         run: |
           dist\AlarmViewer\AlarmViewer.exe --version
           dist\AlarmViewer\AlarmViewer.exe --smoke-test
 
       - name: Install Inno Setup
-        shell: pwsh
+        shell: powershell
         run: choco install innosetup -y --no-progress
 
       - name: Build Windows installer
-        shell: pwsh
+        shell: powershell
         run: iscc /DMyAppVersion=${{ needs.prepare-version.outputs.version }} installer/windows/AlarmViewer.iss
 
       - uses: actions/upload-artifact@v4
@@ -107,7 +102,7 @@ jobs:
           if-no-files-found: error
 
   publish-release:
-    runs-on: orange-linux
+    runs-on: windows-k3s
     needs: [prepare-version, build-windows-installer]
     permissions:
       contents: write
@@ -119,18 +114,17 @@ jobs:
 
       - name: Compute release metadata
         id: meta
+        shell: powershell
         env:
           VERSION: ${{ needs.prepare-version.outputs.version }}
           SHA: ${{ github.sha }}
         run: |
-          SHORT_SHA="${SHA:0:7}"
-          TAG_NAME="v${VERSION}"
-          RELEASE_NAME="Alarm Viewer v${VERSION} (${SHORT_SHA})"
-          {
-            echo "tag=${TAG_NAME}"
-            echo "name=${RELEASE_NAME}"
-            echo "short_sha=${SHORT_SHA}"
-          } >> "$GITHUB_OUTPUT"
+          $shortSha = $env:SHA.Substring(0, 7)
+          $tagName = "v$env:VERSION"
+          $releaseName = "Alarm Viewer v$env:VERSION ($shortSha)"
+          "tag=$tagName" >> $env:GITHUB_OUTPUT
+          "name=$releaseName" >> $env:GITHUB_OUTPUT
+          "short_sha=$shortSha" >> $env:GITHUB_OUTPUT
 
       - name: Download Windows installer artifact
         uses: actions/download-artifact@v4
@@ -139,24 +133,25 @@ jobs:
           path: release-assets
 
       - name: Build release notes
+        shell: powershell
         env:
           TAG_NAME: ${{ steps.meta.outputs.tag }}
           SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
         run: |
-          set -euo pipefail
-          {
-            echo "## Alarm Viewer ${TAG_NAME}"
-            echo
-            echo "Commit: \`${SHORT_SHA}\`"
-            echo
-            echo "### Release assets"
-            echo "- AlarmViewer-Setup.exe (Windows installer)"
-            echo
-            echo "### Included commits"
-            echo
-            git log --no-merges --pretty='- %s' -n 30
-          } > RELEASE_NOTES.md
-          cat RELEASE_NOTES.md
+          $commits = git log --no-merges --pretty='- %s' -n 30
+          @(
+            "## Alarm Viewer $env:TAG_NAME"
+            ""
+            "Commit: ``$env:SHORT_SHA``"
+            ""
+            "### Release assets"
+            "- AlarmViewer-Setup.exe (Windows installer)"
+            ""
+            "### Included commits"
+            ""
+            $commits
+          ) | Set-Content -Path RELEASE_NOTES.md
+          Get-Content RELEASE_NOTES.md
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
