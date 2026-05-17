@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   build-installer:
-    runs-on: windows-latest
+    runs-on: windows-k3s
     timeout-minutes: 75
 
     steps:

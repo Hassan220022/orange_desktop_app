@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   build-installer:
-    runs-on: macos-14
+    runs-on: macos-local
     timeout-minutes: 75
 
     steps:
