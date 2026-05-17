@@ -1,7 +1,12 @@
 [tool.ruff]
 target-version = "py39"
 line-length = 140
-exclude = ["bdt/vendor_synthid/**"]
+exclude = [
+    ".ci-tools/**",
+    ".venv/**",
+    "bdt/vendor_synthid/**",
+    "logs/**",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4"]
