@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [orange-linux, macos-local, windows-k3s]
+        os: [orange-linux, windows-k3s]
         python-version: ["3.11"]
 
     steps:
@@ -68,12 +68,6 @@ jobs:
       - name: Run tests (Linux — with offscreen display)
         if: runner.os == 'Linux'
         run: xvfb-run python -m pytest tests/ -q -x
-
-      - name: Run tests (macOS — offscreen Qt)
-        if: runner.os == 'macOS'
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python -m pytest tests/ -q -x
 
       - name: Run tests (Windows)
         if: runner.os == 'Windows'

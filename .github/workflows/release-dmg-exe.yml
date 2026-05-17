@@ -106,60 +106,9 @@ jobs:
           path: dist/AlarmViewer-Setup.exe
           if-no-files-found: error
 
-  build-macos-installer:
-    runs-on: macos-local
-    needs: prepare-version
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set release version
-        run: printf '%s\n' '${{ needs.prepare-version.outputs.version }}' > VERSION
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          version: "0.11.14"
-          enable-cache: true
-          cache-dependency-glob: |
-            requirements.txt
-            pyproject.toml
-
-      - name: Install dependencies
-        run: |
-          uv venv .venv --python python
-          uv pip install --python .venv -r requirements.txt pytest
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
-
-      - name: Run tests before packaging
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: python -m pytest tests/ -q -x
-
-      - name: Make scripts executable
-        run: chmod +x scripts/build_macos.sh scripts/build_macos_installer.sh
-
-      - name: Build app bundle and DMG
-        run: ./scripts/build_macos_installer.sh
-
-      - name: Smoke test app bundle
-        run: |
-          dist/AlarmViewer.app/Contents/MacOS/AlarmViewer --version
-          dist/AlarmViewer.app/Contents/MacOS/AlarmViewer --smoke-test
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-macos-installer
-          path: dist/AlarmViewer-macOS.dmg
-          if-no-files-found: error
-
   publish-release:
     runs-on: orange-linux
-    needs: [prepare-version, build-windows-installer, build-macos-installer]
+    needs: [prepare-version, build-windows-installer]
     permissions:
       contents: write
     timeout-minutes: 15
@@ -189,12 +138,6 @@ jobs:
           name: release-windows-installer
           path: release-assets
 
-      - name: Download macOS installer artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: release-macos-installer
-          path: release-assets
-
       - name: Build release notes
         env:
           TAG_NAME: ${{ steps.meta.outputs.tag }}
@@ -208,7 +151,6 @@ jobs:
             echo
             echo "### Release assets"
             echo "- AlarmViewer-Setup.exe (Windows installer)"
-            echo "- AlarmViewer-macOS.dmg (macOS installer)"
             echo
             echo "### Included commits"
             echo
@@ -224,6 +166,5 @@ jobs:
           body_path: RELEASE_NOTES.md
           files: |
             release-assets/AlarmViewer-Setup.exe
-            release-assets/AlarmViewer-macOS.dmg
           fail_on_unmatched_files: true
           make_latest: true
