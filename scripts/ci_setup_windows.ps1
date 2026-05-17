@@ -34,25 +34,23 @@ function Download-File {
 }
 
 if (-not (Test-Path $pythonExe)) {
-    $pythonInstaller = Join-Path $env:RUNNER_TEMP "python-3.11.9-amd64.exe"
+    $pythonPackage = Join-Path $env:RUNNER_TEMP "python-3.11.9-nuget.zip"
+    $pythonExtract = Join-Path $env:RUNNER_TEMP "python-3.11.9-nuget"
+    Remove-Item -Recurse -Force $pythonExtract -ErrorAction SilentlyContinue
+
     Download-File `
-        -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" `
-        -OutFile $pythonInstaller
+        -Uri "https://www.nuget.org/api/v2/package/python/3.11.9" `
+        -OutFile $pythonPackage
 
-    $args = @(
-        "/quiet",
-        "InstallAllUsers=0",
-        "TargetDir=$pythonDir",
-        "Include_launcher=0",
-        "PrependPath=0",
-        "Include_test=0",
-        "Shortcuts=0"
-    )
-
-    $process = Start-Process -FilePath $pythonInstaller -ArgumentList $args -Wait -PassThru
-    if ($process.ExitCode -ne 0) {
-        throw "Python installer failed with exit code $($process.ExitCode)"
+    Expand-Archive -LiteralPath $pythonPackage -DestinationPath $pythonExtract -Force
+    $downloadedPython = Join-Path $pythonExtract "tools\python.exe"
+    if (-not (Test-Path $downloadedPython)) {
+        throw "python.exe was not found in downloaded Python package"
     }
+
+    Remove-Item -Recurse -Force $pythonDir -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $pythonDir | Out-Null
+    Copy-Item -Path (Join-Path $pythonExtract "tools\*") -Destination $pythonDir -Recurse -Force
 }
 
 if (-not (Test-Path $uvExe)) {
