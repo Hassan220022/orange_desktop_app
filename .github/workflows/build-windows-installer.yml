@@ -19,27 +19,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
-        with:
-          version: "0.11.14"
-          enable-cache: true
-          cache-dependency-glob: |
-            requirements.txt
-            pyproject.toml
+      - name: Setup Python and uv
+        shell: powershell
+        run: .\scripts\ci_setup_windows.ps1
 
       - name: Extract app version
         id: ver
         shell: powershell
         run: |
-          uv python install 3.11
-          $version = uv run --python 3.11 python scripts/print_version.py
+          $version = python scripts/print_version.py
           "value=$version" >> $env:GITHUB_OUTPUT
 
       - name: Install build dependencies
         shell: powershell
         run: |
-          uv venv .venv --python 3.11
+          uv venv .venv --python python
           uv pip install --python .venv -r requirements.txt pytest
           "$PWD\.venv\Scripts" >> $env:GITHUB_PATH
 
