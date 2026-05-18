@@ -144,6 +144,39 @@ class TestMcpConnectorE2E:
 
         assert r.status_code == 200
 
+    def test_tunnel_origin_header_allows_mcp_trailing_slash_without_redirect(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post(
+            "/mcp/?token=secret-token",
+            headers={"Host": "alarm-viewer-mcp.local"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {},
+            },
+            follow_redirects=False,
+        )
+
+        assert r.status_code == 200
+
+    def test_mcp_get_probe_returns_json_status_instead_of_method_error(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.get("/mcp?token=secret-token", follow_redirects=False)
+
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("application/json")
+        assert r.json()["transport"] == "streamable-http"
+
+    def test_mcp_head_probe_returns_success_without_redirect(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.head("/mcp?token=secret-token", follow_redirects=False)
+
+        assert r.status_code == 200
+
     def test_mcp_requires_connector_token(self, client, monkeypatch):
         monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
 

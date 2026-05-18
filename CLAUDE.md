@@ -120,42 +120,46 @@ alarm_app/
 | Background threads      | `ui/threads.py`                     |
 | Popup dialogs           | `ui/dialogs.py`                     |
 
-<!-- code-review-graph MCP tools -->
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence (CLI Only)
 
-## MCP Tools: code-review-graph
+This project is indexed by GitNexus as **orange_desktop_app** (8191 symbols, 14693 relationships, 298 execution flows).
 
-**IMPORTANT: This project has a knowledge graph. ALWAYS use the
-code-review-graph MCP tools BEFORE using Grep/Glob/Read to explore
-the codebase.** The graph is faster, cheaper (fewer tokens), and gives
-you structural context (callers, dependents, test coverage) that file
-scanning cannot.
+**IMPORTANT: ALWAYS use the `gitnexus` CLI via shell commands. NEVER use GitNexus MCP or code-review-graph MCP tools in this repository.** The local CLI is installed at `/opt/homebrew/bin/gitnexus`, and all GitNexus operations must go through CLI commands.
 
-### When to use graph tools FIRST
+Because multiple repositories are indexed globally, every graph command for this repo must include `-r orange_desktop_app`.
 
-- **Exploring code**: `semantic_search_nodes` or `query_graph` instead of Grep
-- **Understanding impact**: `get_impact_radius` instead of manually tracing imports
-- **Code review**: `detect_changes` + `get_review_context` instead of reading entire files
-- **Finding relationships**: `query_graph` with callers_of/callees_of/imports_of/tests_for
-- **Architecture questions**: `get_architecture_overview` + `list_communities`
+> If the index is stale, run `gitnexus analyze` in terminal first, then rerun the GitNexus command.
 
-Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
+## Always Do
 
-### Key Tools
+- **MUST run `gitnexus status` at the start of code work** to confirm the index is available and current.
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus impact -r orange_desktop_app -d upstream <symbol>` and report the blast radius to the user.
+- **MUST run `gitnexus detect-changes -r orange_desktop_app --scope all` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, run `gitnexus query -r orange_desktop_app "<concept>"` before Grep/Glob/Read.
+- When you need full context on a specific symbol, run `gitnexus context -r orange_desktop_app <symbolName>`.
 
-| Tool                        | Use when                                               |
-| --------------------------- | ------------------------------------------------------ |
-| `detect_changes`            | Reviewing code changes — gives risk-scored analysis    |
-| `get_review_context`        | Need source snippets for review — token-efficient      |
-| `get_impact_radius`         | Understanding blast radius of a change                 |
-| `get_affected_flows`        | Finding which execution paths are impacted             |
-| `query_graph`               | Tracing callers, callees, imports, tests, dependencies |
-| `semantic_search_nodes`     | Finding functions/classes by name or keyword           |
-| `get_architecture_overview` | Understanding high-level codebase structure            |
-| `refactor_tool`             | Planning renames, finding dead code                    |
+## Never Do
 
-### Workflow
+- NEVER use GitNexus MCP tools, code-review-graph MCP tools, or `gitnexus://...` MCP resources for this repo.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER edit a function, class, or method without first running `gitnexus impact` on it.
+- NEVER commit changes without running `gitnexus detect-changes` to check affected scope.
 
-1. The graph auto-updates on file changes (via hooks).
-2. Use `detect_changes` for code review.
-3. Use `get_affected_flows` to understand impact.
-4. Use `query_graph` pattern="tests_for" to check coverage.
+## CLI Commands
+
+| Command | Use when |
+|---------|---------|
+| `gitnexus analyze` | Index or re-index the repository |
+| `gitnexus status` | Check if index is up-to-date |
+| `gitnexus list` | List all indexed repositories |
+| `gitnexus query -r orange_desktop_app "<concept>"` | Find execution flows by concept |
+| `gitnexus context -r orange_desktop_app <symbol>` | 360-degree view of a symbol |
+| `gitnexus impact -r orange_desktop_app -d upstream\|downstream <symbol>` | Blast radius analysis |
+| `gitnexus detect-changes -r orange_desktop_app --scope all` | Analyze uncommitted git changes |
+| `gitnexus wiki` | Generate repository wiki |
+| `gitnexus clean` | Delete index for current repo |
+| `gitnexus doctor` | Check runtime capabilities |
+
+<!-- gitnexus:end -->

@@ -37,6 +37,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+MAX_ANALYSIS_TABLE_ROWS = 5000
+
 try:
     from alarm_app.bdt.rule_docs import full_rules_html, iter_rule_docs
     from alarm_app.constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS, TEMP_HEADERS, TEMP_WIDTHS
@@ -1641,9 +1643,16 @@ class BackupTimeDialog(QDialog):
         note.setWordWrap(True)
         lay.addWidget(note)
 
+        table_df = df.head(MAX_ANALYSIS_TABLE_ROWS)
+        if len(df) > len(table_df):
+            preview = QLabel(
+                f"Showing first {len(table_df):,} of {len(df):,} rows. Export includes all rows.")
+            preview.setStyleSheet("color:#fab387; font-size:11px;")
+            lay.addWidget(preview)
+
         # ── table ─────��──────────────────────────────────────────
-        cols = [c for c in BT_HEADERS if c in df.columns]
-        self._tbl = QTableWidget(len(df), len(cols))
+        cols = [c for c in BT_HEADERS if c in table_df.columns]
+        self._tbl = QTableWidget(len(table_df), len(cols))
         self._tbl.setHorizontalHeaderLabels([BT_HEADERS[c] for c in cols])
         self._tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -1656,7 +1665,7 @@ class BackupTimeDialog(QDialog):
             hdr.resizeSection(i, BT_WIDTHS.get(c, 120))
         hdr.setStretchLastSection(True)
 
-        for r, row in df.iterrows():
+        for r, row in table_df.iterrows():
             for ci, c in enumerate(cols):
                 val = row.get(c, "")
                 item = QTableWidgetItem(
@@ -1693,7 +1702,7 @@ class BackupTimeDialog(QDialog):
 class TempAlarmDialog(QDialog):
     def __init__(self, df: pd.DataFrame, source_df: pd.DataFrame, margin_minutes: int = 60, result_filter_query=None, selected_temp_df: pd.DataFrame | None = None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Temp Alarm Analysis")
+        self.setWindowTitle("Uncovered Temp Alarms")
         self.resize(1180, 700)
         if parent:
             self.setStyleSheet(parent.styleSheet())
@@ -1739,8 +1748,8 @@ class TempAlarmDialog(QDialog):
         lay.addWidget(top)
 
         note = QLabel(
-            "Temp alarms are matched when they occur after the Power alarm starts, "
-            "inside X (Power occurrence to Power clearance), or inside Y after clearance. "
+            "Temp alarms are shown only when no same-site Power alarm covers them. "
+            "Power coverage runs from occurrence through clearance plus Y. "
             "Y defaults to 60 minutes and cannot exceed 60 minutes.")
         note.setStyleSheet("color:#6c7086; font-size:11px;")
         note.setWordWrap(True)
@@ -1769,12 +1778,11 @@ class TempAlarmDialog(QDialog):
         df = self._df
         n = len(df)
         site_count = df["site_id"].nunique() if n and "site_id" in df.columns else 0
-        y_count = int((df["match_window"] == "Y margin").sum()) if n and "match_window" in df.columns else 0
         duration = pd.to_timedelta(df["temp_clear_duration"], errors="coerce") if n and "temp_clear_duration" in df.columns else pd.Series(dtype="timedelta64[ns]")
         for label, val, color in [
-            ("Matched temp alarms", f"{n:,}", "#f38ba8"),
+            ("Uncovered temp alarms", f"{n:,}", "#f38ba8"),
             ("Unique sites", f"{site_count:,}", "#a6e3a1"),
-            ("Y-margin matches", f"{y_count:,}", "#fab387"),
+            ("Y margin", f"{self._margin_minutes} min", "#fab387"),
             ("Total clear duration", _fmt_td(duration.sum()) if not duration.empty else "-", "#94e2d5"),
         ]:
             box = QWidget()
@@ -1793,12 +1801,19 @@ class TempAlarmDialog(QDialog):
         self._summary_strip.addStretch()
 
     def _render_table(self):
-        if self._tbl is not None:
-            self._table_host.removeWidget(self._tbl)
-            self._tbl.deleteLater()
+        while self._table_host.count():
+            item = self._table_host.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         df = self._df
-        cols = [c for c in TEMP_HEADERS if c in df.columns]
-        self._tbl = QTableWidget(len(df), len(cols))
+        table_df = df.head(MAX_ANALYSIS_TABLE_ROWS)
+        if len(df) > len(table_df):
+            note = QLabel(
+                f"Showing first {len(table_df):,} of {len(df):,} rows. Export includes all rows.")
+            note.setStyleSheet("color:#fab387; font-size:11px;")
+            self._table_host.addWidget(note)
+        cols = [c for c in TEMP_HEADERS if c in table_df.columns]
+        self._tbl = QTableWidget(len(table_df), len(cols))
         self._tbl.setHorizontalHeaderLabels([TEMP_HEADERS[c] for c in cols])
         self._tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -1810,15 +1825,13 @@ class TempAlarmDialog(QDialog):
         for i, c in enumerate(cols):
             hdr.resizeSection(i, TEMP_WIDTHS.get(c, 120))
         hdr.setStretchLastSection(True)
-        for r, row in df.iterrows():
+        for r, row in table_df.iterrows():
             for ci, c in enumerate(cols):
                 val = row.get(c, "")
                 item = QTableWidgetItem("" if pd.isna(val) else str(val))
                 item.setTextAlignment(Qt.AlignCenter if c.endswith("duration") or c.endswith("margin") else Qt.AlignLeft | Qt.AlignVCenter)
                 if c == "site_id":
                     item.setForeground(QColor("#cba6f7"))
-                elif c == "match_window" and val == "Y margin":
-                    item.setForeground(QColor("#fab387"))
                 elif c == "match_window":
                     item.setForeground(QColor("#a6e3a1"))
                 self._tbl.setItem(r, ci, item)
@@ -1828,8 +1841,8 @@ class TempAlarmDialog(QDialog):
     def _export(self):
         fp, _ = QFileDialog.getSaveFileName(
             self,
-            "Export Temp Alarm Analysis",
-            f"temp_alarm_analysis_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+            "Export Uncovered Temp Alarms",
+            f"uncovered_temp_alarms_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
             "Excel Files (*.xlsx)",
         )
         if not fp:

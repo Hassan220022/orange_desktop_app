@@ -2363,7 +2363,7 @@ class AlarmViewer(QMainWindow):
                     "No records match the current filters.")
                 return
             self._ui.btn_temp.setEnabled(False)
-            self._sbar.showMessage("Computing temp alarms …")
+            self._sbar.showMessage("Finding uncovered temp alarms …")
             self._temp_thread = TempAlarmThread(
                 alarm_query=query,
                 margin_minutes=60,
@@ -2405,7 +2405,7 @@ class AlarmViewer(QMainWindow):
         if temp_sites and "site_id" in filtered.columns:
             filtered = filtered[filtered["site_id"].astype(str).str.strip().isin(temp_sites)]
         self._ui.btn_temp.setEnabled(False)
-        self._sbar.showMessage("Computing temp alarms …")
+        self._sbar.showMessage("Finding uncovered temp alarms …")
         self._temp_thread = TempAlarmThread(
             filtered.copy(),
             margin_minutes=60,
@@ -2425,7 +2425,7 @@ class AlarmViewer(QMainWindow):
             self._sbar.showMessage("Temp alarm: " + err)
             return
         self._sbar.showMessage(
-            f"Temp alarm analysis: {len(result):,} matches found")
+            f"Temp alarm analysis: {len(result):,} uncovered alarms found")
         result_filter_query = getattr(self._temp_thread, "_result_filter_query", None)
         dlg = TempAlarmDialog(
             result,

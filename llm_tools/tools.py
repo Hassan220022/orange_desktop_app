@@ -17,14 +17,42 @@ def _schema(properties: dict[str, Any], *, required: list[str] | None = None) ->
     }
 
 
+def _output_schema(properties: dict[str, Any] | None = None, *, required: list[str] | None = None) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": properties or {},
+        "required": required or [],
+        "additionalProperties": True,
+    }
+
+
+_OBJECT_OUTPUT = {"type": "object", "additionalProperties": True}
+_OBJECT_ROWS = {"type": "array", "items": _OBJECT_OUTPUT}
+_STRING_LIST = {"type": "array", "items": {"type": "string"}}
+_NUMBER_LIST = {"type": "array", "items": {"type": "number"}}
+
+
 TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     "list_data_sources": {
         "description": "List local Alarm Viewer storage sources, table row counts, DuckDB alarm stores, blob storage, and export path.",
         "inputSchema": _schema({}),
+        "outputSchema": _output_schema({
+            "sqlite": _OBJECT_OUTPUT,
+            "duckdb": _OBJECT_ROWS,
+            "blob_storage": _OBJECT_OUTPUT,
+            "exports": {"type": "string"},
+            "error": {"type": "string"},
+        }),
     },
     "get_current_time": {
         "description": "Return the current local machine time and timezone for date-aware answers.",
         "inputSchema": _schema({}),
+        "outputSchema": _output_schema({
+            "local_time": {"type": "string"},
+            "utc_time": {"type": "string"},
+            "timezone": {"type": "string"},
+            "error": {"type": "string"},
+        }),
     },
     "query_alarms": {
         "description": "Read alarm rows from the local DuckDB alarm store using safe filters and pagination.",
@@ -40,6 +68,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "limit": {"type": "integer", "minimum": 0, "maximum": 100},
             "offset": {"type": "integer", "minimum": 0},
         }),
+        "outputSchema": _output_schema({
+            "rows": _OBJECT_ROWS,
+            "row_count": {"type": "integer"},
+            "error": {"type": "string"},
+        }),
     },
     "query_backup_times": {
         "description": "Compute backup-time site results from local alarms and return sites whose hold-up exceeds a threshold.",
@@ -54,6 +87,16 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "limit": {"type": "integer", "minimum": 0, "maximum": 500},
             "offset": {"type": "integer", "minimum": 0},
         }),
+        "outputSchema": _output_schema({
+            "rows": _OBJECT_ROWS,
+            "row_count": {"type": "integer"},
+            "total_count": {"type": "integer"},
+            "site_count": {"type": "integer"},
+            "site_ids": _STRING_LIST,
+            "min_minutes": {"type": "number"},
+            "threshold_minutes": {"type": "number"},
+            "error": {"type": "string"},
+        }),
     },
     "alarm_stats": {
         "description": "Return aggregate alarm statistics for safe filters without loading all rows.",
@@ -64,6 +107,16 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "network_type": {"type": "string"},
             "date_from": {"type": "string"},
             "date_to": {"type": "string"},
+        }),
+        "outputSchema": _output_schema({
+            "total": {"type": "integer"},
+            "power": {"type": "integer"},
+            "down": {"type": "integer"},
+            "door": {"type": "integer"},
+            "temp": {"type": "integer"},
+            "sites": {"type": "integer"},
+            "avg_duration_secs": {"type": "number"},
+            "error": {"type": "string"},
         }),
     },
     "query_bdt_results": {
@@ -78,6 +131,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "limit": {"type": "integer", "minimum": 0, "maximum": 500},
             "offset": {"type": "integer", "minimum": 0},
         }),
+        "outputSchema": _output_schema({
+            "total": {"type": "integer"},
+            "rows": _OBJECT_ROWS,
+            "error": {"type": "string"},
+        }),
     },
     "get_bdt_detail": {
         "description": "Read one BDT validation detail with rules, discharge readings, and photo metadata.",
@@ -86,6 +144,15 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "site_code": {"type": "string"},
             "test_date": {"type": "string"},
         }),
+        "outputSchema": _output_schema({
+            "validation_run_id": {"type": "integer"},
+            "overall_verdict": {"type": "string"},
+            "run_at": {},
+            "bdt": _OBJECT_OUTPUT,
+            "rules": _OBJECT_ROWS,
+            "photos": _OBJECT_ROWS,
+            "error": {"type": "string"},
+        }),
     },
     "get_photo_metadata": {
         "description": "Read BDT photo metadata from the local app DB without returning image bytes.",
@@ -93,6 +160,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "site_code": {"type": "string"},
             "bdt_test_id": {"type": "integer"},
             "limit": {"type": "integer", "minimum": 0, "maximum": 500},
+        }),
+        "outputSchema": _output_schema({
+            "rows": _OBJECT_ROWS,
+            "row_count": {"type": "integer"},
+            "error": {"type": "string"},
         }),
     },
     "get_site_dossier": {
@@ -108,6 +180,17 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "alarm_preview_limit": {"type": "integer", "minimum": 0, "maximum": 500},
             "bdt_preview_limit": {"type": "integer", "minimum": 0, "maximum": 500},
             "bdt_detail_limit": {"type": "integer", "minimum": 0, "maximum": 500},
+        }),
+        "outputSchema": _output_schema({
+            "site_code": {"type": "string"},
+            "alarm_total": {"type": "integer"},
+            "alarm_stats": _OBJECT_OUTPUT,
+            "alarm_rows": _OBJECT_ROWS,
+            "bdt_total": {"type": "integer"},
+            "bdt_rows": _OBJECT_ROWS,
+            "bdt_details": _OBJECT_ROWS,
+            "export_path": {"type": "string"},
+            "error": {"type": "string"},
         }),
     },
     "generate_graph": {
@@ -131,12 +214,27 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "date_to": {"type": "string"},
             "title": {"type": "string"},
         }, required=["graph_type"]),
+        "outputSchema": _output_schema({
+            "path": {"type": "string"},
+            "graph_type": {"type": "string"},
+            "site_code": {"type": "string"},
+            "points": {"type": "integer"},
+            "labels": _STRING_LIST,
+            "values": _NUMBER_LIST,
+            "error": {"type": "string"},
+        }),
     },
     "read_photo_blob": {
         "description": "Read one stored photo blob by SHA-256 as base64. Use only when the user explicitly asks to inspect an image.",
         "inputSchema": _schema({
             "sha256": {"type": "string"},
         }, required=["sha256"]),
+        "outputSchema": _output_schema({
+            "sha256": {"type": "string"},
+            "mime_type": {"type": "string"},
+            "base64": {"type": "string"},
+            "error": {"type": "string"},
+        }),
     },
     "export_report": {
         "description": (
@@ -182,6 +280,22 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "limit": {"type": "integer", "minimum": 0, "maximum": 500},
             "offset": {"type": "integer", "minimum": 0},
         }, required=["report_type"]),
+        "outputSchema": _output_schema({
+            "path": {"type": "string"},
+            "rows": {"type": "integer"},
+            "format": {"type": "string"},
+            "report_type": {"type": "string"},
+            "source_file_id": {"type": "string"},
+            "sheet_name": {"type": "string"},
+            "site_column": {"type": "string"},
+            "date_column": {"type": "string"},
+            "status_column": {"type": "string"},
+            "site_count": {"type": "integer"},
+            "alarm_rows": {"type": "integer"},
+            "bdt_results": {"type": "integer"},
+            "sheets": _STRING_LIST,
+            "error": {"type": "string"},
+        }),
     },
 }
 
@@ -204,6 +318,7 @@ def tool_definitions_for_mcp() -> list[dict[str, Any]]:
             "name": name,
             "description": schema["description"],
             "inputSchema": schema["inputSchema"],
+            "outputSchema": schema["outputSchema"],
             "annotations": _mcp_annotations(name),
         }
         for name, schema in TOOL_SCHEMAS.items()

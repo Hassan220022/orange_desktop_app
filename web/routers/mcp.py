@@ -46,7 +46,27 @@ def _require_token(request: Request, query_token: str | None) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+@router.get("/mcp")
+@router.get("/mcp/")
+def mcp_endpoint_probe(request: Request, token: str | None = None):
+    _require_token(request, token)
+    return {
+        "name": "alarm-viewer-local-data",
+        "transport": "streamable-http",
+        "endpoint": "/mcp",
+        "methods": ["POST"],
+    }
+
+
+@router.head("/mcp")
+@router.head("/mcp/")
+def mcp_endpoint_head(request: Request, token: str | None = None):
+    _require_token(request, token)
+    return Response(status_code=200)
+
+
 @router.post("/mcp")
+@router.post("/mcp/")
 def handle_mcp_request(body: dict[str, Any], request: Request, token: str | None = None):
     _require_token(request, token)
     if body.get("jsonrpc") != "2.0":

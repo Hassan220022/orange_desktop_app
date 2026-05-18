@@ -1,4 +1,4 @@
-"""Temp alarm correlation against Power alarm windows."""
+"""Temp alarm exclusion against Power alarm coverage windows."""
 
 from dataclasses import replace
 from datetime import date
@@ -35,7 +35,7 @@ TEMP_SUMMARY_BASE_COLUMNS = [
 
 
 def compute_temp_alarm_matches(df: pd.DataFrame, margin_minutes: int = 60):
-    """Find Temp alarms inside a same-site Power window plus Y margin."""
+    """Find Temp alarms not covered by a same-site Power window plus Y margin."""
     if df.empty or "alarm_category" not in df.columns:
         return pd.DataFrame(), "No data loaded."
 
@@ -55,61 +55,59 @@ def compute_temp_alarm_matches(df: pd.DataFrame, margin_minutes: int = 60):
 
     pwr = sub[sub["alarm_category"] == "Power"].copy()
     tmp = sub[sub["alarm_category"] == "Temp"].copy()
-    if pwr.empty:
-        return pd.DataFrame(), "No Power alarms found in loaded data."
     if tmp.empty:
         return pd.DataFrame(), "No Temp alarms found in loaded data."
 
-    tmp_by_site: dict[str, tuple[pd.DataFrame, pd.Series]] = {}
-    for site_id, group in tmp.groupby("site_id", sort=False):
-        sorted_group = group.sort_values("occurred_on").reset_index(drop=True)
-        tmp_by_site[str(site_id)] = (sorted_group, sorted_group["occurred_on"])
+    valid_power = pwr.dropna(subset=["occurred_on", "cleared_on"])
+    valid_power = valid_power[valid_power["cleared_on"] >= valid_power["occurred_on"]]
+    valid_power = valid_power.sort_values(["site_id", "occurred_on"]).reset_index(drop=True)
+    power_by_site: dict[str, tuple[pd.Series, pd.Series]] = {}
+    for site_id, group in valid_power.groupby("site_id", sort=False):
+        coverage_end = (group["cleared_on"] + pd.Timedelta(minutes=margin_minutes)).cummax().reset_index(drop=True)
+        power_by_site[str(site_id)] = (group["occurred_on"].reset_index(drop=True), coverage_end)
 
-    rows: list[dict[str, object]] = []
-    y_delta = pd.Timedelta(minutes=margin_minutes)
-    for _, power in pwr.sort_values("occurred_on").iterrows():
-        site_id = str(power.get("site_id") or "").strip()
-        power_time = power.get("occurred_on")
-        power_cleared = power.get("cleared_on")
-        if not site_id or pd.isna(power_time) or pd.isna(power_cleared) or power_cleared < power_time:
+    uncovered_parts: list[pd.DataFrame] = []
+    for site_id, group in tmp.sort_values(["site_id", "occurred_on"]).groupby("site_id", sort=False):
+        site_id = str(site_id)
+        if not site_id:
             continue
+        site_power = power_by_site.get(site_id)
+        if site_power is None:
+            uncovered_parts.append(group)
+            continue
+        starts, coverage_end = site_power
+        temp_times = group["occurred_on"]
+        indexes = starts.searchsorted(temp_times, side="right") - 1
+        covered = pd.Series(False, index=group.index)
+        has_prior_power = indexes >= 0
+        if has_prior_power.any():
+            covered.loc[has_prior_power] = coverage_end.iloc[indexes[has_prior_power]].to_numpy() >= temp_times.loc[has_prior_power].to_numpy()
+        uncovered = group.loc[~covered]
+        if not uncovered.empty:
+            uncovered_parts.append(uncovered)
 
-        site_temp_entry = tmp_by_site.get(site_id)
-        if site_temp_entry is None:
-            continue
-        site_temp, temp_times = site_temp_entry
-        window_end = power_cleared + y_delta
-        start_idx = int(temp_times.searchsorted(power_time, side="left"))
-        end_idx = int(temp_times.searchsorted(window_end, side="right"))
-        if start_idx >= end_idx:
-            continue
-        matches = site_temp.iloc[start_idx:end_idx]
-        for _, temp in matches.iterrows():
-            temp_time = temp.get("occurred_on")
-            temp_cleared = temp.get("cleared_on")
-            after_clearance = temp_time - power_cleared if temp_time > power_cleared else None
-            rows.append({
-                "site_id": site_id,
-                "network_type": power.get("network_type") or temp.get("network_type"),
-                "vendor": power.get("vendor") or temp.get("vendor"),
-                "power_time": _fmt_dt(power_time),
-                "power_cleared": _fmt_dt(power_cleared),
-                "x_duration": fmt_td(power_cleared - power_time),
-                "y_margin": f"{margin_minutes} min",
-                "temp_time": _fmt_dt(temp_time),
-                "temp_cleared": _fmt_dt(temp_cleared),
-                "temp_delay_after_power": fmt_td(temp_time - power_time),
-                "temp_delay_after_power_clearance": fmt_td(after_clearance) if after_clearance is not None else "",
-                "temp_clear_duration": _temp_duration(temp, temp_time, temp_cleared),
-                "temp_alarm_name": temp.get("alarm_name") or "",
-                "temp_alarm_source": temp.get("alarm_source") or "",
-                "temp_clearance_status": temp.get("clearance_status") or "",
-                "match_window": "Y margin" if after_clearance is not None else "Power window",
-            })
-
-    if not rows:
-        return pd.DataFrame(), "No matching Temp alarms found in Power windows."
-    return pd.DataFrame(rows).sort_values(["site_id", "temp_time"]).reset_index(drop=True), ""
+    if not uncovered_parts:
+        return pd.DataFrame(), "No uncovered Temp alarms found outside Power windows."
+    uncovered = pd.concat(uncovered_parts, ignore_index=True).sort_values(["site_id", "occurred_on"]).reset_index(drop=True)
+    rows = pd.DataFrame({
+        "site_id": uncovered["site_id"],
+        "network_type": uncovered["network_type"] if "network_type" in uncovered.columns else "",
+        "vendor": uncovered["vendor"] if "vendor" in uncovered.columns else "",
+        "power_time": "",
+        "power_cleared": "",
+        "x_duration": "",
+        "y_margin": f"{margin_minutes} min",
+        "temp_time": uncovered["occurred_on"].dt.strftime("%Y-%m-%d %H:%M:%S").fillna(""),
+        "temp_cleared": uncovered["cleared_on"].dt.strftime("%Y-%m-%d %H:%M:%S").fillna(""),
+        "temp_delay_after_power": "",
+        "temp_delay_after_power_clearance": "",
+        "temp_clear_duration": _temp_duration_series(uncovered),
+        "temp_alarm_name": uncovered["alarm_name"] if "alarm_name" in uncovered.columns else "",
+        "temp_alarm_source": uncovered["alarm_source"] if "alarm_source" in uncovered.columns else "",
+        "temp_clearance_status": uncovered["clearance_status"] if "clearance_status" in uncovered.columns else "",
+        "match_window": "No Power coverage",
+    })
+    return rows.reset_index(drop=True), ""
 
 
 def compute_temp_alarm_matches_for_query(
@@ -117,7 +115,7 @@ def compute_temp_alarm_matches_for_query(
     margin_minutes: int = 60,
     result_filter_query: AlarmQuery | None = None,
 ):
-    """Load a targeted alarm subset from DuckDB, then run temp analysis."""
+    """Load a targeted alarm subset from DuckDB, then run temp coverage analysis."""
     query = alarm_query or AlarmQuery()
     if result_filter_query is not None:
         temp_query = replace(
@@ -132,6 +130,7 @@ def compute_temp_alarm_matches_for_query(
         if temp_df.empty:
             return pd.DataFrame(), "No Temp alarms found in selected data.", temp_df
         site_ids = sorted({str(v).strip() for v in temp_df.get("site_id", pd.Series(dtype=object)).dropna() if str(v).strip()})
+        site_scope_keys = site_ids if len(site_ids) <= 500 else None
         power_query = replace(
             query,
             site_text="",
@@ -142,7 +141,7 @@ def compute_temp_alarm_matches_for_query(
             date_from=None,
             date_to=_source_query_date_to(result_filter_query),
             manual_days=None,
-            site_scope_keys=site_ids or None,
+            site_scope_keys=site_scope_keys,
             allowed_values={},
             column_filters={},
             col_filters={},
@@ -156,8 +155,6 @@ def compute_temp_alarm_matches_for_query(
     else:
         df = query_alarms(query)
     result, err = compute_temp_alarm_matches(df, margin_minutes=margin_minutes)
-    if result_filter_query is not None and 'temp_df' in locals():
-        result = filter_temp_matches_to_selected_temps(result, temp_df)
     return result, err, df
 
 
@@ -230,44 +227,50 @@ def _temp_match_key(row: tuple, columns: list[str]) -> tuple[str, ...]:
 
 
 def build_temp_alarm_summary(matches: pd.DataFrame, week_label: str | None = None) -> pd.DataFrame:
-    """Build a W27-style site summary for matched Temp alarms."""
+    """Build a W27-style weekly summary for uncovered Temp alarms."""
     week = week_label or _week_label_from_matches(matches)
     week_columns = _week_history_columns(week) if week else []
     columns = TEMP_SUMMARY_BASE_COLUMNS + week_columns
     if matches.empty:
         return pd.DataFrame(columns=columns)
 
+    data = matches.copy()
+    data["_week_label"] = pd.to_datetime(data["temp_time"], errors="coerce").apply(_week_label_from_timestamp)
+    data = data[data["_week_label"] != ""]
+    if data.empty:
+        return pd.DataFrame(columns=columns)
+
     records = []
-    for site_id, group in matches.groupby("site_id", sort=False):
+    for current_week, group in data.groupby("_week_label", sort=True):
         duration_secs = sum(duration_to_secs(value) for value in group["temp_clear_duration"])
         records.append({
-            "Site Name": _first_text(group, "temp_alarm_source"),
-            "Site Code": site_id,
+            "Site Name": "",
+            "Site Code": "",
             "Area": "",
             "Contractor": "",
             "No. Of HT Alarms": len(group),
             "HT Duration": _fmt_hours_minutes(duration_secs),
             "Batteries Types": "",
             "Batteries Status": "",
-            "Week No.": week,
-            **{col: (week if col == week else "") for col in week_columns},
+            "Week No.": current_week,
+            **{col: (current_week if col == current_week else "") for col in week_columns},
         })
     summary = pd.DataFrame(records).sort_values(
-        ["No. Of HT Alarms", "HT Duration"], ascending=[False, False]
+        ["Week No."], ascending=[False]
     ).reset_index(drop=True)
     summary.insert(0, "##", range(1, len(summary) + 1))
     return summary[columns]
 
 
 def export_temp_alarm_workbook(matches: pd.DataFrame, path: str | Path, week_label: str | None = None) -> None:
-    """Export W27-style summary and matched detail rows to an Excel workbook."""
+    """Export W27-style summary and uncovered Temp detail rows to an Excel workbook."""
     summary = build_temp_alarm_summary(matches, week_label=week_label)
     detail_cols = [col for col in TEMP_HEADERS if col in matches.columns]
     details = matches[detail_cols].rename(columns=TEMP_HEADERS) if detail_cols else matches
     path = Path(path)
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         summary.to_excel(writer, sheet_name=week_label or _week_label_from_matches(matches) or "Summary", index=False)
-        details.to_excel(writer, sheet_name="Matched Temp Details", index=False)
+        details.to_excel(writer, sheet_name="Uncovered Temp Details", index=False)
     _format_temp_alarm_workbook(path, len(summary), len(matches))
 
 
@@ -284,6 +287,26 @@ def _temp_duration(temp: pd.Series, temp_time, temp_cleared) -> str:
     if pd.notna(temp_time) and pd.notna(temp_cleared) and temp_cleared >= temp_time:
         return fmt_td(temp_cleared - temp_time)
     return ""
+
+
+def _temp_duration_series(temps: pd.DataFrame) -> list[str]:
+    if "duration" in temps.columns:
+        duration = pd.to_timedelta(temps["duration"], errors="coerce")
+        seconds = duration.dt.total_seconds()
+    else:
+        seconds = pd.Series(float("nan"), index=temps.index)
+    fallback = (temps["cleared_on"] - temps["occurred_on"]).dt.total_seconds()
+    seconds = seconds.where(seconds > 0, fallback.where(fallback >= 0))
+    return [_fmt_seconds_to_hhmmss(value) for value in seconds]
+
+
+def _fmt_seconds_to_hhmmss(seconds: float) -> str:
+    if pd.isna(seconds) or seconds <= 0:
+        return ""
+    total = int(seconds)
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def _fmt_hours_minutes(seconds: float) -> str:
@@ -328,8 +351,13 @@ def _week_label_from_matches(matches: pd.DataFrame) -> str:
     first = pd.to_datetime(matches["temp_time"], errors="coerce").dropna()
     if first.empty:
         return ""
-    ts = first.min()
-    iso = ts.isocalendar()
+    return _week_label_from_timestamp(first.min())
+
+
+def _week_label_from_timestamp(value) -> str:
+    if pd.isna(value):
+        return ""
+    iso = pd.Timestamp(value).isocalendar()
     return f"W{int(iso.week):02d}-{str(int(iso.year))[-2:]}"
 
 

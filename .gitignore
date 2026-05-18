@@ -60,3 +60,6 @@ web/frontend/.env.production
 !.github/workflows/
 !.github/workflows/*.yml
 .env
+
+# Stakpak local files
+.stakpak/session*

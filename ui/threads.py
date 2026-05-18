@@ -640,7 +640,7 @@ class BackupTimeThread(QThread):
 
 
 class TempAlarmThread(QThread):
-    """Compute temp alarms matched to Power windows in a background thread."""
+    """Compute temp alarms not covered by Power windows in a background thread."""
 
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(object, str, object)
@@ -656,7 +656,7 @@ class TempAlarmThread(QThread):
 
     def run(self):
         try:
-            self.progress.emit(30, "Computing temp alarms …")
+            self.progress.emit(30, "Finding uncovered temp alarms …")
             if self._df is not None:
                 source_df = self._df
                 result, err = compute_temp_alarm_matches(source_df, margin_minutes=self._margin_minutes)
@@ -670,7 +670,7 @@ class TempAlarmThread(QThread):
             if self._selected_temp_df is not None:
                 result = filter_temp_matches_to_selected_temps(result, self._selected_temp_df)
             if err == "" and result.empty:
-                err = "No matching Temp alarms found in selected date scope."
+                err = "No uncovered Temp alarms found in selected date scope."
             self.progress.emit(100, "Done")
             self.finished.emit(result, err, source_df)
         except Exception:

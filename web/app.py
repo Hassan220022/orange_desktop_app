@@ -21,7 +21,7 @@ def create_app() -> FastAPI:
     async def limit_mcp_tunnel_access(request, call_next):
         tunnel_host = os.environ.get("ALARM_MCP_TUNNEL_HOST_HEADER", "alarm-viewer-mcp.local").lower()
         request_host = request.headers.get("host", "").split(":", 1)[0].lower()
-        if request_host == tunnel_host and request.url.path != "/mcp":
+        if request_host == tunnel_host and request.url.path not in {"/mcp", "/mcp/"}:
             return JSONResponse(
                 {"detail": "Tunnel access is limited to the MCP endpoint"},
                 status_code=403,

@@ -107,7 +107,7 @@ TEMP_HEADERS = {
     "temp_alarm_name": "Temp Alarm Name",
     "temp_alarm_source": "Temp Alarm Source",
     "temp_clearance_status": "Status",
-    "match_window": "Matched Window",
+    "match_window": "Coverage Status",
 }
 
 TEMP_WIDTHS = {

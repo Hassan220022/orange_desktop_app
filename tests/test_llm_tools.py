@@ -173,6 +173,12 @@ def test_tool_definitions_are_available_for_mcp_and_openrouter():
     assert mcp_names == openrouter_names
 
 
+def test_mcp_tool_definitions_include_output_schemas():
+    for tool in tool_definitions_for_mcp():
+        assert tool["outputSchema"]["type"] == "object", tool["name"]
+        assert isinstance(tool["outputSchema"].get("properties"), dict), tool["name"]
+
+
 def test_get_current_time_tool_returns_host_clock_context():
     service = LocalDataService()
 
@@ -450,6 +456,7 @@ def test_mcp_server_lists_and_calls_tools():
     })
     text = called["result"]["content"][0]["text"]
     assert json.loads(text) == {"ok": True}
+    assert called["result"]["structuredContent"] == {"ok": True}
 
 
 def test_mcp_server_rejects_non_object_call_params():

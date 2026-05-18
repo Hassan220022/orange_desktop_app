@@ -1,5 +1,17 @@
 # Agent Instructions — Alarm Viewer
 
+## GitNexus CLI Requirement
+
+This repository is indexed by GitNexus as **orange_desktop_app**. Codex, OpenCode, Claude Code, and any other AI agent working in this repo must use the local GitNexus CLI, not MCP.
+
+- Use `/opt/homebrew/bin/gitnexus` or `gitnexus` from PATH.
+- Never use GitNexus MCP, code-review-graph MCP, or `gitnexus://...` MCP resources for this repo.
+- Run `gitnexus status` at the start of code work.
+- Run `gitnexus query -r orange_desktop_app "<concept>"` before Grep/Glob/Read when exploring unfamiliar code.
+- Run `gitnexus impact -r orange_desktop_app -d upstream <symbol>` before editing any function, class, or method.
+- Run `gitnexus detect-changes -r orange_desktop_app --scope all` before committing.
+- If the index is stale, run `gitnexus analyze` and retry the GitNexus command.
+
 ## Project Overview
 
 **Alarm Viewer** is a PyQt5 desktop application for exploring, filtering, and analysing telecom alarm data exported from Huawei and Nokia NMS platforms. It reads CSV/XLSX files containing Power and Down alarm records, normalises them into a unified schema, and provides a fast, professional dark-themed UI for searching, filtering, sorting, exporting, and computing backup-time analytics.

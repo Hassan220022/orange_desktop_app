@@ -1,4 +1,4 @@
-"""Tests for temp alarm correlation with power windows."""
+"""Tests for uncovered Temp alarms outside Power coverage windows."""
 
 import pandas as pd
 from openpyxl import load_workbook
@@ -38,7 +38,7 @@ def _make_df(rows):
     return pd.DataFrame(records)
 
 
-def test_matches_temp_inside_power_window():
+def test_excludes_temp_inside_power_window():
     df = _make_df([
         {
             "alarm_category": "Power",
@@ -56,16 +56,11 @@ def test_matches_temp_inside_power_window():
 
     result, err = compute_temp_alarm_matches(df, margin_minutes=60)
 
-    assert err == ""
-    assert len(result) == 1
-    row = result.iloc[0]
-    assert row["match_window"] == "Power window"
-    assert row["x_duration"] == "02:00:00"
-    assert row["temp_delay_after_power"] == "01:00:00"
-    assert row["temp_delay_after_power_clearance"] == ""
+    assert result.empty
+    assert "No uncovered Temp alarms" in err
 
 
-def test_matches_temp_after_power_clearance_within_y_margin():
+def test_excludes_temp_after_power_clearance_within_y_margin():
     df = _make_df([
         {
             "alarm_category": "Power",
@@ -83,14 +78,11 @@ def test_matches_temp_after_power_clearance_within_y_margin():
 
     result, err = compute_temp_alarm_matches(df, margin_minutes=60)
 
-    assert err == ""
-    assert len(result) == 1
-    row = result.iloc[0]
-    assert row["match_window"] == "Y margin"
-    assert row["temp_delay_after_power_clearance"] == "00:45:00"
+    assert result.empty
+    assert "No uncovered Temp alarms" in err
 
 
-def test_matches_multiple_temp_rows_inside_same_power_window_in_time_order():
+def test_excludes_multiple_temp_rows_inside_same_power_window():
     df = _make_df([
         {
             "alarm_category": "Power",
@@ -115,14 +107,11 @@ def test_matches_multiple_temp_rows_inside_same_power_window_in_time_order():
 
     result, err = compute_temp_alarm_matches(df, margin_minutes=60)
 
-    assert err == ""
-    assert result["temp_time"].tolist() == [
-        "2026-02-01 10:30:00",
-        "2026-02-01 11:30:00",
-    ]
+    assert result.empty
+    assert "No uncovered Temp alarms" in err
 
 
-def test_excludes_temp_after_y_margin():
+def test_includes_temp_after_y_margin():
     df = _make_df([
         {
             "alarm_category": "Power",
@@ -140,11 +129,15 @@ def test_excludes_temp_after_y_margin():
 
     result, err = compute_temp_alarm_matches(df, margin_minutes=60)
 
-    assert result.empty
-    assert "No matching Temp alarms" in err
+    assert err == ""
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["match_window"] == "No Power coverage"
+    assert row["temp_delay_after_power"] == ""
+    assert row["temp_delay_after_power_clearance"] == ""
 
 
-def test_summary_matches_w27_shape():
+def test_summary_groups_counts_and_duration_by_week():
     df = _make_df([
         {
             "alarm_category": "Power",
@@ -155,17 +148,27 @@ def test_summary_matches_w27_shape():
             "alarm_category": "Temp",
             "alarm_source": "SRAN_LWG_TEST_SITE_A",
             "alarm_name": "Shelter High Temperature",
-            "occurred_on": "2026-02-01 11:00:00",
-            "cleared_on": "2026-02-01 11:30:00",
+            "occurred_on": "2026-02-01 13:15:00",
+            "cleared_on": "2026-02-01 13:45:00",
             "duration": "00:30:00",
         },
         {
+            "site_id": "SITE_B",
             "alarm_category": "Temp",
-            "alarm_source": "SRAN_LWG_TEST_SITE_A",
+            "alarm_source": "SRAN_LWG_TEST_SITE_B",
             "alarm_name": "Shelter High Temperature",
-            "occurred_on": "2026-02-01 12:15:00",
-            "cleared_on": "2026-02-01 12:45:00",
-            "duration": "00:30:00",
+            "occurred_on": "2026-02-01 14:15:00",
+            "cleared_on": "2026-02-01 15:00:00",
+            "duration": "00:45:00",
+        },
+        {
+            "site_id": "SITE_C",
+            "alarm_category": "Temp",
+            "alarm_source": "SRAN_LWG_TEST_SITE_C",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-08 14:15:00",
+            "cleared_on": "2026-02-08 15:15:00",
+            "duration": "01:00:00",
         },
     ])
     matches, err = compute_temp_alarm_matches(df, margin_minutes=60)
@@ -179,15 +182,16 @@ def test_summary_matches_w27_shape():
         "Batteries Status", "Week No.", "W05-26", "W04-26", "W03-26",
         "W02-26", "W01-26", "W52-25", "W51-25", "W50-25",
     ]
-    assert len(summary) == 1
-    row = summary.iloc[0]
-    assert row["##"] == 1
-    assert row["Site Name"] == "SRAN_LWG_TEST_SITE_A"
-    assert row["Site Code"] == "SITE_A"
-    assert row["No. Of HT Alarms"] == 2
-    assert row["HT Duration"] == "01:00"
-    assert row["Week No."] == "W05-26"
-    assert row["W05-26"] == "W05-26"
+    assert len(summary) == 2
+    week_05 = summary[summary["Week No."] == "W05-26"].iloc[0]
+    week_06 = summary[summary["Week No."] == "W06-26"].iloc[0]
+    assert week_05["Site Name"] == ""
+    assert week_05["Site Code"] == ""
+    assert week_05["No. Of HT Alarms"] == 2
+    assert week_05["HT Duration"] == "01:15"
+    assert week_05["W05-26"] == "W05-26"
+    assert week_06["No. Of HT Alarms"] == 1
+    assert week_06["HT Duration"] == "01:00"
 
 
 def test_export_workbook_contains_w27_summary_and_details(tmp_path):
@@ -201,8 +205,8 @@ def test_export_workbook_contains_w27_summary_and_details(tmp_path):
             "alarm_category": "Temp",
             "alarm_source": "SRAN_LWG_TEST_SITE_A",
             "alarm_name": "Shelter High Temperature",
-            "occurred_on": "2026-02-01 11:00:00",
-            "cleared_on": "2026-02-01 11:30:00",
+            "occurred_on": "2026-02-01 13:15:00",
+            "cleared_on": "2026-02-01 13:45:00",
             "duration": "00:30:00",
         },
     ])
@@ -213,7 +217,7 @@ def test_export_workbook_contains_w27_summary_and_details(tmp_path):
     export_temp_alarm_workbook(matches, out, week_label="W05-26")
 
     wb = load_workbook(out, data_only=False)
-    assert wb.sheetnames == ["W05-26", "Matched Temp Details"]
+    assert wb.sheetnames == ["W05-26", "Uncovered Temp Details"]
     summary = wb["W05-26"]
     assert [summary.cell(row=1, column=col).value for col in range(1, 19)] == [
         "##", "Site Name", "Site Code", "Area", "Contractor",
@@ -224,13 +228,13 @@ def test_export_workbook_contains_w27_summary_and_details(tmp_path):
     assert summary["G2"].value == "00:30"
     assert summary["A1"].fill.fgColor.rgb == "004F81BD"
     assert summary["A1"].border.left.color.rgb == "FF000000"
-    assert wb["Matched Temp Details"].max_row == 2
-    details = wb["Matched Temp Details"]
+    assert wb["Uncovered Temp Details"].max_row == 2
+    details = wb["Uncovered Temp Details"]
     assert [details.cell(row=1, column=col).value for col in range(1, 17)] == [
         "Site ID", "Network", "Vendor", "Power Alarm", "Power Cleared",
         "X Duration", "Y Margin", "Temp Alarm", "Temp Cleared",
         "Temp After Power", "Temp After Clearance", "Temp Clear Duration",
-        "Temp Alarm Name", "Temp Alarm Source", "Status", "Matched Window",
+        "Temp Alarm Name", "Temp Alarm Source", "Status", "Coverage Status",
     ]
 
 
@@ -295,8 +299,8 @@ def test_query_path_without_result_filter_query_still_loads_query(monkeypatch):
         {
             "alarm_category": "Temp",
             "alarm_name": "Shelter High Temperature",
-            "occurred_on": "2026-02-01 11:00:00",
-            "cleared_on": "2026-02-01 11:30:00",
+            "occurred_on": "2026-02-01 13:15:00",
+            "cleared_on": "2026-02-01 13:45:00",
             "duration": "00:30:00",
         },
     ])
@@ -309,7 +313,7 @@ def test_query_path_without_result_filter_query_still_loads_query(monkeypatch):
     assert len(source_df) == 2
 
 
-def test_date_scoped_temp_can_match_power_more_than_one_day_earlier():
+def test_date_scoped_temp_excludes_power_more_than_one_day_earlier():
     df = _make_df([
         {
             "alarm_category": "Power",
@@ -329,12 +333,11 @@ def test_date_scoped_temp_can_match_power_more_than_one_day_earlier():
     matches, err = compute_temp_alarm_matches(df, margin_minutes=60)
     filtered = filter_temp_matches_to_query(matches, query)
 
-    assert err == ""
-    assert len(filtered) == 1
-    assert filtered.iloc[0]["x_duration"] == "74:00:00"
+    assert filtered.empty
+    assert "No uncovered Temp alarms" in err
 
 
-def test_temp_source_query_removes_date_scope_before_matching():
+def test_temp_source_query_removes_date_scope_before_coverage_check():
     query = AlarmQuery(date_from=pd.Timestamp("2026-02-04"), date_to=pd.Timestamp("2026-02-04"))
 
     source_query = AlarmViewer._build_temp_alarm_source_query(query)
@@ -350,8 +353,8 @@ def test_query_path_scopes_broad_source_to_selected_temp_sites(monkeypatch):
             "site_id": "SITE_A",
             "alarm_category": "Temp",
             "alarm_name": "Shelter High Temperature",
-            "occurred_on": "2026-02-04 10:00:00",
-            "cleared_on": "2026-02-04 11:00:00",
+            "occurred_on": "2026-02-04 13:30:00",
+            "cleared_on": "2026-02-04 14:30:00",
             "duration": "01:00:00",
         }
     ])

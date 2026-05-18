@@ -1,5 +1,8 @@
 """Backup-time computation -- pure pandas/datetime, no Qt."""
 
+from dataclasses import replace
+
+import numpy as np
 import pandas as pd
 
 try:
@@ -53,65 +56,55 @@ def compute_backup_times(df: pd.DataFrame):
     dwn["occurred_on"] = pd.to_datetime(dwn["occurred_on"], errors="coerce", format="mixed")
     dwn = dwn.dropna(subset=["occurred_on"])
 
-    rows: list[dict[str, object]] = []
-    down_by_site: dict[str, pd.DataFrame] = {
-        str(site_id): group.sort_values("occurred_on").reset_index(drop=True)
+    down_by_site: dict[str, pd.Series] = {
+        str(site_id): group["occurred_on"].sort_values().reset_index(drop=True)
         for site_id, group in dwn.groupby("site_id", sort=False)
     }
-
-    for _, power in pwr.sort_values("occurred_on").iterrows():
-        site_id = str(power.get("site_id") or "").strip()
-        if not site_id:
-            continue
-        power_time = power.get("occurred_on")
-        if pd.isna(power_time):
-            continue
-        power_cleared = power.get("cleared_on")
-        site_down = down_by_site.get(site_id)
-
-        chosen_end = None
-        chosen_type = ""
-        chosen_down = None
+    parts: list[pd.DataFrame] = []
+    for site_id, group in pwr.sort_values(["site_id", "occurred_on"]).groupby("site_id", sort=False):
+        group = group.reset_index(drop=True)
+        site_down = down_by_site.get(str(site_id))
+        chosen_down = pd.Series(pd.NaT, index=group.index, dtype="datetime64[ns]")
         if site_down is not None and not site_down.empty:
-            if pd.notna(power_cleared):
-                in_window = site_down[
-                    (site_down["occurred_on"] >= power_time)
-                    & (site_down["occurred_on"] <= power_cleared)
-                ]
-            else:
-                in_window = site_down[
-                    (site_down["occurred_on"] >= power_time)
-                    & (site_down["occurred_on"].dt.normalize() == pd.Timestamp(power_time).normalize())
-                ]
-            if not in_window.empty:
-                chosen_down = in_window.iloc[-1]["occurred_on"]
-                chosen_end = chosen_down
-                chosen_type = "Power→Down"
+            power_time = group["occurred_on"]
+            power_cleared = group["cleared_on"]
+            no_clear = power_cleared.isna()
+            window_end = power_cleared.copy()
+            window_end.loc[no_clear] = power_time.loc[no_clear].dt.normalize() + pd.Timedelta(days=1)
+            start_idx = site_down.searchsorted(power_time, side="left")
+            end_right = site_down.searchsorted(window_end, side="right")
+            end_left = site_down.searchsorted(window_end, side="left")
+            end_idx = np.where(no_clear.to_numpy(), end_left, end_right)
+            has_down = start_idx < end_idx
+            if has_down.any():
+                chosen_down.loc[has_down] = site_down.iloc[end_idx[has_down] - 1].to_numpy()
+        group["_chosen_down"] = chosen_down
+        parts.append(group)
 
-        if chosen_end is None and pd.notna(power_cleared) and power_cleared >= power_time:
-            chosen_end = power_cleared
-            chosen_type = "Power→Cleared"
-
-        if chosen_end is None:
-            continue
-
-        backup_td = chosen_end - power_time
-        rows.append({
-            "site_id": site_id,
-            "network_type": power.get("network_type"),
-            "vendor": power.get("vendor"),
-            "power_time": power_time.strftime("%Y-%m-%d %H:%M:%S"),
-            "power_cleared": power_cleared.strftime("%Y-%m-%d %H:%M:%S") if pd.notna(power_cleared) else "",
-            "down_time": chosen_down.strftime("%Y-%m-%d %H:%M:%S") if chosen_down is not None else "",
-            "end_event_type": chosen_type,
-            "backup_time": fmt_td(backup_td),
-            "_backup_td": backup_td,
-        })
-
-    if not rows:
+    if not parts:
         return pd.DataFrame(), "No matching Power alarms found."
 
-    merged = pd.DataFrame(rows).sort_values("_backup_td", ascending=False).reset_index(drop=True)
+    matched = pd.concat(parts, ignore_index=True)
+    has_down = matched["_chosen_down"].notna()
+    use_cleared = ~has_down & matched["cleared_on"].notna() & (matched["cleared_on"] >= matched["occurred_on"])
+    keep = has_down | use_cleared
+    if not keep.any():
+        return pd.DataFrame(), "No matching Power alarms found."
+
+    kept = matched.loc[keep].copy()
+    chosen_end = kept["_chosen_down"].where(kept["_chosen_down"].notna(), kept["cleared_on"])
+    kept["_backup_td"] = chosen_end - kept["occurred_on"]
+    merged = pd.DataFrame({
+        "site_id": kept["site_id"],
+        "network_type": kept["network_type"] if "network_type" in kept.columns else None,
+        "vendor": kept["vendor"] if "vendor" in kept.columns else None,
+        "power_time": kept["occurred_on"].dt.strftime("%Y-%m-%d %H:%M:%S"),
+        "power_cleared": kept["cleared_on"].dt.strftime("%Y-%m-%d %H:%M:%S").fillna(""),
+        "down_time": kept["_chosen_down"].dt.strftime("%Y-%m-%d %H:%M:%S").fillna(""),
+        "end_event_type": np.where(kept["_chosen_down"].notna(), "Power→Down", "Power→Cleared"),
+        "backup_time": [_fmt_seconds_to_hhmmss(value.total_seconds()) for value in kept["_backup_td"]],
+        "_backup_td": kept["_backup_td"],
+    }).sort_values("_backup_td", ascending=False).reset_index(drop=True)
     merged = merged.drop(columns=["_backup_td"])
 
     out = [c for c in [
@@ -130,13 +123,23 @@ def compute_backup_times(df: pd.DataFrame):
 def compute_backup_times_for_query(alarm_query: AlarmQuery | None = None):
     """Load a targeted alarm subset from DuckDB, then run backup analysis."""
     query = alarm_query or AlarmQuery()
-    df = query_alarms(query)
+    if query.category == "All":
+        base = {"limit": None, "offset": 0, "sort_by": None, "sort_desc": False}
+        power_df = query_alarms(replace(query, category="Power", **base))
+        down_df = query_alarms(replace(query, category="Down", **base))
+        df = pd.concat([power_df, down_df], ignore_index=True)
+    else:
+        df = query_alarms(query)
     return compute_backup_times(df)
 
 
 def fmt_td(td):
     """Format a timedelta as HH:MM:SS."""
-    total = int(td.total_seconds())
+    return _fmt_seconds_to_hhmmss(td.total_seconds())
+
+
+def _fmt_seconds_to_hhmmss(seconds: float) -> str:
+    total = int(seconds)
     h, r  = divmod(total, 3600)
     m, s  = divmod(r, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
