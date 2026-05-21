@@ -12,7 +12,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
 
 from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorStatus
-from alarm_app.ui.dialogs import AppSettingsDialog, TempAlarmDialog
+from alarm_app.ui.dialogs import AppSettingsDialog, TempAlarmDialog, _filter_temp_alarm_source_for_metadata
 from alarm_app.ui.state_manager import StateManager
 
 # ── global QApplication singleton ─────────────────────────────────
@@ -308,6 +308,68 @@ class TestAlarmViewerGUI:
 
             assert list(dialog._df["Site Name"]) == ["Catalog Alpha"]
             assert dialog._preview_source_df["site_id"].dropna().astype(str).str.upper().unique().tolist() == ["AAA111"]
+        finally:
+            dialog.close()
+
+    def test_temp_alarm_dialog_metadata_filter_ignores_unchanged_focus_out(self, gui_app, monkeypatch):
+        source = pd.DataFrame([
+            {
+                "site_id": "AAA111",
+                "site_name": "Alarm Alpha",
+                "alarm_category": "Temp",
+                "alarm_name": "Shelter High Temperature",
+                "occurred_on": "2024-06-30 08:00:00",
+                "cleared_on": "2024-06-30 18:00:00",
+                "duration": "10:00:00",
+            }
+        ])
+        monkeypatch.setattr("alarm_app.ui.dialogs._load_site_metadata_catalog", lambda: pd.DataFrame())
+
+        dialog = TempAlarmDialog(pd.DataFrame(), source, week_label="W27-24", parent=gui_app)
+        try:
+            _wait_for_dialog_preview(dialog)
+            dialog._apply_metadata_filter_now()
+            assert dialog._preview_thread is None
+        finally:
+            dialog.close()
+
+    def test_temp_alarm_metadata_filter_treats_text_as_literal(self):
+        source = pd.DataFrame([
+            {"site_id": "AAA111", "site_name": "Alpha [North]", "alarm_source": "AAA temp"},
+            {"site_id": "BBB222", "site_name": "Beta", "alarm_source": "BBB temp"},
+        ])
+
+        result = _filter_temp_alarm_source_for_metadata(source, pd.DataFrame(), "[")
+
+        assert result["site_id"].tolist() == ["AAA111"]
+
+    def test_temp_alarm_export_rejects_invalid_week_label_before_save_dialog(self, gui_app, monkeypatch):
+        source = pd.DataFrame([
+            {
+                "site_id": "AAA111",
+                "site_name": "Alarm Alpha",
+                "alarm_category": "Temp",
+                "alarm_name": "Shelter High Temperature",
+                "occurred_on": "2024-06-30 08:00:00",
+                "cleared_on": "2024-06-30 18:00:00",
+                "duration": "10:00:00",
+            }
+        ])
+        warnings = []
+        monkeypatch.setattr("alarm_app.ui.dialogs._load_site_metadata_catalog", lambda: pd.DataFrame())
+        monkeypatch.setattr("alarm_app.ui.dialogs.QMessageBox.warning", lambda *args: warnings.append(args))
+        monkeypatch.setattr(
+            "alarm_app.ui.dialogs.QFileDialog.getSaveFileName",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("save dialog should not open")),
+        )
+
+        dialog = TempAlarmDialog(pd.DataFrame(), source, week_label="W27-24", parent=gui_app)
+        try:
+            _wait_for_dialog_preview(dialog)
+            dialog._week_input.setText("WXX-24")
+            dialog._export()
+            assert warnings
+            assert warnings[0][1] == "Invalid Export Week"
         finally:
             dialog.close()
 

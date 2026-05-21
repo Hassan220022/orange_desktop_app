@@ -1967,7 +1967,7 @@ class TempAlarmDialog(QDialog):
         self._start_preview_recompute()
 
     def _apply_metadata_filter_now(self):
-        self._apply_week_now(force=True)
+        self._apply_week_now()
 
     def _current_filter_text(self) -> str:
         return self._metadata_filter_input.text().strip() if self._metadata_filter_input else ""
@@ -2138,11 +2138,17 @@ class TempAlarmDialog(QDialog):
         entered = self._week_input.text().strip()
         if entered:
             self._week_label = entered
+        week_label = self._week_label or _infer_label_from_source(self._source_df)
+        if week_label:
+            try:
+                ht_export_week_range(week_label)
+            except ValueError as exc:
+                QMessageBox.warning(self, "Invalid Export Week", str(exc))
+                return
         if self._preview_is_stale(self._week_label):
             self._export_after_preview_refresh = True
             self._apply_week_now(force=True)
             return
-        week_label = self._week_label or _infer_label_from_source(self._source_df)
         default_name = (
             ht_export_filename(week_label)
             if week_label
@@ -2277,11 +2283,11 @@ def _filter_temp_alarm_source_for_metadata(
     mask = pd.Series(False, index=source.index)
     for column in ("site_id", "site_name", "site_code", "area", "contractor", "alarm_source"):
         if column in source.columns:
-            mask |= source[column].fillna("").astype(str).str.contains(text, case=False, na=False)
+            mask |= source[column].fillna("").astype(str).str.contains(text, case=False, na=False, regex=False)
     if site_metadata_df is not None and not site_metadata_df.empty and "site_id" in source.columns:
         meta_mask = pd.Series(False, index=site_metadata_df.index)
         for column in site_metadata_df.columns:
-            meta_mask |= site_metadata_df[column].fillna("").astype(str).str.contains(text, case=False, na=False)
+            meta_mask |= site_metadata_df[column].fillna("").astype(str).str.contains(text, case=False, na=False, regex=False)
         site_ids = {_normalize_site_text(v) for v in site_metadata_df.loc[meta_mask, "site_id"].dropna()} if "site_id" in site_metadata_df.columns else set()
         source_ids = source["site_id"].map(_normalize_site_text)
         mask |= source_ids.isin(site_ids)
