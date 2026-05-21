@@ -41,26 +41,30 @@ MAX_ANALYSIS_TABLE_ROWS = 5000
 
 try:
     from alarm_app.bdt.rule_docs import full_rules_html, iter_rule_docs
-    from alarm_app.constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS, TEMP_HEADERS, TEMP_WIDTHS
+    from alarm_app.constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS, HT_MEET_HEADERS, HT_MEET_WIDTHS
     from alarm_app.core.backup_time import fmt_td as _fmt_td
     from alarm_app.core.temp_alarm import (
-        compute_temp_alarm_matches,
+        compute_ht_meet_rows,
+        enrich_source_with_site_metadata,
         export_temp_alarm_workbook,
-        filter_temp_matches_to_query,
-        filter_temp_matches_to_selected_temps,
+        ht_export_filename,
+        ht_export_week_from_date,
+        ht_export_week_range,
     )
     from alarm_app.data import state
     from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorManager
     from alarm_app.runtime.tunnels import TunnelStartError
 except ImportError:
     from bdt.rule_docs import full_rules_html, iter_rule_docs
-    from constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS, TEMP_HEADERS, TEMP_WIDTHS
+    from constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS, HT_MEET_HEADERS, HT_MEET_WIDTHS
     from core.backup_time import fmt_td as _fmt_td
     from core.temp_alarm import (
-        compute_temp_alarm_matches,
+        compute_ht_meet_rows,
+        enrich_source_with_site_metadata,
         export_temp_alarm_workbook,
-        filter_temp_matches_to_query,
-        filter_temp_matches_to_selected_temps,
+        ht_export_filename,
+        ht_export_week_from_date,
+        ht_export_week_range,
     )
     from data import state
     from runtime.chatgpt_connector import ChatGPTConnectorManager
@@ -1699,10 +1703,79 @@ class BackupTimeDialog(QDialog):
             QMessageBox.critical(self, "Export Failed", str(e))
 
 
-class TempAlarmDialog(QDialog):
-    def __init__(self, df: pd.DataFrame, source_df: pd.DataFrame, margin_minutes: int = 60, result_filter_query=None, selected_temp_df: pd.DataFrame | None = None, parent=None):
+class _TempAlarmExportThread(QThread):
+    succeeded = pyqtSignal(str)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        matches: pd.DataFrame,
+        path: str,
+        source_df: pd.DataFrame,
+        week_label: str | None,
+        site_metadata_df: pd.DataFrame | None = None,
+        parent=None,
+    ):
         super().__init__(parent)
-        self.setWindowTitle("Uncovered Temp Alarms")
+        self._matches = matches
+        self._path = path
+        self._source_df = source_df
+        self._week_label = week_label
+        self._site_metadata_df = site_metadata_df
+        self.warning_result: dict[str, object] = {}
+
+    def run(self):
+        try:
+            self.warning_result = export_temp_alarm_workbook(
+                self._matches,
+                self._path,
+                week_label=self._week_label,
+                source_df=self._source_df,
+                site_metadata_df=self._site_metadata_df,
+                return_warnings=True,
+            ) or {}
+            self.succeeded.emit(self._path)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class _TempAlarmPreviewThread(QThread):
+    succeeded = pyqtSignal(object, object, object, str, str)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        source_df: pd.DataFrame,
+        site_metadata_df: pd.DataFrame | None,
+        filter_text: str,
+        week_label: str | None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._source_df = source_df
+        self._site_metadata_df = site_metadata_df
+        self._filter_text = filter_text
+        self._week_label = week_label
+
+    def run(self):
+        try:
+            preview_source, meet, missing_ids = _build_temp_alarm_preview(
+                self._source_df,
+                self._site_metadata_df,
+                self._filter_text,
+                self._week_label,
+            )
+            self.succeeded.emit(preview_source, meet, missing_ids, self._week_label or "", self._filter_text)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class TempAlarmDialog(QDialog):
+    """HT Alarm Workbook Meet preview dialog."""
+
+    def __init__(self, df: pd.DataFrame, source_df: pd.DataFrame, margin_minutes: int = 60, result_filter_query=None, selected_temp_df: pd.DataFrame | None = None, week_label: str | None = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("HT Alarm Workbook — Meet Preview")
         self.resize(1180, 700)
         if parent:
             self.setStyleSheet(parent.styleSheet())
@@ -1710,65 +1783,264 @@ class TempAlarmDialog(QDialog):
         self._result_filter_query = result_filter_query
         self._selected_temp_df = selected_temp_df
         self._df = df
-        self._margin_minutes = max(0, min(int(margin_minutes or 0), 60))
+        self._margin_minutes = max(0, int(margin_minutes or 0))
+        self._week_label = week_label or self._infer_default_week_label()
+        self._site_metadata_df = _load_site_metadata_catalog()
+        self._preview_source_df = pd.DataFrame()
+        self._preview_missing_metadata_ids: list[str] = []
+        self._preview_week_label = None
+        self._preview_filter_text = ""
         self._tbl = None
         self._summary_strip = None
         self._table_host = None
+        self._btn_export = None
+        self._btn_apply_week = None
+        self._week_input = None
+        self._metadata_filter_input = None
+        self._export_status = None
+        self._export_progress = None
+        self._export_thread = None
+        self._preview_thread = None
+        self._export_after_preview_refresh = False
+        self._metadata_warning = None
         self._build()
+        self._start_preview_recompute()
+
+    def _infer_default_week_label(self) -> str:
+        """Try to infer the default HT export week label from the meet data or source."""
+        df = self._df
+        if not df.empty:
+            if "Last Occurred On" in df.columns:
+                times = pd.to_datetime(df["Last Occurred On"], errors="coerce").dropna()
+            elif "temp_time" in df.columns:
+                times = pd.to_datetime(df["temp_time"], errors="coerce").dropna()
+            else:
+                times = pd.Series(dtype="datetime64[ns]")
+            if not times.empty:
+                try:
+                    return ht_export_week_from_date(times.max())["week_label"]
+                except Exception:
+                    pass
+        # Fall back to source_df
+        src = self._source_df
+        if src is not None and not src.empty and "occurred_on" in src.columns:
+            times = pd.to_datetime(src["occurred_on"], errors="coerce").dropna()
+            if not times.empty:
+                try:
+                    return ht_export_week_from_date(times.max())["week_label"]
+                except Exception:
+                    pass
+        return ""
 
     def _build(self):
         lay = QVBoxLayout(self)
         lay.setSpacing(8)
         lay.setContentsMargins(12, 10, 12, 10)
 
+        # ── Top header strip ────────────────────────────────────
         top = QFrame()
-        top.setStyleSheet("background:#313244; border-radius:6px; padding:6px;")
+        top.setObjectName("tempDashboardHeader")
+        top.setStyleSheet("QFrame#tempDashboardHeader { background:#313244; border-radius:8px; }")
         tl = QHBoxLayout(top)
-        tl.setSpacing(18)
+        tl.setContentsMargins(10, 7, 10, 7)
+        tl.setSpacing(9)
 
-        margin_label = QLabel("Y margin after Power clearance")
-        margin_label.setStyleSheet("color:#6c7086; font-size:11px;")
-        tl.addWidget(margin_label)
+        # Week label control
+        week_label_lbl = QLabel("Export Week")
+        week_label_lbl.setStyleSheet("color:#a6adc8; font-size:11px; font-weight:700;")
+        tl.addWidget(week_label_lbl)
 
-        self._spn_margin = QSpinBox()
-        self._spn_margin.setRange(0, 60)
-        self._spn_margin.setSuffix(" min")
-        self._spn_margin.setValue(self._margin_minutes)
-        self._spn_margin.valueChanged.connect(self._recompute)
-        tl.addWidget(self._spn_margin)
+        self._week_input = QLineEdit()
+        self._week_input.setPlaceholderText("e.g. W27-24")
+        self._week_input.setText(self._week_label or "")
+        self._week_input.setFixedSize(104, 30)
+        self._week_input.setAlignment(Qt.AlignCenter)
+        self._week_input.setStyleSheet(
+            """
+            QLineEdit {
+                background:#11111b;
+                border:1px solid #89b4fa;
+                border-radius:6px;
+                color:#cdd6f4;
+                font-size:13px;
+                font-weight:700;
+                padding:0 8px;
+            }
+            QLineEdit:focus { border-color:#b4befe; }
+            QLineEdit:disabled {
+                background:#313244;
+                border-color:#45475a;
+                color:#6c7086;
+            }
+            """
+        )
+        tl.addWidget(self._week_input)
 
+        self._btn_apply_week = QPushButton("Apply")
+        self._btn_apply_week.setFixedSize(74, 30)
+        self._btn_apply_week.setStyleSheet(
+            """
+            QPushButton {
+                background:#1e1e2e;
+                border:1px solid #45475a;
+                border-radius:6px;
+                color:#cdd6f4;
+                font-size:11px;
+                font-weight:700;
+                padding:0 10px;
+            }
+            QPushButton:hover { border-color:#89b4fa; }
+            QPushButton:disabled {
+                color:#6c7086;
+                border-color:#313244;
+            }
+            """
+        )
+        self._btn_apply_week.clicked.connect(self._apply_week_now)
+        tl.addWidget(self._btn_apply_week)
+
+        self._metadata_filter_input = QLineEdit()
+        self._metadata_filter_input.setPlaceholderText("Filter site / area / subcontractor")
+        self._metadata_filter_input.setFixedSize(190, 30)
+        self._metadata_filter_input.returnPressed.connect(self._apply_metadata_filter_now)
+        self._metadata_filter_input.editingFinished.connect(self._apply_metadata_filter_now)
+        tl.addWidget(self._metadata_filter_input)
+
+        # Summary metric cards
         self._summary_strip = QHBoxLayout()
-        self._summary_strip.setSpacing(26)
+        self._summary_strip.setSpacing(8)
         tl.addLayout(self._summary_strip, 1)
 
-        btn_exp = QPushButton("Export XLSX")
-        btn_exp.setObjectName("btn_export")
-        btn_exp.clicked.connect(self._export)
-        tl.addWidget(btn_exp)
+        # Export button card
+        export_card = QFrame()
+        export_card.setObjectName("tempExportCard")
+        export_card.setFixedWidth(112)
+        export_card.setStyleSheet("QFrame#tempExportCard { background:transparent; }")
+        el = QVBoxLayout(export_card)
+        el.setContentsMargins(0, 0, 0, 0)
+        el.setSpacing(4)
+
+        self._export_status = QLabel("")
+        self._export_status.setAlignment(Qt.AlignCenter)
+        self._export_status.setWordWrap(True)
+        self._export_status.setStyleSheet("color:#94e2d5; font-size:10px;")
+        self._export_status.hide()
+        el.addWidget(self._export_status)
+
+        self._export_progress = QProgressBar()
+        self._export_progress.setRange(0, 0)
+        self._export_progress.setFixedWidth(92)
+        self._export_progress.hide()
+        el.addWidget(self._export_progress, 0, Qt.AlignCenter)
+
+        self._btn_export = QPushButton("Export XLSX")
+        self._btn_export.setObjectName("btn_export")
+        self._btn_export.setMinimumSize(104, 38)
+        self._btn_export.clicked.connect(self._export)
+        el.addWidget(self._btn_export)
+        tl.addWidget(export_card)
         lay.addWidget(top)
 
         note = QLabel(
-            "Temp alarms are shown only when no same-site Power alarm covers them. "
-            "Power coverage runs from occurrence through clearance plus Y. "
-            "Y defaults to 60 minutes and cannot exceed 60 minutes.")
+            "HT alarms that meet the daily threshold (>7 hours HT minus Power). "
+            "Set the week label above to scope the workbook export."
+        )
         note.setStyleSheet("color:#6c7086; font-size:11px;")
         note.setWordWrap(True)
         lay.addWidget(note)
+        self._metadata_warning = QLabel(self._metadata_warning_text())
+        self._metadata_warning.setStyleSheet("color:#fab387; font-size:11px;")
+        self._metadata_warning.setWordWrap(True)
+        self._metadata_warning.setVisible(bool(self._metadata_warning.text()))
+        lay.addWidget(self._metadata_warning)
 
         self._table_host = QVBoxLayout()
         lay.addLayout(self._table_host, 1)
         self._render_summary()
         self._render_table()
 
-    def _recompute(self, value: int):
-        self._margin_minutes = value
-        result, err = compute_temp_alarm_matches(self._source_df, margin_minutes=value)
-        result = filter_temp_matches_to_query(result, self._result_filter_query)
-        if self._selected_temp_df is not None:
-            result = filter_temp_matches_to_selected_temps(result, self._selected_temp_df)
-        self._df = result if not err else pd.DataFrame(columns=list(TEMP_HEADERS))
+    def _apply_week_now(self, force: bool = False):
+        new_label = self._week_input.text().strip()
+        if not force and new_label == self._week_label and not self._preview_is_stale(new_label):
+            return
+        self._week_label = new_label
+        self._start_preview_recompute()
+
+    def _apply_metadata_filter_now(self):
+        self._apply_week_now()
+
+    def _current_filter_text(self) -> str:
+        return self._metadata_filter_input.text().strip() if self._metadata_filter_input else ""
+
+    def _preview_is_stale(self, week_label: str | None = None) -> bool:
+        current_week = week_label if week_label is not None else self._week_label
+        return current_week != self._preview_week_label or self._current_filter_text() != self._preview_filter_text
+
+    def _clear_results_for_week_apply(self):
+        self._df = pd.DataFrame(columns=list(HT_MEET_HEADERS))
         self._render_summary()
         self._render_table()
+        QApplication.processEvents()
+
+    def _start_preview_recompute(self):
+        if self._preview_thread and self._preview_thread.isRunning():
+            return
+        self._clear_results_for_week_apply()
+        self._set_previewing(True)
+        self._preview_thread = _TempAlarmPreviewThread(
+            self._source_df,
+            self._site_metadata_df,
+            self._current_filter_text(),
+            self._week_label or None,
+            self,
+        )
+        self._preview_thread.succeeded.connect(self._on_preview_ready)
+        self._preview_thread.failed.connect(self._on_preview_failed)
+        self._preview_thread.finished.connect(self._on_preview_finished)
+        self._preview_thread.finished.connect(self._preview_thread.deleteLater)
+        self._preview_thread.start()
+
+    def _on_preview_ready(self, preview_source, meet, missing_ids, week_label: str, filter_text: str):
+        self._preview_source_df = preview_source
+        self._df = meet
+        self._preview_missing_metadata_ids = list(missing_ids or [])
+        self._preview_week_label = week_label
+        self._preview_filter_text = filter_text
+        if self._metadata_warning:
+            self._metadata_warning.setText(self._metadata_warning_text())
+            self._metadata_warning.setVisible(bool(self._metadata_warning.text()))
+        self._render_summary()
+        self._render_table()
+    def _on_preview_failed(self, msg: str):
+        self._export_after_preview_refresh = False
+        QMessageBox.critical(self, "HT Meet Preview Failed", msg)
+
+    def _on_preview_finished(self):
+        self._set_previewing(False)
+        self._preview_thread = None
+        if self._export_after_preview_refresh:
+            self._export_after_preview_refresh = False
+            self._export()
+
+    def _set_previewing(self, previewing: bool):
+        if self._btn_apply_week:
+            self._btn_apply_week.setEnabled(not previewing)
+            self._btn_apply_week.setText("Applying..." if previewing else "Apply")
+        if self._btn_export:
+            self._btn_export.setEnabled(not previewing)
+        if self._week_input:
+            self._week_input.setEnabled(not previewing)
+        if self._metadata_filter_input:
+            self._metadata_filter_input.setEnabled(not previewing)
+        if self._export_status:
+            self._export_status.setText("Refreshing preview...")
+            self._export_status.setVisible(previewing)
+        if self._export_progress:
+            self._export_progress.setVisible(previewing)
+        if previewing:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+        else:
+            QApplication.restoreOverrideCursor()
 
     def _render_summary(self):
         while self._summary_strip.count():
@@ -1777,28 +2049,41 @@ class TempAlarmDialog(QDialog):
                 item.widget().deleteLater()
         df = self._df
         n = len(df)
-        site_count = df["site_id"].nunique() if n and "site_id" in df.columns else 0
-        duration = pd.to_timedelta(df["temp_clear_duration"], errors="coerce") if n and "temp_clear_duration" in df.columns else pd.Series(dtype="timedelta64[ns]")
+        site_count = df["Site Name"].nunique() if n and "Site Name" in df.columns else 0
+        week_label_str = self._week_label or _infer_label_from_source(self._source_df)
+        date_range_str = ""
+        if week_label_str:
+            try:
+                s, e = _week_range_for_label(week_label_str)
+                if s and e:
+                    date_range_str = f"{_fmt_date_short(s)} – {_fmt_date_short(e)}"
+            except Exception:
+                date_range_str = ""
         for label, val, color in [
-            ("Uncovered temp alarms", f"{n:,}", "#f38ba8"),
-            ("Unique sites", f"{site_count:,}", "#a6e3a1"),
-            ("Y margin", f"{self._margin_minutes} min", "#fab387"),
-            ("Total clear duration", _fmt_td(duration.sum()) if not duration.empty else "-", "#94e2d5"),
+            ("Meet Rows", f"{n:,}", "#f38ba8"),
+            ("Sites", f"{site_count:,}", "#a6e3a1"),
+            ("Export Week", week_label_str or _not_available_str(), "#fab387"),
+            ("Date Range", date_range_str or _not_available_str(), "#94e2d5"),
         ]:
-            box = QWidget()
+            box = QFrame()
+            box.setObjectName("tempMetricCard")
+            box.setMinimumWidth(112)
+            box.setStyleSheet("QFrame#tempMetricCard { background:#181825; border-radius:8px; }")
             vb = QVBoxLayout(box)
-            vb.setContentsMargins(0, 0, 0, 0)
+            vb.setContentsMargins(8, 6, 8, 6)
+            vb.setSpacing(2)
             lv = QLabel(val)
             lv.setAlignment(Qt.AlignCenter)
-            lv.setFont(QFont("Segoe UI", 13, QFont.Bold))
+            lv.setWordWrap(True)
+            lv.setFont(QFont("Segoe UI", 11, QFont.Bold))
             lv.setStyleSheet(f"color:{color};")
             lt = QLabel(label)
             lt.setAlignment(Qt.AlignCenter)
-            lt.setStyleSheet("color:#6c7086; font-size:11px;")
+            lt.setWordWrap(True)
+            lt.setStyleSheet("color:#a6adc8; font-size:9px;")
             vb.addWidget(lv)
             vb.addWidget(lt)
-            self._summary_strip.addWidget(box)
-        self._summary_strip.addStretch()
+            self._summary_strip.addWidget(box, 1)
 
     def _render_table(self):
         while self._table_host.count():
@@ -1812,9 +2097,10 @@ class TempAlarmDialog(QDialog):
                 f"Showing first {len(table_df):,} of {len(df):,} rows. Export includes all rows.")
             note.setStyleSheet("color:#fab387; font-size:11px;")
             self._table_host.addWidget(note)
-        cols = [c for c in TEMP_HEADERS if c in table_df.columns]
+        cols = [c for c in HT_MEET_HEADERS if c in table_df.columns]
         self._tbl = QTableWidget(len(table_df), len(cols))
-        self._tbl.setHorizontalHeaderLabels([TEMP_HEADERS[c] for c in cols])
+        self._tbl.setUpdatesEnabled(False)
+        self._tbl.setHorizontalHeaderLabels([HT_MEET_HEADERS[c] for c in cols])
         self._tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._tbl.setAlternatingRowColors(True)
@@ -1823,32 +2109,239 @@ class TempAlarmDialog(QDialog):
         self._tbl.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
         hdr = self._tbl.horizontalHeader()
         for i, c in enumerate(cols):
-            hdr.resizeSection(i, TEMP_WIDTHS.get(c, 120))
+            hdr.resizeSection(i, HT_MEET_WIDTHS.get(c, 120))
         hdr.setStretchLastSection(True)
-        for r, row in table_df.iterrows():
-            for ci, c in enumerate(cols):
-                val = row.get(c, "")
-                item = QTableWidgetItem("" if pd.isna(val) else str(val))
-                item.setTextAlignment(Qt.AlignCenter if c.endswith("duration") or c.endswith("margin") else Qt.AlignLeft | Qt.AlignVCenter)
-                if c == "site_id":
-                    item.setForeground(QColor("#cba6f7"))
-                elif c == "match_window":
-                    item.setForeground(QColor("#a6e3a1"))
-                self._tbl.setItem(r, ci, item)
-        self._tbl.setSortingEnabled(True)
+        try:
+            for r, row in enumerate(table_df.itertuples(index=False, name=None)):
+                row_values = dict(zip(table_df.columns, row))
+                for ci, c in enumerate(cols):
+                    val = row_values.get(c, "")
+                    item = QTableWidgetItem("" if pd.isna(val) else str(val))
+                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                    if c == "Site Name":
+                        item.setForeground(QColor("#cba6f7"))
+                    elif c == "Alarm Source":
+                        item.setForeground(QColor("#89b4fa"))
+                    self._tbl.setItem(r, ci, item)
+        finally:
+            self._tbl.setSortingEnabled(True)
+            self._tbl.setUpdatesEnabled(True)
         self._table_host.addWidget(self._tbl)
 
     def _export(self):
+        if self._export_thread and self._export_thread.isRunning():
+            return
+        if self._preview_thread and self._preview_thread.isRunning():
+            self._export_after_preview_refresh = True
+            return
+        # Sync week label from input
+        entered = self._week_input.text().strip()
+        if entered:
+            self._week_label = entered
+        week_label = self._week_label or _infer_label_from_source(self._source_df)
+        if week_label:
+            try:
+                ht_export_week_range(week_label)
+            except ValueError as exc:
+                QMessageBox.warning(self, "Invalid Export Week", str(exc))
+                return
+        if self._preview_is_stale(self._week_label):
+            self._export_after_preview_refresh = True
+            self._apply_week_now(force=True)
+            return
+        default_name = (
+            ht_export_filename(week_label)
+            if week_label
+            else f"ht_alarm_workbook_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+        )
         fp, _ = QFileDialog.getSaveFileName(
             self,
-            "Export Uncovered Temp Alarms",
-            f"uncovered_temp_alarms_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+            "Export HT Alarm Workbook",
+            default_name,
             "Excel Files (*.xlsx)",
         )
         if not fp:
             return
+        self._set_exporting(True)
+        self._export_thread = _TempAlarmExportThread(
+            self._df,
+            fp,
+            self._preview_source_df,
+            week_label if week_label else None,
+            self._site_metadata_df,
+            self,
+        )
+        self._export_thread.succeeded.connect(self._on_export_done)
+        self._export_thread.failed.connect(self._on_export_failed)
+        self._export_thread.finished.connect(self._on_export_thread_finished)
+        self._export_thread.finished.connect(self._export_thread.deleteLater)
+        self._export_thread.start()
+
+    def _set_exporting(self, exporting: bool):
+        if self._btn_export:
+            self._btn_export.setEnabled(not exporting)
+            self._btn_export.setText("Exporting..." if exporting else "Export XLSX")
+        if hasattr(self, "_week_input") and self._week_input:
+            self._week_input.setEnabled(not exporting)
+        if self._export_status:
+            self._export_status.setText("Exporting workbook...")
+            self._export_status.setVisible(exporting)
+        if self._export_progress:
+            self._export_progress.setVisible(exporting)
+        if exporting:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+        else:
+            QApplication.restoreOverrideCursor()
+
+    def _on_export_done(self, fp: str):
+        self._set_exporting(False)
+        warning = ""
+        if self._export_thread and getattr(self._export_thread, "warning_result", None):
+            count = int(self._export_thread.warning_result.get("missing_metadata_count") or 0)
+            if count:
+                ids = self._export_thread.warning_result.get("missing_metadata_site_ids") or []
+                suffix = f": {', '.join(ids[:10])}" if ids else ""
+                if len(ids) > 10:
+                    suffix += ", …"
+                warning = f"\n\nWarning: {count} site(s) missing Site Metadata{suffix}. See workbook Missing Metadata sheet."
+        QMessageBox.information(self, "Export OK", f"Saved to:\n{fp}{warning}")
+
+    def _metadata_warning_text(self) -> str:
+        if self._site_metadata_df is None or self._site_metadata_df.empty:
+            return "Site Metadata Catalog not loaded. Export still works; enrichment fields may remain alarm-derived."
+        if self._preview_missing_metadata_ids:
+            ids = self._preview_missing_metadata_ids[:10]
+            suffix = ", …" if len(self._preview_missing_metadata_ids) > 10 else ""
+            return f"Missing Site Metadata for: {', '.join(ids)}{suffix}. Export still works and will include a Missing Metadata sheet."
+        return ""
+
+    def _on_export_failed(self, msg: str):
+        self._set_exporting(False)
+        QMessageBox.critical(self, "Export Failed", msg)
+
+    def _on_export_thread_finished(self):
+        self._export_thread = None
+
+    def closeEvent(self, event):
+        if self._preview_thread and self._preview_thread.isRunning():
+            QMessageBox.information(
+                self,
+                "Preview Refresh in Progress",
+                "Wait for the HT Meet preview refresh to finish before closing this window.",
+            )
+            event.ignore()
+            return
+        if self._export_thread and self._export_thread.isRunning():
+            QMessageBox.information(
+                self,
+                "Export in Progress",
+                "Wait for the HT Alarm Workbook export to finish before closing this window.",
+            )
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+
+def _infer_label_from_source(source_df: pd.DataFrame | None) -> str:
+    if source_df is None or source_df.empty or "occurred_on" not in source_df.columns:
+        return ""
+    times = pd.to_datetime(source_df["occurred_on"], errors="coerce").dropna()
+    if times.empty:
+        return ""
+    try:
+        return ht_export_week_from_date(times.max())["week_label"]
+    except Exception:
+        return ""
+
+
+def _build_temp_alarm_preview(
+    source_df: pd.DataFrame | None,
+    site_metadata_df: pd.DataFrame | None,
+    filter_text: str,
+    week_label: str | None,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    source = _filter_temp_alarm_source_for_metadata(source_df, site_metadata_df, filter_text)
+    if source is None:
+        source = pd.DataFrame()
+    missing_ids: list[str] = []
+    if site_metadata_df is not None and not site_metadata_df.empty:
+        source, missing = enrich_source_with_site_metadata(source, site_metadata_df)
+        missing_ids = _missing_site_ids(missing)
+    _study, meet = compute_ht_meet_rows(source, week_label=week_label)
+    return source, meet, missing_ids
+
+
+def _filter_temp_alarm_source_for_metadata(
+    source_df: pd.DataFrame | None,
+    site_metadata_df: pd.DataFrame | None,
+    filter_text: str,
+) -> pd.DataFrame | None:
+    text = str(filter_text or "").strip()
+    if not text or source_df is None or source_df.empty:
+        return source_df
+    source = source_df.copy()
+    mask = pd.Series(False, index=source.index)
+    for column in ("site_id", "site_name", "site_code", "area", "contractor", "alarm_source"):
+        if column in source.columns:
+            mask |= source[column].fillna("").astype(str).str.contains(text, case=False, na=False, regex=False)
+    if site_metadata_df is not None and not site_metadata_df.empty and "site_id" in source.columns:
+        meta_mask = pd.Series(False, index=site_metadata_df.index)
+        for column in site_metadata_df.columns:
+            meta_mask |= site_metadata_df[column].fillna("").astype(str).str.contains(text, case=False, na=False, regex=False)
+        site_ids = {_normalize_site_text(v) for v in site_metadata_df.loc[meta_mask, "site_id"].dropna()} if "site_id" in site_metadata_df.columns else set()
+        source_ids = source["site_id"].map(_normalize_site_text)
+        mask |= source_ids.isin(site_ids)
+    return source[mask].copy().reset_index(drop=True)
+
+
+def _normalize_site_text(value) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return "".join(ch for ch in str(value).strip().upper() if ch.isalnum())
+
+
+def _missing_site_ids(missing: pd.DataFrame | None) -> list[str]:
+    if missing is None or missing.empty or "Site ID" not in missing.columns:
+        return []
+    values = missing["Site ID"].dropna().astype(str).str.strip()
+    return sorted({value for value in values if value})
+
+
+def _week_range_for_label(week_label: str) -> tuple[str, str] | tuple[None, None]:
+    """Return (start, end) date strings for a week label using ht_export_week_range."""
+    if not week_label:
+        return None, None
+    try:
+        start, end = ht_export_week_range(week_label)
+        return str(start.date()), str(end.date())
+    except Exception:
+        return None, None
+
+
+def _load_site_metadata_catalog() -> pd.DataFrame:
+    try:
+        from alarm_app.data import catalog_store
+    except ImportError:
         try:
-            export_temp_alarm_workbook(self._df, fp)
-            QMessageBox.information(self, "Export OK", f"Saved to:\n{fp}")
-        except Exception as e:
-            QMessageBox.critical(self, "Export Failed", str(e))
+            from data import catalog_store
+        except ImportError:
+            return pd.DataFrame()
+    try:
+        return catalog_store.search_site_metadata(limit=None)
+    except Exception:
+        return pd.DataFrame()
+
+
+def _not_available_str() -> str:
+    return "—"
+
+
+def _fmt_date_short(date_str: str) -> str:
+    """Convert a YYYY-MM-DD string to MM/DD format."""
+    try:
+        parts = date_str.split("-")
+        if len(parts) == 3:
+            return f"{parts[1]}/{parts[2]}"
+    except Exception:
+        pass
+    return date_str
