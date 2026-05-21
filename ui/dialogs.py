@@ -1739,6 +1739,37 @@ class _TempAlarmExportThread(QThread):
             self.failed.emit(str(exc))
 
 
+class _TempAlarmPreviewThread(QThread):
+    succeeded = pyqtSignal(object, object, object, str, str)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        source_df: pd.DataFrame,
+        site_metadata_df: pd.DataFrame | None,
+        filter_text: str,
+        week_label: str | None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._source_df = source_df
+        self._site_metadata_df = site_metadata_df
+        self._filter_text = filter_text
+        self._week_label = week_label
+
+    def run(self):
+        try:
+            preview_source, meet, missing_ids = _build_temp_alarm_preview(
+                self._source_df,
+                self._site_metadata_df,
+                self._filter_text,
+                self._week_label,
+            )
+            self.succeeded.emit(preview_source, meet, missing_ids, self._week_label or "", self._filter_text)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class TempAlarmDialog(QDialog):
     """HT Alarm Workbook Meet preview dialog."""
 
@@ -1769,9 +1800,11 @@ class TempAlarmDialog(QDialog):
         self._export_status = None
         self._export_progress = None
         self._export_thread = None
+        self._preview_thread = None
+        self._export_after_preview_refresh = False
         self._metadata_warning = None
-        self._refresh_preview_frames(render=False)
         self._build()
+        self._start_preview_recompute()
 
     def _infer_default_week_label(self) -> str:
         """Try to infer the default HT export week label from the meet data or source."""
@@ -1931,14 +1964,7 @@ class TempAlarmDialog(QDialog):
         if not force and new_label == self._week_label and not self._preview_is_stale(new_label):
             return
         self._week_label = new_label
-        self._clear_results_for_week_apply()
-        try:
-            if self._btn_apply_week:
-                self._btn_apply_week.setEnabled(False)
-            self._recompute()
-        finally:
-            if self._btn_apply_week:
-                self._btn_apply_week.setEnabled(True)
+        self._start_preview_recompute()
 
     def _apply_metadata_filter_now(self):
         self._apply_week_now(force=True)
@@ -1961,11 +1987,76 @@ class TempAlarmDialog(QDialog):
         self._render_summary()
         self._render_table()
 
+    def _start_preview_recompute(self):
+        if self._preview_thread and self._preview_thread.isRunning():
+            return
+        self._clear_results_for_week_apply()
+        self._set_previewing(True)
+        self._preview_thread = _TempAlarmPreviewThread(
+            self._source_df,
+            self._site_metadata_df,
+            self._current_filter_text(),
+            self._week_label or None,
+            self,
+        )
+        self._preview_thread.succeeded.connect(self._on_preview_ready)
+        self._preview_thread.failed.connect(self._on_preview_failed)
+        self._preview_thread.finished.connect(self._on_preview_finished)
+        self._preview_thread.finished.connect(self._preview_thread.deleteLater)
+        self._preview_thread.start()
+
+    def _on_preview_ready(self, preview_source, meet, missing_ids, week_label: str, filter_text: str):
+        self._preview_source_df = preview_source
+        self._df = meet
+        self._preview_missing_metadata_ids = list(missing_ids or [])
+        self._preview_week_label = week_label
+        self._preview_filter_text = filter_text
+        if self._metadata_warning:
+            self._metadata_warning.setText(self._metadata_warning_text())
+            self._metadata_warning.setVisible(bool(self._metadata_warning.text()))
+        self._render_summary()
+        self._render_table()
+    def _on_preview_failed(self, msg: str):
+        self._export_after_preview_refresh = False
+        QMessageBox.critical(self, "HT Meet Preview Failed", msg)
+
+    def _on_preview_finished(self):
+        self._set_previewing(False)
+        self._preview_thread = None
+        if self._export_after_preview_refresh:
+            self._export_after_preview_refresh = False
+            self._export()
+
+    def _set_previewing(self, previewing: bool):
+        if self._btn_apply_week:
+            self._btn_apply_week.setEnabled(not previewing)
+            self._btn_apply_week.setText("Applying..." if previewing else "Apply")
+        if self._btn_export:
+            self._btn_export.setEnabled(not previewing)
+        if self._week_input:
+            self._week_input.setEnabled(not previewing)
+        if self._metadata_filter_input:
+            self._metadata_filter_input.setEnabled(not previewing)
+        if self._export_status:
+            self._export_status.setText("Refreshing preview...")
+            self._export_status.setVisible(previewing)
+        if self._export_progress:
+            self._export_progress.setVisible(previewing)
+        if previewing:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+        else:
+            QApplication.restoreOverrideCursor()
+
     def _refresh_preview_frames(self, *, render: bool = True):
-        source = self._prepare_preview_source()
-        _study, meet = compute_ht_meet_rows(source, week_label=self._week_label or None)
+        source, meet, missing_ids = _build_temp_alarm_preview(
+            self._source_df,
+            self._site_metadata_df,
+            self._current_filter_text(),
+            self._week_label or None,
+        )
         self._preview_source_df = source
         self._df = meet
+        self._preview_missing_metadata_ids = missing_ids
         self._preview_week_label = self._week_label
         self._preview_filter_text = self._current_filter_text()
         if self._metadata_warning:
@@ -1974,36 +2065,6 @@ class TempAlarmDialog(QDialog):
         if render:
             self._render_summary()
             self._render_table()
-
-    def _prepare_preview_source(self) -> pd.DataFrame:
-        source = self._source_for_metadata_filter()
-        if source is None:
-            self._preview_missing_metadata_ids = []
-            return pd.DataFrame()
-        if self._site_metadata_df is not None and not self._site_metadata_df.empty:
-            source, missing = enrich_source_with_site_metadata(source, self._site_metadata_df)
-            self._preview_missing_metadata_ids = _missing_site_ids(missing)
-        else:
-            self._preview_missing_metadata_ids = []
-        return source
-
-    def _source_for_metadata_filter(self) -> pd.DataFrame:
-        text = self._current_filter_text()
-        if not text or self._source_df is None or self._source_df.empty:
-            return self._source_df
-        source = self._source_df.copy()
-        mask = pd.Series(False, index=source.index)
-        for column in ("site_id", "site_name", "site_code", "area", "contractor", "alarm_source"):
-            if column in source.columns:
-                mask |= source[column].fillna("").astype(str).str.contains(text, case=False, na=False)
-        if self._site_metadata_df is not None and not self._site_metadata_df.empty and "site_id" in source.columns:
-            meta_mask = pd.Series(False, index=self._site_metadata_df.index)
-            for column in self._site_metadata_df.columns:
-                meta_mask |= self._site_metadata_df[column].fillna("").astype(str).str.contains(text, case=False, na=False)
-            site_ids = {_normalize_site_text(v) for v in self._site_metadata_df.loc[meta_mask, "site_id"].dropna()} if "site_id" in self._site_metadata_df.columns else set()
-            source_ids = source["site_id"].map(_normalize_site_text)
-            mask |= source_ids.isin(site_ids)
-        return source[mask].copy().reset_index(drop=True)
 
     def _render_summary(self):
         while self._summary_strip.count():
@@ -2094,12 +2155,17 @@ class TempAlarmDialog(QDialog):
     def _export(self):
         if self._export_thread and self._export_thread.isRunning():
             return
+        if self._preview_thread and self._preview_thread.isRunning():
+            self._export_after_preview_refresh = True
+            return
         # Sync week label from input
         entered = self._week_input.text().strip()
         if entered:
             self._week_label = entered
         if self._preview_is_stale(self._week_label):
+            self._export_after_preview_refresh = True
             self._apply_week_now(force=True)
+            return
         week_label = self._week_label or _infer_label_from_source(self._source_df)
         default_name = (
             ht_export_filename(week_label)
@@ -2175,6 +2241,14 @@ class TempAlarmDialog(QDialog):
         self._export_thread = None
 
     def closeEvent(self, event):
+        if self._preview_thread and self._preview_thread.isRunning():
+            QMessageBox.information(
+                self,
+                "Preview Refresh in Progress",
+                "Wait for the HT Meet preview refresh to finish before closing this window.",
+            )
+            event.ignore()
+            return
         if self._export_thread and self._export_thread.isRunning():
             QMessageBox.information(
                 self,
@@ -2196,6 +2270,46 @@ def _infer_label_from_source(source_df: pd.DataFrame | None) -> str:
         return ht_export_week_from_date(times.max())["week_label"]
     except Exception:
         return ""
+
+
+def _build_temp_alarm_preview(
+    source_df: pd.DataFrame | None,
+    site_metadata_df: pd.DataFrame | None,
+    filter_text: str,
+    week_label: str | None,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    source = _filter_temp_alarm_source_for_metadata(source_df, site_metadata_df, filter_text)
+    if source is None:
+        source = pd.DataFrame()
+    missing_ids: list[str] = []
+    if site_metadata_df is not None and not site_metadata_df.empty:
+        source, missing = enrich_source_with_site_metadata(source, site_metadata_df)
+        missing_ids = _missing_site_ids(missing)
+    _study, meet = compute_ht_meet_rows(source, week_label=week_label)
+    return source, meet, missing_ids
+
+
+def _filter_temp_alarm_source_for_metadata(
+    source_df: pd.DataFrame | None,
+    site_metadata_df: pd.DataFrame | None,
+    filter_text: str,
+) -> pd.DataFrame | None:
+    text = str(filter_text or "").strip()
+    if not text or source_df is None or source_df.empty:
+        return source_df
+    source = source_df.copy()
+    mask = pd.Series(False, index=source.index)
+    for column in ("site_id", "site_name", "site_code", "area", "contractor", "alarm_source"):
+        if column in source.columns:
+            mask |= source[column].fillna("").astype(str).str.contains(text, case=False, na=False)
+    if site_metadata_df is not None and not site_metadata_df.empty and "site_id" in source.columns:
+        meta_mask = pd.Series(False, index=site_metadata_df.index)
+        for column in site_metadata_df.columns:
+            meta_mask |= site_metadata_df[column].fillna("").astype(str).str.contains(text, case=False, na=False)
+        site_ids = {_normalize_site_text(v) for v in site_metadata_df.loc[meta_mask, "site_id"].dropna()} if "site_id" in site_metadata_df.columns else set()
+        source_ids = source["site_id"].map(_normalize_site_text)
+        mask |= source_ids.isin(site_ids)
+    return source[mask].copy().reset_index(drop=True)
 
 
 def _normalize_site_text(value) -> str:

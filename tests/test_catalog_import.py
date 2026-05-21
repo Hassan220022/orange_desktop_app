@@ -331,7 +331,7 @@ class TestBDTSummaryImport:
         wb.remove(wb.active)
         ws = wb.create_sheet("P1")
         ws.append(["Site ID", "Week", "Test Date", "Test Year", "Result"])
-        ws.append(["S1", "W27", "2024-07-01", "2024", "Pass"])
+        ws.append(["S1", "W27", "2024-07-01", 2024, "Pass"])
         wb.save(xlsx_path)
 
         import_bdt_summary_workbook(xlsx_path)
@@ -349,6 +349,31 @@ class TestBDTSummaryImport:
             assert row.test_year == 2024
         finally:
             session.close()
+
+    def test_restore_failure_preserves_original_import_exception(self, tmp_path, monkeypatch):
+        xlsx_path = tmp_path / "network_summary.xlsx"
+        _write_network_summary_xlsx(xlsx_path, include_code=True)
+
+        from alarm_app.db.engine import get_shared_session as real_get_shared_session
+
+        session = real_get_shared_session()
+        calls = {"replace": 0}
+
+        def replace_then_fail_on_restore(_df):
+            calls["replace"] += 1
+            if calls["replace"] > 1:
+                raise RuntimeError("restore failed")
+            return len(_df)
+
+        def fail_commit():
+            raise RuntimeError("commit failed")
+
+        monkeypatch.setattr("alarm_app.db.engine.get_shared_session", lambda: session)
+        monkeypatch.setattr("alarm_app.data.catalog_store.replace_site_metadata", replace_then_fail_on_restore)
+        monkeypatch.setattr(session, "commit", fail_commit)
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            import_network_summary_db_sheet(xlsx_path)
 
     def test_empty_workbook_returns_empty(self, tmp_path):
         xlsx_path = tmp_path / "empty_bdt.xlsx"

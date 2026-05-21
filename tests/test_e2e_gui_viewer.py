@@ -1,6 +1,7 @@
 """PyQt5 GUI E2E tests for the main AlarmViewer window."""
 
 import os
+import time
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
@@ -23,6 +24,16 @@ def _get_app() -> QApplication:
     if _app is None:
         _app = QApplication.instance() or QApplication([])
     return _app
+
+
+def _wait_for_dialog_preview(dialog: TempAlarmDialog, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    app = QApplication.instance() or _get_app()
+    while dialog._preview_thread is not None and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    app.processEvents()
+    assert dialog._preview_thread is None
 
 
 # ── fixture ───────────────────────────────────────────────────────
@@ -287,11 +298,13 @@ class TestAlarmViewerGUI:
 
         dialog = TempAlarmDialog(pd.DataFrame(), source, week_label="W27-24", parent=gui_app)
         try:
+            _wait_for_dialog_preview(dialog)
             assert set(dialog._df["Site Name"]) == {"Catalog Alpha", "Catalog Beta", "Alarm Gamma"}
             assert "CCC333" in dialog._metadata_warning.text()
 
             dialog._metadata_filter_input.setText("North")
             dialog._apply_metadata_filter_now()
+            _wait_for_dialog_preview(dialog)
 
             assert list(dialog._df["Site Name"]) == ["Catalog Alpha"]
             assert dialog._preview_source_df["site_id"].dropna().astype(str).str.upper().unique().tolist() == ["AAA111"]

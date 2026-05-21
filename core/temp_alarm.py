@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
@@ -473,17 +473,16 @@ def ht_export_week_range(week_label: str) -> tuple[pd.Timestamp, pd.Timestamp]:
         raise ValueError(f"Invalid HT export week label: {week_label!r}")
     year, week = parsed
     first_day = date(year, 1, 1)
-    fallback = pd.Timestamp(first_day)
-    for offset in range(371):
-        current = first_day + timedelta(days=offset)
-        current_ts = pd.Timestamp(current)
-        if int(current_ts.strftime("%U")) + 1 == week:
-            if current.weekday() == 6:
-                start = current_ts.normalize()
-                return start, start + pd.Timedelta(days=7)
-            if week == 1:
-                return fallback.normalize(), fallback.normalize() + pd.Timedelta(days=7)
-    raise ValueError(f"Could not resolve HT export week range: {week_label!r}")
+    max_week = int(pd.Timestamp(date(year, 12, 31)).strftime("%U")) + 1
+    if week > max_week:
+        raise ValueError(f"Could not resolve HT export week range: {week_label!r}")
+    if week == 1:
+        start = pd.Timestamp(first_day).normalize()
+        return start, start + pd.Timedelta(days=7)
+    days_until_first_sunday = (6 - first_day.weekday()) % 7
+    first_sunday = pd.Timestamp(first_day + timedelta(days=days_until_first_sunday)).normalize()
+    start = first_sunday + pd.Timedelta(weeks=week - 2)
+    return start, start + pd.Timedelta(days=7)
 
 
 def ht_export_filename(week_label: str) -> str:
@@ -1295,130 +1294,3 @@ def _first_text(df: pd.DataFrame, column: str) -> str:
     values = df[column].dropna().astype(str).str.strip()
     values = values[values != ""]
     return values.iloc[0] if not values.empty else ""
-
-
-def _format_temp_alarm_workbook(path: Path) -> None:
-    wb = load_workbook(path)
-    blue_fill = PatternFill("solid", fgColor="4F81BD")
-    gold_fill = PatternFill("solid", fgColor="FFC000")
-    green_fill = PatternFill("solid", fgColor="92D050")
-    yellow_fill = PatternFill("solid", fgColor="FFFF00")
-    border = Border(
-        left=Side(style="thin", color="FF000000"),
-        right=Side(style="thin", color="FF000000"),
-        top=Side(style="thin", color="FF000000"),
-        bottom=Side(style="thin", color="FF000000"),
-    )
-    for ws in wb.worksheets:
-        if ws.title in {"Meet"} or "AUTIN" in ws.title:
-            header_fill = gold_fill
-        else:
-            header_fill = blue_fill
-        for cell in ws[1]:
-            cell.fill = header_fill
-            cell.font = Font(bold=True)
-            cell.border = border
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-        if "HT Study" in ws.title:
-            for col in range(12, min(ws.max_column, 15) + 1):
-                ws.cell(row=1, column=col).fill = green_fill
-        if "AUTIN Power" in ws.title and ws.max_column >= 12:
-            ws.cell(row=1, column=12).number_format = "[hh]:mm"
-        if ws.title.endswith("AUTIN HT") and ws.max_column >= 5:
-            ws.cell(row=1, column=5).value = "Duration\n(hh:mm:ss)"
-            ws.cell(row=1, column=5).number_format = "[hh]:mm"
-        if "HT Study" in ws.title and ws.max_column >= 7:
-            ws.cell(row=1, column=7).value = "Duration\n(hh:mm:ss)"
-            ws.cell(row=1, column=7).number_format = "[hh]:mm"
-        if "HT Study" in ws.title and ws.max_column >= 15:
-            for col in (12, 13, 14):
-                ws.cell(row=1, column=col).number_format = "[hh]:mm"
-        for cell in ws[1]:
-            if str(cell.value or "").strip() in {"Support", "Day"}:
-                cell.fill = yellow_fill
-        if "HT Study" in ws.title or "AUTIN Power" in ws.title:
-            for row in range(2, ws.max_row + 1):
-                for col in (3, 4):
-                    ws.cell(row=row, column=col).fill = yellow_fill
-        if "HT Study" in ws.title:
-            for row in range(2, ws.max_row + 1):
-                for col in range(12, min(ws.max_column, 15) + 1):
-                    ws.cell(row=row, column=col).fill = green_fill
-        for row in ws.iter_rows(min_row=2, max_row=max(ws.max_row, 2)):
-            for cell in row:
-                cell.border = border
-                cell.alignment = Alignment(vertical="center")
-        if ws.title in {"Meet"} or "AUTIN" in ws.title:
-            widths = {
-                1: 47.43,
-                2: 14.71,
-                3: 14.71,
-                4: 11.14,
-                5: 19.43,
-                6: 16.57,
-                7: 14.57,
-                8: 26.71,
-                9: 15.57,
-                10: 30.57,
-                11: 14.43,
-                12: 14.57,
-                14: 9.14,
-                15: 14.43,
-            }
-            for col in range(1, ws.max_column + 1):
-                ws.column_dimensions[chr(64 + col)].width = widths.get(col, 18)
-            ws.row_dimensions[1].height = 45
-            ws.auto_filter.ref = ws.dimensions
-            if "HT Study" in ws.title:
-                ws.freeze_panes = "A3722" if ws.max_row >= 3722 else "A2"
-        else:
-            widths = [6, 34, 12, 12, 14, 16, 12, 20, 20, 12]
-            for index, width in enumerate(widths, start=1):
-                ws.column_dimensions[chr(64 + index)].width = width
-            for col in range(11, ws.max_column + 1):
-                ws.column_dimensions[chr(64 + col)].width = 12
-        duration_columns = _duration_column_indexes(ws)
-        if not ws.title.endswith("AUTIN HT"):
-            for row in range(2, ws.max_row + 1):
-                for col in duration_columns:
-                    ws.cell(row=row, column=col).number_format = "[hh]:mm"
-        datetime_columns = _datetime_column_indexes(ws)
-        for row in range(2, ws.max_row + 1):
-            for col in datetime_columns:
-                ws.cell(row=row, column=col).number_format = "m/d/yy h:mm"
-    wb.save(path)
-
-
-def _duration_column_indexes(ws) -> list[int]:
-    headers = [cell.value for cell in ws[1]]
-    return [
-        idx
-        for idx, header in enumerate(headers, start=1)
-        if str(header or "").strip() in {
-            "Duration(hh:mm:ss)",
-            "HT Duration",
-            "Power Duration",
-            "HT SUM IFS",
-            "Powr SUM IFS",
-            "HT SUM",
-            "Power SUM",
-            "Diff",
-            "SUM",
-        }
-    ]
-
-
-def _datetime_column_indexes(ws) -> list[int]:
-    headers = [cell.value for cell in ws[1]]
-    return [
-        idx
-        for idx, header in enumerate(headers, start=1)
-        if str(header or "").strip() in {
-            "Last Occurred On",
-            "Cleared On",
-            "HT Alarm",
-            "HT Cleared",
-            "Power Alarm",
-            "Power Cleared",
-        }
-    ]

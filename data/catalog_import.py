@@ -174,7 +174,7 @@ def import_network_summary_db_sheet(workbook_path: str | Path) -> int:
     except Exception:
         session.rollback()
         if duckdb_written:
-            replace_site_metadata(duckdb_snapshot)
+            _restore_duckdb_snapshot(replace_site_metadata, duckdb_snapshot, "site metadata")
         raise
     finally:
         session.close()
@@ -213,6 +213,11 @@ def _extract_test_date(value: Any) -> str | None:
 def _extract_test_year(value: Any) -> int | None:
     if value is None:
         return None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if 1000 <= value <= 9999 else None
+    if isinstance(value, float) and value.is_integer():
+        year = int(value)
+        return year if 1000 <= year <= 9999 else None
     try:
         ts = pd.to_datetime(value, errors="coerce")
         if pd.isna(ts):
@@ -221,6 +226,13 @@ def _extract_test_year(value: Any) -> int | None:
         return ts.year
     except (ValueError, TypeError):
         return None
+
+
+def _restore_duckdb_snapshot(restore_func, snapshot: pd.DataFrame, label: str) -> None:
+    try:
+        restore_func(snapshot)
+    except Exception:
+        _log.exception("Failed to restore DuckDB %s snapshot after import rollback", label)
 
 
 def import_bdt_summary_workbook(workbook_path: str | Path) -> dict[str, int]:
@@ -372,7 +384,7 @@ def import_bdt_summary_workbook(workbook_path: str | Path) -> dict[str, int]:
     except Exception:
         session.rollback()
         if duckdb_written:
-            replace_bdt_summary(duckdb_snapshot)
+            _restore_duckdb_snapshot(replace_bdt_summary, duckdb_snapshot, "BDT summary")
         raise
     finally:
         session.close()
