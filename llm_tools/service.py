@@ -19,7 +19,7 @@ from sqlalchemy import inspect as sa_inspect
 try:
     from alarm_app.bdt.export import build_bdt_export_sheets
     from alarm_app.core.backup_time import compute_backup_times
-    from alarm_app.data import alarm_store, catalog_store, state
+    from alarm_app.data import alarm_store, state
     from alarm_app.data.site_report import (
         build_pm_accept_report,
         build_site_alarm_report,
@@ -43,7 +43,7 @@ try:
 except ImportError:
     from bdt.export import build_bdt_export_sheets
     from core.backup_time import compute_backup_times
-    from data import alarm_store, catalog_store, state
+    from data import alarm_store, state
     from data.site_report import (
         build_pm_accept_report,
         build_site_alarm_report,
@@ -1160,110 +1160,4 @@ class LocalDataService:
             "width": blob.width if blob else None,
             "height": blob.height if blob else None,
             "local_path": blob.local_path if blob else None,
-        }
-
-    # ------------------------------------------------------------------
-    # Catalog-backed tools (DuckDB)
-    # ------------------------------------------------------------------
-
-    def query_site_metadata(self, **kwargs) -> dict[str, Any]:
-        site_raw = str(kwargs.get("site_code") or kwargs.get("site_id") or "").strip()
-        if not site_raw:
-            return {"error": "site_code or site_id is required"}
-        try:
-            normalized = catalog_store._normalize_site_id(site_raw)
-        except Exception:
-            normalized = site_raw.upper()
-        try:
-            df = catalog_store.query_site_metadata(site_raw)
-        except Exception as exc:
-            return {"site_id": normalized, "rows": [], "row_count": 0, "error": str(exc)}
-        rows = _df_records(df)
-        for row in rows:
-            raw_json = row.pop("raw_data_json", None)
-            if raw_json and isinstance(raw_json, str):
-                try:
-                    parsed = json.loads(raw_json)
-                    if isinstance(parsed, dict):
-                        row.update({str(k): v for k, v in parsed.items()})
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        return {"site_id": normalized, "rows": rows, "row_count": len(rows)}
-
-    def search_site_metadata(self, **kwargs) -> dict[str, Any]:
-        limit = _limit(kwargs.get("limit"), default=100)
-        try:
-            df = catalog_store.search_site_metadata(
-                site_text=str(kwargs.get("site_text") or kwargs.get("site_code") or kwargs.get("site_id") or "").strip() or None,
-                area=str(kwargs.get("area") or "").strip() or None,
-                subcontractor=str(kwargs.get("subcontractor") or kwargs.get("contractor") or "").strip() or None,
-                backup_status=str(kwargs.get("backup_status") or kwargs.get("battery_status") or "").strip() or None,
-                limit=limit,
-            )
-        except Exception as exc:
-            return {"rows": [], "row_count": 0, "error": str(exc)}
-        rows = _df_records(df)
-        for row in rows:
-            raw_json = row.pop("raw_data_json", None)
-            if raw_json and isinstance(raw_json, str):
-                try:
-                    parsed = json.loads(raw_json)
-                    if isinstance(parsed, dict):
-                        row.update({str(k): v for k, v in parsed.items()})
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        return {"rows": rows, "row_count": len(rows)}
-
-    def query_bdt_summary(self, **kwargs) -> dict[str, Any]:
-        site_raw = str(kwargs.get("site_code") or kwargs.get("site_id") or "").strip() or None
-        reporting_period = str(kwargs.get("reporting_period") or kwargs.get("period") or "").strip() or None
-        week = str(kwargs.get("week") or "").strip() or None
-        date_from = str(kwargs.get("date_from") or "").strip() or None
-        date_to = str(kwargs.get("date_to") or "").strip() or None
-        limit = _limit(kwargs.get("limit"), default=100)
-        offset = max(int(kwargs.get("offset") or 0), 0)
-        try:
-            df = catalog_store.query_bdt_summary(
-                site_id=site_raw,
-                reporting_period=reporting_period,
-                week=week,
-                test_date_from=date_from,
-                test_date_to=date_to,
-            )
-        except Exception as exc:
-            return {"rows": [], "total": 0, "error": str(exc)}
-        total = len(df)
-        if total and offset:
-            df = df.iloc[offset:]
-        if total and limit:
-            df = df.head(limit)
-        rows = _df_records(df)
-        for row in rows:
-            raw_json = row.pop("raw_data_json", None)
-            if raw_json and isinstance(raw_json, str):
-                try:
-                    parsed = json.loads(raw_json)
-                    if isinstance(parsed, dict):
-                        row.update({str(k): v for k, v in parsed.items()})
-                except (json.JSONDecodeError, TypeError):
-                    pass
-        return {"rows": rows, "total": total}
-
-    def get_site_alarm_context(self, **kwargs) -> dict[str, Any]:
-        site_raw = str(kwargs.get("site_code") or kwargs.get("site_id") or "").strip()
-        if not site_raw:
-            return {"error": "site_code or site_id is required"}
-        site_code = normalize_site_key(site_raw)
-        date_from = str(kwargs.get("date_from") or "").strip() or None
-        date_to = str(kwargs.get("date_to") or "").strip() or None
-        limit = _limit(kwargs.get("limit"), default=100)
-
-        stats = self.alarm_stats(site_text=site_code, date_from=date_from, date_to=date_to)
-        alarms = self.query_alarms(site_text=site_code, date_from=date_from, date_to=date_to, limit=limit)
-
-        return {
-            "site_code": site_code,
-            "alarm_stats": stats,
-            "alarm_rows": alarms.get("rows", []) if isinstance(alarms, dict) else [],
-            "alarm_total": alarms.get("row_count", 0) if isinstance(alarms, dict) else 0,
         }
