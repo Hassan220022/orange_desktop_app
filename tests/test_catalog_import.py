@@ -208,6 +208,35 @@ class TestNetworkSummaryImport:
         with pytest.raises(ValueError, match="No 'DB' sheet found"):
             import_network_summary_db_sheet(xlsx_path)
 
+    def test_read_only_workbook_closed_when_network_import_validation_fails(self, tmp_path, monkeypatch):
+        import openpyxl
+
+        xlsx_path = tmp_path / "no_db.xlsx"
+        wb = openpyxl.Workbook()
+        wb.active.title = "OtherSheet"
+        wb.save(xlsx_path)
+
+        real_load = openpyxl.load_workbook
+        opened = {}
+
+        def load_and_track(*args, **kwargs):
+            workbook = real_load(*args, **kwargs)
+            opened["workbook"] = workbook
+            original_close = workbook.close
+
+            def close_and_track():
+                opened["closed"] = True
+                return original_close()
+
+            workbook.close = close_and_track
+            return workbook
+
+        monkeypatch.setattr(openpyxl, "load_workbook", load_and_track)
+
+        with pytest.raises(ValueError, match="No 'DB' sheet found"):
+            import_network_summary_db_sheet(xlsx_path)
+        assert opened.get("closed") is True
+
     def test_original_header_mapping_preserved(self, tmp_path):
         xlsx_path = tmp_path / "network_summary.xlsx"
         _write_network_summary_xlsx(xlsx_path, include_code=True)
@@ -387,3 +416,34 @@ class TestBDTSummaryImport:
 
         periods = import_bdt_summary_workbook(xlsx_path)
         assert periods == {}
+
+    def test_read_only_workbook_closed_when_bdt_import_empty(self, tmp_path, monkeypatch):
+        xlsx_path = tmp_path / "empty_bdt.xlsx"
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Sheet1"
+        ws.append(["Header1"])
+        wb.save(xlsx_path)
+
+        real_load = openpyxl.load_workbook
+        opened = {}
+
+        def load_and_track(*args, **kwargs):
+            workbook = real_load(*args, **kwargs)
+            opened["workbook"] = workbook
+            original_close = workbook.close
+
+            def close_and_track():
+                opened["closed"] = True
+                return original_close()
+
+            workbook.close = close_and_track
+            return workbook
+
+        monkeypatch.setattr(openpyxl, "load_workbook", load_and_track)
+
+        periods = import_bdt_summary_workbook(xlsx_path)
+        assert periods == {}
+        assert opened.get("closed") is True

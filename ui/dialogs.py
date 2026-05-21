@@ -1982,11 +1982,6 @@ class TempAlarmDialog(QDialog):
         self._render_table()
         QApplication.processEvents()
 
-    def _recompute(self):
-        self._refresh_preview_frames(render=False)
-        self._render_summary()
-        self._render_table()
-
     def _start_preview_recompute(self):
         if self._preview_thread and self._preview_thread.isRunning():
             return

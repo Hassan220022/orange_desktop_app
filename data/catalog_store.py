@@ -65,6 +65,8 @@ def replace_site_metadata(df: pd.DataFrame, original_headers_map: dict[str, str]
     if original_headers_map is None:
         original_headers_map = {}
     prepared = df.copy() if df is not None else pd.DataFrame()
+    if not prepared.empty and "site_id" in prepared.columns:
+        prepared = prepared.drop_duplicates(subset=["site_id"], keep="last").reset_index(drop=True)
     row_count = len(prepared)
     con = _connect(read_only=False)
     try:
@@ -74,6 +76,7 @@ def replace_site_metadata(df: pd.DataFrame, original_headers_map: dict[str, str]
             con.register("prepared_df", prepared)
             con.execute(f"CREATE TABLE {SITE_META_TABLE} AS SELECT * FROM prepared_df")
             con.unregister("prepared_df")
+            con.execute(f"ALTER TABLE {SITE_META_TABLE} ADD PRIMARY KEY (site_id)")
         else:
             con.execute(
                 f"CREATE TABLE {SITE_META_TABLE} "

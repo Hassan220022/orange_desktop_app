@@ -72,6 +72,21 @@ class TestSiteMetadataDuckDB:
         assert query_site_metadata("S1").empty
         assert not query_site_metadata("S2").empty
 
+    def test_replace_deduplicates_site_id_like_primary_key(self):
+        df = pd.DataFrame(
+            [
+                {"site_id": "S1", "original_headers_json": "{}", "raw_data_json": '{"version":1}'},
+                {"site_id": "S1", "original_headers_json": "{}", "raw_data_json": '{"version":2}'},
+            ]
+        )
+
+        count = replace_site_metadata(df)
+
+        result = query_site_metadata("S1")
+        assert count == 1
+        assert len(result) == 1
+        assert json.loads(result.iloc[0]["raw_data_json"])["version"] == 2
+
     def test_empty_dataframe_creates_table(self):
         df = pd.DataFrame()
         count = replace_site_metadata(df)

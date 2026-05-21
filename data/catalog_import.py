@@ -93,6 +93,47 @@ def import_network_summary_db_sheet(workbook_path: str | Path) -> int:
 
     path = Path(workbook_path)
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        rows_list = _read_network_summary_rows(wb, path)
+    finally:
+        wb.close()
+
+    # -- write SQLite --
+    try:
+        from alarm_app.db.engine import get_shared_session
+        from alarm_app.db.repos.catalog_repo import replace_all_site_metadata
+    except ImportError:
+        from db.engine import get_shared_session
+        from db.repos.catalog_repo import replace_all_site_metadata
+
+    # -- write DuckDB --
+    try:
+        from alarm_app.data.catalog_store import read_site_metadata, replace_site_metadata
+    except ImportError:
+        from data.catalog_store import read_site_metadata, replace_site_metadata
+
+    session = get_shared_session()
+    duckdb_snapshot = read_site_metadata()
+    duckdb_written = False
+    try:
+        count_sql = replace_all_site_metadata(session, rows_list)
+        df = pd.DataFrame(rows_list)
+        replace_site_metadata(df)
+        duckdb_written = True
+        session.commit()
+    except Exception:
+        session.rollback()
+        if duckdb_written:
+            _restore_duckdb_snapshot(replace_site_metadata, duckdb_snapshot, "site metadata")
+        raise
+    finally:
+        session.close()
+
+    _log.info("Network summary import complete: %d sites", count_sql)
+    return count_sql
+
+
+def _read_network_summary_rows(wb, path: Path) -> list[dict[str, Any]]:
 
     # locate DB sheet
     sheet = None
@@ -147,40 +188,7 @@ def import_network_summary_db_sheet(workbook_path: str | Path) -> int:
 
     if not rows_list:
         raise ValueError("No rows with non-empty Code found in DB sheet")
-
-    # -- write SQLite --
-    try:
-        from alarm_app.db.engine import get_shared_session
-        from alarm_app.db.repos.catalog_repo import replace_all_site_metadata
-    except ImportError:
-        from db.engine import get_shared_session
-        from db.repos.catalog_repo import replace_all_site_metadata
-
-    # -- write DuckDB --
-    try:
-        from alarm_app.data.catalog_store import read_site_metadata, replace_site_metadata
-    except ImportError:
-        from data.catalog_store import read_site_metadata, replace_site_metadata
-
-    session = get_shared_session()
-    duckdb_snapshot = read_site_metadata()
-    duckdb_written = False
-    try:
-        count_sql = replace_all_site_metadata(session, rows_list)
-        df = pd.DataFrame(rows_list)
-        replace_site_metadata(df)
-        duckdb_written = True
-        session.commit()
-    except Exception:
-        session.rollback()
-        if duckdb_written:
-            _restore_duckdb_snapshot(replace_site_metadata, duckdb_snapshot, "site metadata")
-        raise
-    finally:
-        session.close()
-
-    _log.info("Network summary import complete: %d sites", count_sql)
-    return count_sql
+    return rows_list
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +257,54 @@ def import_bdt_summary_workbook(workbook_path: str | Path) -> dict[str, int]:
 
     path = Path(workbook_path)
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        all_rows, period_counts = _read_bdt_summary_rows(wb, path)
+    finally:
+        wb.close()
+
+    if not all_rows:
+        _log.warning("BDT import: no rows found in any sheet of %s", path.name)
+        return period_counts
+
+    # -- write SQLite: merge per period --
+    try:
+        from alarm_app.db.engine import get_shared_session
+        from alarm_app.db.repos.catalog_repo import merge_bdt_period
+    except ImportError:
+        from db.engine import get_shared_session
+        from db.repos.catalog_repo import merge_bdt_period
+
+    reporting_periods = list(period_counts.keys())
+    # -- write DuckDB --
+    try:
+        from alarm_app.data.catalog_store import merge_bdt_summary, read_bdt_summary, replace_bdt_summary
+    except ImportError:
+        from data.catalog_store import merge_bdt_summary, read_bdt_summary, replace_bdt_summary
+
+    session = get_shared_session()
+    duckdb_snapshot = read_bdt_summary()
+    duckdb_written = False
+    try:
+        for period in reporting_periods:
+            period_rows_list = [r for r in all_rows if r["reporting_period"] == period]
+            merge_bdt_period(session, period, period_rows_list)
+        df = pd.DataFrame(all_rows)
+        merge_bdt_summary(df, reporting_periods)
+        duckdb_written = True
+        session.commit()
+    except Exception:
+        session.rollback()
+        if duckdb_written:
+            _restore_duckdb_snapshot(replace_bdt_summary, duckdb_snapshot, "BDT summary")
+        raise
+    finally:
+        session.close()
+
+    _log.info("BDT summary import complete: periods=%s", period_counts)
+    return period_counts
+
+
+def _read_bdt_summary_rows(wb, path: Path) -> tuple[list[dict[str, Any]], dict[str, int]]:
 
     all_rows: list[dict[str, Any]] = []
     period_counts: dict[str, int] = {}
@@ -350,44 +406,4 @@ def import_bdt_summary_workbook(workbook_path: str | Path) -> dict[str, int]:
 
         if period_rows:
             period_counts[sheet_name] = period_rows
-
-    if not all_rows:
-        _log.warning("BDT import: no rows found in any sheet of %s", path.name)
-        return period_counts
-
-    # -- write SQLite: merge per period --
-    try:
-        from alarm_app.db.engine import get_shared_session
-        from alarm_app.db.repos.catalog_repo import merge_bdt_period
-    except ImportError:
-        from db.engine import get_shared_session
-        from db.repos.catalog_repo import merge_bdt_period
-
-    reporting_periods = list(period_counts.keys())
-    # -- write DuckDB --
-    try:
-        from alarm_app.data.catalog_store import merge_bdt_summary, read_bdt_summary, replace_bdt_summary
-    except ImportError:
-        from data.catalog_store import merge_bdt_summary, read_bdt_summary, replace_bdt_summary
-
-    session = get_shared_session()
-    duckdb_snapshot = read_bdt_summary()
-    duckdb_written = False
-    try:
-        for period in reporting_periods:
-            period_rows_list = [r for r in all_rows if r["reporting_period"] == period]
-            merge_bdt_period(session, period, period_rows_list)
-        df = pd.DataFrame(all_rows)
-        merge_bdt_summary(df, reporting_periods)
-        duckdb_written = True
-        session.commit()
-    except Exception:
-        session.rollback()
-        if duckdb_written:
-            _restore_duckdb_snapshot(replace_bdt_summary, duckdb_snapshot, "BDT summary")
-        raise
-    finally:
-        session.close()
-
-    _log.info("BDT summary import complete: periods=%s", period_counts)
-    return period_counts
+    return all_rows, period_counts

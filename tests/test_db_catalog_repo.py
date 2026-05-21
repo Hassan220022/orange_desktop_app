@@ -1,7 +1,7 @@
 """Tests for db/repos/catalog_repo.py."""
 
 import json
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from sqlalchemy.orm import Session
@@ -155,3 +155,13 @@ class TestBDTSummaryRepo:
 
         all_rows = session.query(BDTSummaryCatalog).all()
         assert len(all_rows) == 1
+
+    def test_insert_datetime_test_date_is_coerced_to_date(self, session):
+        row = self._make_bdt_row("S1", "P1", "W1", date(2024, 1, 1))
+        row["test_date"] = datetime(2024, 1, 1, 15, 30, 45)
+
+        insert_bdt_rows(session, [row])
+        session.commit()
+
+        stored = session.query(BDTSummaryCatalog).one()
+        assert stored.test_date == date(2024, 1, 1)

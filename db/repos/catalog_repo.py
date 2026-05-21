@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -121,7 +121,9 @@ def merge_bdt_period(
 def _ensure_date(value: Any) -> date | None:
     if value is None:
         return None
-    if isinstance(value, date) and not isinstance(value, type(date)):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
         return value
     try:
         return date.fromisoformat(str(value)[:10])
