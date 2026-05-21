@@ -53,6 +53,7 @@ try:
     )
     from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
     from alarm_app.core.filters import compute_date_mask, parse_manual_days
+    from alarm_app.core.temp_alarm import ht_export_week_from_date
     from alarm_app.data import alarm_store, state
     from alarm_app.data.loaders import discover_alarm_files
     from alarm_app.data.site_report import (
@@ -93,6 +94,7 @@ except ImportError:
     )
     from core.classify import classify_by_alarm_id, compute_site_down_flag
     from core.filters import compute_date_mask, parse_manual_days
+    from core.temp_alarm import ht_export_week_from_date
     from data import alarm_store, state
     from data.loaders import discover_alarm_files
     from data.site_report import (
@@ -2349,6 +2351,7 @@ class AlarmViewer(QMainWindow):
         self._sbar.showMessage("Backup time computation failed")
 
     def _show_temp_alarms(self):
+        week_label = self._infer_ht_export_week_label()
         if self._has_query_backed_alarm_data():
             result_filter_query = self._build_alarm_query(
                 limit=None,
@@ -2356,18 +2359,19 @@ class AlarmViewer(QMainWindow):
                 exclude_columns={"alarm_category"},
                 ignore_sort=True,
             )
-            query = result_filter_query
+            query = self._build_temp_alarm_source_query(result_filter_query)
             if alarm_store.count_alarms(query) == 0:
                 QMessageBox.information(
                     self, "No Data",
                     "No records match the current filters.")
                 return
             self._ui.btn_temp.setEnabled(False)
-            self._sbar.showMessage("Finding uncovered temp alarms …")
+            self._sbar.showMessage("Computing HT Meet workbook preview …")
             self._temp_thread = TempAlarmThread(
                 alarm_query=query,
                 margin_minutes=60,
                 result_filter_query=result_filter_query,
+                week_label=week_label,
             )
             self._temp_thread.progress.connect(
                 lambda v, m: self._sbar.showMessage(m))
@@ -2386,6 +2390,12 @@ class AlarmViewer(QMainWindow):
             exclude_columns={"alarm_category"},
             ignore_sort=True,
         )
+        # Include both Temp and Power rows as source for HT Meet computation
+        source_for_meet = self._apply_filters(
+            self._full_df,
+            exclude_columns={"alarm_category", "occurred_on"},
+        )
+        # Keep selected_temp for scope context
         selected_temp = self._apply_filters(
             self._full_df,
             exclude_columns={"alarm_category"},
@@ -2397,20 +2407,14 @@ class AlarmViewer(QMainWindow):
                 self, "No Data",
                 "No records match the current filters.")
             return
-        temp_sites = set(selected_temp["site_id"].dropna().astype(str).str.strip()) if "site_id" in selected_temp.columns else set()
-        filtered = self._apply_filters(
-            self._full_df,
-            exclude_columns={"*", "site_id", "alarm_source", "alarm_category", "occurred_on", "vendor", "network_type", "_duration_secs"},
-        )
-        if temp_sites and "site_id" in filtered.columns:
-            filtered = filtered[filtered["site_id"].astype(str).str.strip().isin(temp_sites)]
         self._ui.btn_temp.setEnabled(False)
-        self._sbar.showMessage("Finding uncovered temp alarms …")
+        self._sbar.showMessage("Computing HT Meet workbook preview …")
         self._temp_thread = TempAlarmThread(
-            filtered.copy(),
+            source_for_meet.copy(),
             margin_minutes=60,
             result_filter_query=result_filter_query,
             selected_temp_df=selected_temp.copy(),
+            week_label=week_label,
         )
         self._temp_thread.progress.connect(
             lambda v, m: self._sbar.showMessage(m))
@@ -2421,26 +2425,52 @@ class AlarmViewer(QMainWindow):
     def _on_temp_done(self, result, err: str, source_df):
         self._ui.btn_temp.setEnabled(True)
         if err:
-            QMessageBox.warning(self, "Temp Alarm", err)
-            self._sbar.showMessage("Temp alarm: " + err)
+            QMessageBox.warning(self, "HT Meet Workbook", err)
+            self._sbar.showMessage("HT Meet: " + err)
             return
         self._sbar.showMessage(
-            f"Temp alarm analysis: {len(result):,} uncovered alarms found")
+            f"HT Meet preview: {len(result):,} meet rows found")
         result_filter_query = getattr(self._temp_thread, "_result_filter_query", None)
+        week_label = getattr(self._temp_thread, "_week_label", None)
         dlg = TempAlarmDialog(
             result,
             source_df,
             margin_minutes=60,
             result_filter_query=result_filter_query,
             selected_temp_df=getattr(self._temp_thread, "_selected_temp_df", None),
+            week_label=week_label,
             parent=self,
         )
         dlg.exec_()
 
     def _on_temp_error(self, msg: str):
         self._ui.btn_temp.setEnabled(True)
-        QMessageBox.critical(self, "Temp Alarm Error", msg)
-        self._sbar.showMessage("Temp alarm computation failed")
+        QMessageBox.critical(self, "HT Meet Workbook Error", msg)
+        self._sbar.showMessage("HT Meet computation failed")
+
+    def _infer_ht_export_week_label(self) -> str | None:
+        """Infer a Wnn-yy week label from the current date range or source data."""
+        try:
+            query = self._build_alarm_query(limit=None, offset=0, ignore_sort=True)
+            # Try from manual_days first
+            if query.manual_days:
+                latest = max(
+                    pd.Timestamp(day) for day in query.manual_days
+                    if not pd.isna(pd.Timestamp(day))
+                )
+                return ht_export_week_from_date(latest)["week_label"]
+            if query.date_to:
+                return ht_export_week_from_date(query.date_to)["week_label"]
+            if query.date_from:
+                return ht_export_week_from_date(query.date_from)["week_label"]
+            # Fallback to source_df if loaded
+            if not self._full_df.empty and "occurred_on" in self._full_df.columns:
+                times = pd.to_datetime(self._full_df["occurred_on"], errors="coerce").dropna()
+                if not times.empty:
+                    return ht_export_week_from_date(times.max())["week_label"]
+        except Exception:
+            pass
+        return None
 
     def _upload_site_sheet(self):
         if not self._has_query_backed_alarm_data() and self._full_df.empty:

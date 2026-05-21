@@ -68,3 +68,18 @@ def test_sqlite_foreign_keys_on(tmp_path, monkeypatch):
     with engine.connect() as conn:
         fk = conn.execute(text("PRAGMA foreign_keys")).scalar()
         assert fk == 1
+
+
+def test_init_db_creates_catalog_tables(tmp_path, monkeypatch):
+    monkeypatch.setattr("alarm_app.db.engine.STATE_DIR", tmp_path)
+    monkeypatch.setattr("alarm_app.db.engine.DB_PATH", tmp_path / "test.db")
+    from alarm_app.db.engine import create_engine, init_db
+    engine = create_engine()
+    init_db(engine)
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table'")
+        ).fetchall()
+        table_names = [r[0] for r in result]
+        assert "site_metadata_catalog" in table_names
+        assert "bdt_summary_catalog" in table_names

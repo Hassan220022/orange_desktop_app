@@ -1,15 +1,20 @@
 """Tests for uncovered Temp alarms outside Power coverage windows."""
 
+from zipfile import ZipFile
+
 import pandas as pd
 from openpyxl import load_workbook
 
 from alarm_app.core.temp_alarm import (
     build_temp_alarm_summary,
+    compute_ht_meet_rows,
     compute_temp_alarm_matches,
     compute_temp_alarm_matches_for_query,
     export_temp_alarm_workbook,
     filter_temp_matches_to_query,
     filter_temp_matches_to_selected_temps,
+    ht_export_filename,
+    ht_export_week_from_date,
 )
 from alarm_app.data.alarm_store import AlarmQuery
 from alarm_app.ui.viewer import AlarmViewer
@@ -18,6 +23,15 @@ from alarm_app.ui.viewer import AlarmViewer
 def _make_df(rows):
     defaults = {
         "site_id": "SITE_A",
+        "site_name": "Site Alpha",
+        "site_code": "SITE_A",
+        "area": "AGLI",
+        "contractor": "Orascom",
+        "battery_type": "Power safe 155",
+        "battery_status": "Good (2 - 3 Hrs)",
+        "support": "AUTIN",
+        "cleared_by": "oss_user",
+        "alarm_reporting_type": "Normal",
         "alarm_source": "U_G_SITE_A_TEST",
         "alarm_name": "MAIN POWER CUT OFF",
         "occurred_on": None,
@@ -36,6 +50,155 @@ def _make_df(rows):
                 rec[col] = pd.Timestamp(rec[col])
         records.append(rec)
     return pd.DataFrame(records)
+
+
+def test_temp_during_active_power_outage_is_covered():
+    """Temp alarm during an ongoing (uncleared) power outage must be excluded from uncovered."""
+    df = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-01 10:00:00",
+            # cleared_on intentionally omitted → NaT (ongoing outage)
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-01 11:00:00",
+            "cleared_on": "2026-02-01 11:30:00",
+            "duration": "00:30:00",
+        },
+    ])
+
+    result, err = compute_temp_alarm_matches(df, margin_minutes=60)
+
+    assert result.empty, f"Expected empty, got {len(result)} rows"
+    assert "No uncovered Temp alarms" in err
+
+
+def test_multiple_temps_during_active_outage_all_covered():
+    """Multiple temp alarms during the same ongoing power outage are all excluded from uncovered."""
+    df = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-01 10:00:00",
+            # cleared_on intentionally omitted → NaT (ongoing)
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-01 11:00:00",
+            "cleared_on": "2026-02-01 11:30:00",
+            "duration": "00:30:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_name": "External AL 9",
+            "occurred_on": "2026-02-01 14:00:00",
+            "cleared_on": "2026-02-01 14:15:00",
+            "duration": "00:15:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-02 08:00:00",
+            "cleared_on": "2026-02-02 08:45:00",
+            "duration": "00:45:00",
+        },
+    ])
+
+    result, err = compute_temp_alarm_matches(df, margin_minutes=60)
+
+    assert result.empty, f"Expected empty, got {len(result)} rows"
+    assert "No uncovered Temp alarms" in err
+
+
+def test_active_power_outage_has_unbounded_temp_coverage():
+    """An uncleared Power alarm covers Temp alarms indefinitely after it starts."""
+    df = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-01 10:00:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2100-01-01 11:00:00",
+            "cleared_on": "2100-01-01 11:30:00",
+            "duration": "00:30:00",
+        },
+    ])
+
+    result, err = compute_temp_alarm_matches(df, margin_minutes=60)
+
+    assert result.empty, f"Expected empty, got {len(result)} rows"
+    assert "No uncovered Temp alarms" in err
+
+
+def test_temp_before_active_power_outage_is_uncovered():
+    """Temp alarm occurring BEFORE the power outage started is still uncovered."""
+    df = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-01 12:00:00",
+            # cleared_on intentionally omitted → NaT (ongoing)
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-01 10:00:00",
+            "cleared_on": "2026-02-01 10:30:00",
+            "duration": "00:30:00",
+        },
+    ])
+
+    result, err = compute_temp_alarm_matches(df, margin_minutes=60)
+
+    assert err == ""
+    assert len(result) == 1, f"Expected 1 uncovered, got {len(result)}"
+    assert result.iloc[0]["match_window"] == "No same-site Power alarm before Temp"
+
+
+def test_mix_of_cleared_and_uncleared_power_coverage():
+    """Site with both cleared and uncleared power alarms: coverage works for both."""
+    df = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-01 08:00:00",
+            "cleared_on": "2026-02-01 10:00:00",  # cleared — covers up to 11:00 with Y=60
+        },
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-01 12:00:00",
+            # cleared_on omitted → NaT (ongoing) — covers everything from 12:00 onward
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-01 09:00:00",  # inside cleared power window → covered
+            "cleared_on": "2026-02-01 09:30:00",
+            "duration": "00:30:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_name": "External AL 9",
+            "occurred_on": "2026-02-01 11:30:00",  # after cleared window, before ongoing → UNCOVERED
+            "cleared_on": "2026-02-01 11:45:00",
+            "duration": "00:15:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-01 13:00:00",  # inside ongoing power window → covered
+            "cleared_on": "2026-02-01 13:30:00",
+            "duration": "00:30:00",
+        },
+    ])
+
+    result, err = compute_temp_alarm_matches(df, margin_minutes=60)
+
+    assert err == ""
+    assert len(result) == 1, f"Expected 1 uncovered, got {len(result)}"
+    assert result.iloc[0]["temp_alarm_name"] == "External AL 9"
 
 
 def test_excludes_temp_inside_power_window():
@@ -132,12 +295,65 @@ def test_includes_temp_after_y_margin():
     assert err == ""
     assert len(result) == 1
     row = result.iloc[0]
-    assert row["match_window"] == "No Power coverage"
-    assert row["temp_delay_after_power"] == ""
-    assert row["temp_delay_after_power_clearance"] == ""
+    assert row["match_window"] == "Outside Power coverage"
+    assert row["power_time"] == "2026-02-01 10:00:00"
+    assert row["power_cleared"] == "2026-02-01 12:00:00"
+    assert row["temp_delay_after_power"] == "03:01:00"
+    assert row["temp_delay_after_power_clearance"] == "01:01:00"
 
 
-def test_summary_groups_counts_and_duration_by_week():
+def test_uncovered_temp_after_prior_power_includes_power_context():
+    df = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-01 10:00:00",
+            "cleared_on": "2026-02-01 12:00:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-01 13:01:00",
+            "cleared_on": "2026-02-01 13:30:00",
+            "duration": "00:29:00",
+        },
+    ])
+
+    result, err = compute_temp_alarm_matches(df, margin_minutes=60)
+
+    assert err == ""
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["power_time"] == "2026-02-01 10:00:00"
+    assert row["power_cleared"] == "2026-02-01 12:00:00"
+    assert row["x_duration"] == "02:00:00"
+    assert row["temp_delay_after_power"] == "03:01:00"
+    assert row["temp_delay_after_power_clearance"] == "01:01:00"
+    assert row["match_window"] == "Outside Power coverage"
+
+
+def test_margin_can_exceed_sixty_minutes():
+    df = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-01 10:00:00",
+            "cleared_on": "2026-02-01 12:00:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-01 13:30:00",
+            "cleared_on": "2026-02-01 14:00:00",
+            "duration": "00:30:00",
+        },
+    ])
+
+    result, err = compute_temp_alarm_matches(df, margin_minutes=120)
+
+    assert result.empty
+    assert "No uncovered Temp alarms" in err
+
+
+def test_summary_filters_to_requested_week_and_keeps_site_metadata():
     df = _make_df([
         {
             "alarm_category": "Power",
@@ -153,9 +369,8 @@ def test_summary_groups_counts_and_duration_by_week():
             "duration": "00:30:00",
         },
         {
-            "site_id": "SITE_B",
             "alarm_category": "Temp",
-            "alarm_source": "SRAN_LWG_TEST_SITE_B",
+            "alarm_source": "SRAN_LWG_TEST_SITE_A_2",
             "alarm_name": "Shelter High Temperature",
             "occurred_on": "2026-02-01 14:15:00",
             "cleared_on": "2026-02-01 15:00:00",
@@ -163,38 +378,46 @@ def test_summary_groups_counts_and_duration_by_week():
         },
         {
             "site_id": "SITE_C",
+            "site_name": "Site Charlie",
+            "site_code": "SITE_C",
+            "area": "CAIR",
+            "contractor": "Huawei",
+            "battery_type": "Lithium 100Ah",
+            "battery_status": "Good (2 - 3 Hrs)",
             "alarm_category": "Temp",
             "alarm_source": "SRAN_LWG_TEST_SITE_C",
             "alarm_name": "Shelter High Temperature",
-            "occurred_on": "2026-02-08 14:15:00",
-            "cleared_on": "2026-02-08 15:15:00",
+            "occurred_on": "2026-01-21 14:15:00",
+            "cleared_on": "2026-01-21 15:15:00",
             "duration": "01:00:00",
         },
     ])
     matches, err = compute_temp_alarm_matches(df, margin_minutes=60)
     assert err == ""
 
-    summary = build_temp_alarm_summary(matches, week_label="W05-26")
+    summary = build_temp_alarm_summary(matches, week_label="W06-26")
 
     assert list(summary.columns) == [
         "##", "Site Name", "Site Code", "Area", "Contractor",
         "No. Of HT Alarms", "HT Duration", "Batteries Types",
-        "Batteries Status", "Week No.", "W05-26", "W04-26", "W03-26",
-        "W02-26", "W01-26", "W52-25", "W51-25", "W50-25",
+        "Batteries Status", "Week No.", "W06-26", "W05-26", "W04-26",
+        "W03-26", "W02-26", "W53-25", "W52-25", "W51-25",
     ]
-    assert len(summary) == 2
-    week_05 = summary[summary["Week No."] == "W05-26"].iloc[0]
-    week_06 = summary[summary["Week No."] == "W06-26"].iloc[0]
-    assert week_05["Site Name"] == ""
-    assert week_05["Site Code"] == ""
-    assert week_05["No. Of HT Alarms"] == 2
-    assert week_05["HT Duration"] == "01:15"
-    assert week_05["W05-26"] == "W05-26"
-    assert week_06["No. Of HT Alarms"] == 1
-    assert week_06["HT Duration"] == "01:00"
+    assert len(summary) == 1
+    site_a = summary[summary["Site Code"] == "SITE_A"].iloc[0]
+    assert site_a["Site Name"] == "Site Alpha"
+    assert site_a["Area"] == "AGLI"
+    assert site_a["Contractor"] == "Orascom"
+    assert site_a["Batteries Types"] == "Power safe 155"
+    assert site_a["Batteries Status"] == "Good (2 - 3 Hrs)"
+    assert site_a["No. Of HT Alarms"] == 2
+    assert site_a["HT Duration"] == "01:15"
+    assert site_a["Week No."] == "W06-26"
+    assert site_a["W06-26"] == "W06-26"
+    assert site_a["W04-26"] == ""
 
 
-def test_export_workbook_contains_w27_summary_and_details(tmp_path):
+def test_summary_separates_weeks_when_no_week_filter_is_requested():
     df = _make_df([
         {
             "alarm_category": "Power",
@@ -209,33 +432,341 @@ def test_export_workbook_contains_w27_summary_and_details(tmp_path):
             "cleared_on": "2026-02-01 13:45:00",
             "duration": "00:30:00",
         },
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "SRAN_LWG_TEST_SITE_A_2",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-01-21 14:15:00",
+            "cleared_on": "2026-01-21 15:15:00",
+            "duration": "01:00:00",
+        },
+    ])
+    matches, err = compute_temp_alarm_matches(df, margin_minutes=60)
+    assert err == ""
+
+    summary = build_temp_alarm_summary(matches, week_label=None)
+
+    assert list(summary["Week No."]) == ["W04-26", "W06-26"]
+    week_04 = summary[summary["Week No."] == "W04-26"].iloc[0]
+    week_06 = summary[summary["Week No."] == "W06-26"].iloc[0]
+    assert week_04["No. Of HT Alarms"] == 1
+    assert week_04["HT Duration"] == "01:00"
+    assert week_04["W04-26"] == "W04-26"
+    assert week_06["No. Of HT Alarms"] == 1
+    assert week_06["HT Duration"] == "00:30"
+    assert week_06["W06-26"] == "W06-26"
+
+
+def test_ht_export_week_uses_reference_sunday_rule():
+    week = ht_export_week_from_date("2024-06-30")
+
+    assert week["week_label"] == "W27-24"
+    assert week["short_week_label"] == "W27"
+    assert str(week["start"].date()) == "2024-06-30"
+    assert str(week["end"].date()) == "2024-07-07"
+    assert week["filename"] == "2024-HT-Alarms-W27.xlsx"
+    assert ht_export_filename("W27-24") == "2024-HT-Alarms-W27.xlsx"
+
+
+def test_meet_engine_uses_daily_power_unavailable_or_diff_greater_than_seven_hours():
+    unavailable = _make_df([
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "NO_POWER",
+            "occurred_on": "2024-06-30 08:00:00",
+            "cleared_on": "2024-06-30 16:00:00",
+            "duration": "08:00:00",
+        }
+    ])
+    _, meet = compute_ht_meet_rows(unavailable, week_label="W27-24")
+    assert meet["Alarm Source"].tolist() == ["NO_POWER"]
+
+    greater_than = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2024-06-30 06:00:00",
+            "cleared_on": "2024-06-30 06:59:00",
+            "duration": "00:59:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "GT_7H",
+            "occurred_on": "2024-06-30 08:00:00",
+            "cleared_on": "2024-06-30 16:00:00",
+            "duration": "08:00:00",
+        },
+    ])
+    study, meet = compute_ht_meet_rows(greater_than, week_label="W27-24")
+    assert study["Meet"].tolist() == ["Yes"]
+    assert meet["Alarm Source"].tolist() == ["GT_7H"]
+
+    exactly = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2024-06-30 06:00:00",
+            "cleared_on": "2024-06-30 07:00:00",
+            "duration": "01:00:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "EQ_7H",
+            "occurred_on": "2024-06-30 08:00:00",
+            "cleared_on": "2024-06-30 16:00:00",
+            "duration": "08:00:00",
+        },
+    ])
+    study, meet = compute_ht_meet_rows(exactly, week_label="W27-24")
+    assert study["Meet"].tolist() == [""]
+    assert meet.empty
+
+
+def test_export_workbook_contains_reference_style_temp_alarm_sheets(tmp_path):
+    df = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-01 10:00:00",
+            "cleared_on": "2026-02-01 10:30:00",
+            "duration": "00:30:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "SRAN_LWG_TEST_SITE_A_MEET",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-01 11:15:00",
+            "cleared_on": "2026-02-01 15:15:00",
+            "duration": "04:00:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "SRAN_LWG_TEST_SITE_A",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-01 16:00:00",
+            "cleared_on": "2026-02-01 20:00:00",
+            "duration": "04:00:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "SRAN_LWG_TEST_SITE_A_OLD_WEEK",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-01-21 13:15:00",
+            "cleared_on": "2026-01-21 14:15:00",
+            "duration": "01:00:00",
+        },
     ])
     matches, err = compute_temp_alarm_matches(df, margin_minutes=60)
     assert err == ""
     out = tmp_path / "temp_alarm_export.xlsx"
 
-    export_temp_alarm_workbook(matches, out, week_label="W05-26")
+    export_temp_alarm_workbook(matches, out, week_label="W06-26", source_df=df)
 
     wb = load_workbook(out, data_only=False)
-    assert wb.sheetnames == ["W05-26", "Uncovered Temp Details"]
-    summary = wb["W05-26"]
+    with ZipFile(out) as archive:
+        for sheet_index in range(1, 7):
+            xml = archive.read(f"xl/worksheets/sheet{sheet_index}.xml")
+            assert b"<dimension " in xml
+            assert xml.find(b"<sheetPr") < xml.find(b"<dimension ")
+    assert wb.sheetnames == [
+        "W06 AUTIN HT",
+        "W06 AUTIN Power",
+        "W06 AUTIN HT Study",
+        "Meet",
+        "W06",
+        "Consolidated",
+    ]
+    assert wb["W06 AUTIN HT"].max_column == 11
+    assert wb["W06 AUTIN Power"].max_column == 12
+    assert wb["W06 AUTIN HT Study"].max_column == 15
+    assert wb["Meet"].max_column == 9
+    assert wb["W06 AUTIN HT"].max_row == 3
+    assert wb["W06 AUTIN HT Study"].max_row == 3
+
+    ht_raw = wb["W06 AUTIN HT"]
+    assert [ht_raw.cell(row=1, column=col).value for col in range(1, 12)] == [
+        "Alarm Source",
+        "Site Name",
+        "Last Occurred On",
+        "Cleared On",
+        "Duration\n(hh:mm:ss)",
+        "Alarm Name",
+        "Clearance Status",
+        "Cleared By",
+        "Alarm Reporting Type",
+        "Week",
+        "Area",
+    ]
+    assert ht_raw["A2"].value == "SRAN_LWG_TEST_SITE_A_MEET"
+    assert ht_raw["C2"].value == "2/1/26 11:15"
+    assert ht_raw["E2"].value == "04:00:00"
+    assert ht_raw["H2"].value == "oss_user"
+    assert ht_raw["I2"].value == "Normal"
+    assert ht_raw["J2"].value == 6
+
+    power_raw = wb["W06 AUTIN Power"]
+    assert [power_raw.cell(row=1, column=col).value for col in range(1, 13)] == [
+        "Alarm Source",
+        "Site Name",
+        "Support",
+        "Day",
+        "Last Occurred On",
+        "Cleared On",
+        "Duration(hh:mm:ss)",
+        "Alarm Name",
+        "Clearance Status",
+        "Cleared By",
+        "Alarm Reporting Type",
+        "SUM",
+    ]
+    assert power_raw["A2"].value == "U_G_SITE_A_TEST"
+    assert power_raw["C2"].value == '=B2&" "&D2'
+    assert power_raw["D2"].value == "=DAY(E2)"
+    assert power_raw["E2"].value == "2/1/26 10:00"
+    assert power_raw["G2"].number_format == "[hh]:mm"
+    assert power_raw["L2"].value == "=SUMIFS(G:G,B:B,B2,D:D,D2)"
+
+    study = wb["W06 AUTIN HT Study"]
+    assert [study.cell(row=1, column=col).value for col in range(1, 16)] == [
+        "Alarm Source",
+        "Site Name",
+        "Support",
+        "Day",
+        "Last Occurred On",
+        "Cleared On",
+        "Duration\n(hh:mm:ss)",
+        "Alarm Name",
+        "Clearance Status",
+        "Cleared By",
+        "Alarm Reporting Type",
+        "HT SUM IFS",
+        "Powr SUM IFS",
+        "Diff",
+        "Meet",
+    ]
+    assert study.max_row == 3
+    assert study["A2"].value == "SRAN_LWG_TEST_SITE_A_MEET"
+    assert study["E2"].value == "2/1/26 11:15"
+    assert study["C2"].value == '=B2&" "&D2'
+    assert study["D2"].value == "=DAY(E2)"
+    assert study["L2"].value == "=SUMIFS(G:G,B:B,B2,D:D,D2)"
+    assert study["M2"].value == "=SUMIFS('W06 AUTIN Power'!$G:$G,'W06 AUTIN Power'!$B:$B,$B2,'W06 AUTIN Power'!$D:$D,$D2)"
+    assert study["N2"].value == "=L2-M2"
+    assert study["O2"].value == "Yes"
+
+    meet = wb["Meet"]
+    assert [meet.cell(row=1, column=col).value for col in range(1, 10)] == [
+        "Site Name",
+        "Alarm Source",
+        "Last Occurred On",
+        "Cleared On",
+        "Duration(hh:mm:ss)",
+        "Alarm Name",
+        "Clearance Status",
+        "Cleared By",
+        "Alarm Reporting Type",
+    ]
+    assert meet["A2"].value == "Site Alpha"
+    assert meet["B2"].value == "SRAN_LWG_TEST_SITE_A_MEET"
+    assert meet["C2"].value == "2/1/26 11:15"
+
+    summary = wb["W06"]
+    consolidated = wb["Consolidated"]
+    assert summary.max_column == 18
+    assert consolidated.max_column == 18
     assert [summary.cell(row=1, column=col).value for col in range(1, 19)] == [
         "##", "Site Name", "Site Code", "Area", "Contractor",
         "No. Of HT Alarms", "HT Duration", "Batteries Types",
-        "Batteries Status", "Week No.", "W05-26", "W04-26", "W03-26",
-        "W02-26", "W01-26", "W52-25", "W51-25", "W50-25",
+        "Batteries Status", "Week No.", "W06-26", "W05-26", "W04-26",
+        "W03-26", "W02-26", "W53-25", "W52-25", "W51-25",
     ]
-    assert summary["G2"].value == "00:30"
+    assert summary["B2"].value == "Site Alpha"
+    assert summary["C2"].value == "SITE_A"
+    assert summary["G2"].value == "08:00"
     assert summary["A1"].fill.fgColor.rgb == "004F81BD"
     assert summary["A1"].border.left.color.rgb == "FF000000"
-    assert wb["Uncovered Temp Details"].max_row == 2
-    details = wb["Uncovered Temp Details"]
-    assert [details.cell(row=1, column=col).value for col in range(1, 17)] == [
-        "Site ID", "Network", "Vendor", "Power Alarm", "Power Cleared",
-        "X Duration", "Y Margin", "Temp Alarm", "Temp Cleared",
-        "Temp After Power", "Temp After Clearance", "Temp Clear Duration",
-        "Temp Alarm Name", "Temp Alarm Source", "Status", "Coverage Status",
-    ]
+    assert wb["W06 AUTIN HT"]["A1"].fill.fgColor.rgb == "00FFC000"
+    assert wb["W06 AUTIN HT Study"]["L1"].fill.fgColor.rgb == "0092D050"
+    assert wb["W06 AUTIN Power"]["C1"].fill.fgColor.rgb == "00FFFF00"
+    assert wb["Meet"].max_row == 3
+    assert consolidated.max_row >= summary.max_row
+
+
+def test_export_enriches_site_metadata_and_keeps_six_sheets_when_complete(tmp_path):
+    df = _make_df([
+        {
+            "site_id": "site-a",
+            "site_name": "Alarm Site Name",
+            "site_code": "site-a",
+            "area": "OLD",
+            "contractor": "OLD",
+            "battery_type": "OLD",
+            "battery_status": "OLD",
+            "alarm_category": "Temp",
+            "alarm_source": "SRAN_SITE_A_HT",
+            "occurred_on": "2026-02-01 08:00:00",
+            "cleared_on": "2026-02-01 16:00:00",
+            "duration": "08:00:00",
+        }
+    ])
+    metadata = pd.DataFrame([
+        {
+            "site_id": "SITEA",
+            "site_name": "Network Site A",
+            "orange_area": "AGLI",
+            "subcontractor": "Huawei",
+            "battery_type": "Lithium",
+            "backup_status": "Good",
+        }
+    ])
+    out = tmp_path / "metadata_complete.xlsx"
+
+    warnings = export_temp_alarm_workbook(pd.DataFrame(), out, week_label="W06-26", source_df=df, site_metadata_df=metadata, return_warnings=True)
+
+    wb = load_workbook(out, data_only=False)
+    assert wb.sheetnames == ["W06 AUTIN HT", "W06 AUTIN Power", "W06 AUTIN HT Study", "Meet", "W06", "Consolidated"]
+    assert warnings == {"missing_metadata_site_ids": [], "missing_metadata_count": 0}
+    summary = wb["W06"]
+    assert summary["B2"].value == "Network Site A"
+    assert summary["C2"].value == "SITEA"
+    assert summary["D2"].value == "AGLI"
+    assert summary["E2"].value == "Huawei"
+    assert summary["H2"].value == "Lithium"
+    assert summary["I2"].value == "Good"
+
+
+def test_export_metadata_fallback_parses_alarm_source_and_missing_adds_sheet(tmp_path):
+    df = _make_df([
+        {
+            "site_id": "",
+            "site_name": "",
+            "site_code": "",
+            "alarm_category": "Temp",
+            "alarm_source": "SRAN_SITEB_HT",
+            "occurred_on": "2026-02-01 08:00:00",
+            "cleared_on": "2026-02-01 16:00:00",
+            "duration": "08:00:00",
+        },
+        {
+            "site_id": "SITE_C",
+            "alarm_category": "Temp",
+            "alarm_source": "SRAN_SITE_C_HT",
+            "occurred_on": "2026-02-01 09:00:00",
+            "cleared_on": "2026-02-01 17:00:00",
+            "duration": "08:00:00",
+        },
+    ])
+    metadata = pd.DataFrame([
+        {"site_id": "SITEB", "site_name": "Fallback Site B", "area": "CAIR"}
+    ])
+    out = tmp_path / "metadata_missing.xlsx"
+
+    warnings = export_temp_alarm_workbook(pd.DataFrame(), out, week_label="W06-26", source_df=df, site_metadata_df=metadata, return_warnings=True)
+
+    wb = load_workbook(out, data_only=False)
+    assert "Missing Metadata" in wb.sheetnames
+    assert warnings["missing_metadata_site_ids"] == ["SITEC"]
+    assert wb["W06"]["B2"].value == "Fallback Site B"
+    assert wb["W06"]["C2"].value == "SITEB"
+    missing = wb["Missing Metadata"]
+    assert missing["A2"].value == "SITEC"
 
 
 def test_filter_matches_to_original_date_scope_uses_temp_time():
@@ -398,3 +929,120 @@ def test_query_path_scopes_broad_source_to_selected_temp_sites(monkeypatch):
     assert calls[1].date_to == pd.Timestamp("2026-02-04")
     assert calls[1].manual_days is None
     assert set(calls[1].site_scope_keys) == {"SITE_A"}
+
+
+def test_query_path_can_return_full_temp_source_for_ht_consolidated(monkeypatch):
+    selected_temp = _make_df([
+        {
+            "site_id": "SITE_A",
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-04 13:30:00",
+            "cleared_on": "2026-02-04 22:30:00",
+            "duration": "09:00:00",
+        }
+    ])
+    power_rows = _make_df([
+        {
+            "site_id": "SITE_A",
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-04 10:00:00",
+            "cleared_on": "2026-02-04 11:00:00",
+        },
+    ])
+    historical_temp = _make_df([
+        {
+            "site_id": "SITE_A",
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2025-12-20 13:30:00",
+            "cleared_on": "2025-12-20 22:30:00",
+            "duration": "09:00:00",
+        },
+        {
+            "site_id": "SITE_B",
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2025-12-20 13:30:00",
+            "cleared_on": "2025-12-20 22:30:00",
+            "duration": "09:00:00",
+        },
+        selected_temp.iloc[0].to_dict(),
+    ])
+    calls = []
+
+    def fake_query_alarms(query):
+        calls.append(query)
+        if len(calls) == 1:
+            return selected_temp
+        if len(calls) == 2:
+            return power_rows
+        return historical_temp
+
+    monkeypatch.setattr("alarm_app.core.temp_alarm.query_alarms", fake_query_alarms)
+    selected_query = AlarmQuery(date_from=pd.Timestamp("2026-02-04"), date_to=pd.Timestamp("2026-02-04"))
+
+    _result, _err, source_df = compute_temp_alarm_matches_for_query(
+        selected_query,
+        margin_minutes=60,
+        result_filter_query=selected_query,
+        include_full_temp_source=True,
+    )
+
+    assert len(calls) == 3
+    assert calls[2].category == "Temp"
+    assert set(calls[2].site_scope_keys) == {"SITE_A"}
+    assert source_df["occurred_on"].astype(str).str.contains("2025-12-20").any()
+    assert "SITE_B" not in set(source_df["site_id"].astype(str))
+
+
+def test_ht_export_week_allows_year_end_w54_reference_label():
+    metadata = ht_export_week_from_date(pd.Timestamp("2028-12-31"))
+
+    assert metadata["week_label"] == "W54-28"
+    assert metadata["filename"] == "2028-HT-Alarms-W54.xlsx"
+
+
+def test_query_path_full_temp_source_filters_selected_sites_when_scope_exceeds_query_cutoff(monkeypatch):
+    selected_temp = _make_df([
+        {
+            "site_id": f"SITE_{idx}",
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-04 13:30:00",
+            "cleared_on": "2026-02-04 22:30:00",
+            "duration": "09:00:00",
+        }
+        for idx in range(501)
+    ])
+    historical_temp = _make_df([
+        selected_temp.iloc[0].to_dict(),
+        {
+            "site_id": "UNSELECTED_SITE",
+            "alarm_category": "Temp",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2025-12-20 13:30:00",
+            "cleared_on": "2025-12-20 22:30:00",
+            "duration": "09:00:00",
+        },
+    ])
+    calls = []
+
+    def fake_query_alarms(query):
+        calls.append(query)
+        if len(calls) == 1:
+            return selected_temp
+        if len(calls) == 2:
+            return _make_df([])
+        return historical_temp
+
+    monkeypatch.setattr("alarm_app.core.temp_alarm.query_alarms", fake_query_alarms)
+
+    _result, _err, source_df = compute_temp_alarm_matches_for_query(
+        AlarmQuery(date_from=pd.Timestamp("2026-02-04"), date_to=pd.Timestamp("2026-02-04")),
+        result_filter_query=AlarmQuery(date_from=pd.Timestamp("2026-02-04"), date_to=pd.Timestamp("2026-02-04")),
+        include_full_temp_source=True,
+    )
+
+    assert calls[2].site_scope_keys is None
+    assert set(source_df["site_id"].astype(str)) == {"SITE_0"}

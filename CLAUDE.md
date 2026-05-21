@@ -120,6 +120,20 @@ alarm_app/
 | Background threads      | `ui/threads.py`                     |
 | Popup dialogs           | `ui/dialogs.py`                     |
 
+## Agent skills
+
+### Issue tracker
+
+PRDs and implementation issues for agent workflows are tracked as local markdown under `.scratch/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default five-role triage label vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repo with root `CONTEXT.md` and ADRs under `docs/adr/`. See `docs/agents/domain.md`.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence (CLI Only)
 
