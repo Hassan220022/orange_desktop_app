@@ -230,9 +230,13 @@ def _extract_test_year(value: Any) -> int | None:
         ts = pd.to_datetime(value, errors="coerce")
         if pd.isna(ts):
             # try bare int
-            return int(float(str(value)))
+            try:
+                year = int(float(str(value)))
+            except (ValueError, TypeError, OverflowError):
+                return None
+            return year if 1000 <= year <= 9999 else None
         return ts.year
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return None
 
 
@@ -262,7 +266,7 @@ def import_bdt_summary_workbook(workbook_path: str | Path) -> dict[str, int]:
     finally:
         wb.close()
 
-    if not all_rows:
+    if not all_rows and not period_counts:
         _log.warning("BDT import: no rows found in any sheet of %s", path.name)
         return period_counts
 
@@ -316,6 +320,8 @@ def _read_bdt_summary_rows(wb, path: Path) -> tuple[list[dict[str, Any]], dict[s
             raw_rows.append(list(row_cells))
 
         if len(raw_rows) < 2:
+            if raw_rows:
+                period_counts[sheet_name] = 0
             continue  # skip empty or header-only sheets
 
         raw_headers = [str(h).strip() if h is not None else "" for h in raw_rows[0]]
@@ -404,6 +410,5 @@ def _read_bdt_summary_rows(wb, path: Path) -> tuple[list[dict[str, Any]], dict[s
             )
             period_rows += 1
 
-        if period_rows:
-            period_counts[sheet_name] = period_rows
+        period_counts[sheet_name] = period_rows
     return all_rows, period_counts

@@ -2042,25 +2042,6 @@ class TempAlarmDialog(QDialog):
         else:
             QApplication.restoreOverrideCursor()
 
-    def _refresh_preview_frames(self, *, render: bool = True):
-        source, meet, missing_ids = _build_temp_alarm_preview(
-            self._source_df,
-            self._site_metadata_df,
-            self._current_filter_text(),
-            self._week_label or None,
-        )
-        self._preview_source_df = source
-        self._df = meet
-        self._preview_missing_metadata_ids = missing_ids
-        self._preview_week_label = self._week_label
-        self._preview_filter_text = self._current_filter_text()
-        if self._metadata_warning:
-            self._metadata_warning.setText(self._metadata_warning_text())
-            self._metadata_warning.setVisible(bool(self._metadata_warning.text()))
-        if render:
-            self._render_summary()
-            self._render_table()
-
     def _render_summary(self):
         while self._summary_strip.count():
             item = self._summary_strip.takeAt(0)

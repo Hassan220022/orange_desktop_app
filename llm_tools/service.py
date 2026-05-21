@@ -1235,7 +1235,7 @@ class LocalDataService:
         total = len(df)
         if total and offset:
             df = df.iloc[offset:]
-        if total and limit:
+        if total and limit is not None:
             df = df.head(limit)
         rows = _df_records(df)
         for row in rows:

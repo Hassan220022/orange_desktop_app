@@ -379,6 +379,76 @@ class TestBDTSummaryImport:
         finally:
             session.close()
 
+    def test_invalid_test_year_values_do_not_abort_import(self, tmp_path):
+        xlsx_path = tmp_path / "bdt_bad_years.xlsx"
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+        ws = wb.create_sheet("P1")
+        ws.append(["Site ID", "Week", "Test Date", "Test Year", "Result"])
+        ws.append(["S1", "W27", "2024-07-01", "202", "Pass"])
+        ws.append(["S2", "W27", "2024-07-02", "1e400", "Pass"])
+        wb.save(xlsx_path)
+
+        periods = import_bdt_summary_workbook(xlsx_path)
+
+        from alarm_app.db.engine import get_shared_session
+        from alarm_app.db.models import BDTSummaryCatalog
+
+        assert periods == {"P1": 2}
+        session = get_shared_session()
+        try:
+            rows = session.query(BDTSummaryCatalog).order_by(BDTSummaryCatalog.site_id).all()
+            assert [row.site_id for row in rows] == ["S1", "S2"]
+            assert [row.test_year for row in rows] == [None, None]
+        finally:
+            session.close()
+
+    def test_zero_row_bdt_period_clears_existing_rows(self, tmp_path):
+        xlsx_path = tmp_path / "bdt_summary.xlsx"
+        _write_bdt_summary_xlsx(
+            xlsx_path,
+            sheets=[
+                (
+                    "W27-24",
+                    [
+                        ["Site ID", "Week", "Test Date", "Result"],
+                        ["ABC", "W27", "2024-07-01", "Pass"],
+                    ],
+                )
+            ],
+        )
+        import_bdt_summary_workbook(xlsx_path)
+
+        clear_path = tmp_path / "bdt_summary_clear.xlsx"
+        _write_bdt_summary_xlsx(
+            clear_path,
+            sheets=[
+                (
+                    "W27-24",
+                    [
+                        ["Site ID", "Week", "Test Date", "Result"],
+                        [None, "W27", "2024-07-01", "Pass"],
+                    ],
+                )
+            ],
+        )
+
+        periods = import_bdt_summary_workbook(clear_path)
+
+        from alarm_app.data.catalog_store import query_bdt_summary
+        from alarm_app.db.engine import get_shared_session
+        from alarm_app.db.models import BDTSummaryCatalog
+
+        assert periods == {"W27-24": 0}
+        assert query_bdt_summary(reporting_period="W27-24").empty
+        session = get_shared_session()
+        try:
+            assert session.query(BDTSummaryCatalog).count() == 0
+        finally:
+            session.close()
+
     def test_restore_failure_preserves_original_import_exception(self, tmp_path, monkeypatch):
         xlsx_path = tmp_path / "network_summary.xlsx"
         _write_network_summary_xlsx(xlsx_path, include_code=True)
@@ -415,7 +485,7 @@ class TestBDTSummaryImport:
         wb.save(xlsx_path)
 
         periods = import_bdt_summary_workbook(xlsx_path)
-        assert periods == {}
+        assert periods == {"Sheet1": 0}
 
     def test_read_only_workbook_closed_when_bdt_import_empty(self, tmp_path, monkeypatch):
         xlsx_path = tmp_path / "empty_bdt.xlsx"
@@ -445,5 +515,5 @@ class TestBDTSummaryImport:
         monkeypatch.setattr(openpyxl, "load_workbook", load_and_track)
 
         periods = import_bdt_summary_workbook(xlsx_path)
-        assert periods == {}
+        assert periods == {"Sheet1": 0}
         assert opened.get("closed") is True

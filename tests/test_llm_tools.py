@@ -2071,6 +2071,23 @@ def test_query_bdt_summary_service_accepts_reporting_period_directly(monkeypatch
     assert captured["reporting_period"] == "Q2-2026"
 
 
+def test_query_bdt_summary_service_honors_zero_limit(monkeypatch):
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.catalog_store.query_bdt_summary",
+        lambda site_id, reporting_period, week, test_date_from, test_date_to: pd.DataFrame(
+            [
+                {"site_id": "S1", "reporting_period": "P1", "raw_data_json": "{}"},
+                {"site_id": "S2", "reporting_period": "P1", "raw_data_json": "{}"},
+            ]
+        ),
+    )
+    service = LocalDataService()
+
+    result = service.query_bdt_summary(limit=0)
+
+    assert result == {"rows": [], "total": 2}
+
+
 def test_get_site_alarm_context_combines_stats_and_alarms(monkeypatch):
     service = LocalDataService()
 
