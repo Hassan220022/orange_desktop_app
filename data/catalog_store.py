@@ -145,9 +145,9 @@ def search_site_metadata(
     if site_text:
         needle = str(site_text).strip().upper()
         normalized = _normalize_site_id(needle)
-        mask = filtered.get("site_id", pd.Series("", index=filtered.index)).fillna("").astype(str).str.upper().str.contains(normalized, na=False)
+        mask = filtered.get("site_id", pd.Series("", index=filtered.index)).fillna("").astype(str).str.upper().str.contains(normalized, na=False, regex=False)
         if "site_name" in filtered.columns:
-            mask |= filtered["site_name"].fillna("").astype(str).str.upper().str.contains(needle, na=False)
+            mask |= filtered["site_name"].fillna("").astype(str).str.upper().str.contains(needle, na=False, regex=False)
         filtered = filtered[mask]
     for columns, value in (
         (("area", "orange_area"), area),
@@ -158,7 +158,7 @@ def search_site_metadata(
             mask = pd.Series(False, index=filtered.index)
             for column in columns:
                 if column in filtered.columns:
-                    mask |= filtered[column].fillna("").astype(str).str.contains(str(value), case=False, na=False)
+                    mask |= filtered[column].fillna("").astype(str).str.contains(str(value), case=False, na=False, regex=False)
             filtered = filtered[mask]
     if limit is not None:
         filtered = filtered.head(max(0, int(limit)))

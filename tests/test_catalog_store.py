@@ -100,6 +100,45 @@ class TestSiteMetadataDuckDB:
         result = query_site_metadata("ABC")
         assert result.empty
 
+    def test_search_literal_regex_chars_no_error(self):
+        """search_site_metadata uses regex=False — special chars like '[' and '\\' match literally."""
+        from alarm_app.data.catalog_store import search_site_metadata
+
+        df = pd.DataFrame([
+            {
+                "site_id": "S1",
+                "site_name": "Site [A] North",
+                "area": "Region [X]",
+                "subcontractor": "Co\\Sub",
+                "original_headers_json": "{}",
+                "raw_data_json": json.dumps({"site_id": "S1", "site_name": "Site [A] North"}),
+            },
+            {
+                "site_id": "S2",
+                "site_name": "Plain Site",
+                "area": "South",
+                "subcontractor": "OtherCo",
+                "original_headers_json": "{}",
+                "raw_data_json": json.dumps({"site_id": "S2", "site_name": "Plain Site"}),
+            },
+        ])
+        replace_site_metadata(df)
+
+        # Searching with '[' should match literal bracket, not raise regex error
+        result = search_site_metadata(site_text="[A]")
+        assert len(result) == 1
+        assert result.iloc[0]["site_id"] == "S1"
+
+        # Searching with '\\' should match literal backslash
+        result = search_site_metadata(subcontractor="\\Sub")
+        assert len(result) == 1
+        assert result.iloc[0]["site_id"] == "S1"
+
+        # Searching with '[' via area should also work
+        result = search_site_metadata(area="[X]")
+        assert len(result) == 1
+        assert result.iloc[0]["site_id"] == "S1"
+
 
 class TestBDTSummaryDuckDB:
     def _make_bdt_df(self, rows: list[dict]) -> pd.DataFrame:

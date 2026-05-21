@@ -487,6 +487,67 @@ class TestBDTSummaryImport:
         periods = import_bdt_summary_workbook(xlsx_path)
         assert periods == {"Sheet1": 0}
 
+    def test_completely_empty_sheet_records_zero_row_period(self, tmp_path):
+        """A sheet with no rows at all (not even headers) is recorded as 0 rows."""
+        xlsx_path = tmp_path / "empty_sheet_bdt.xlsx"
+        _write_bdt_summary_xlsx(
+            xlsx_path,
+            sheets=[
+                ("W30-24", [["Site ID", "Week", "Test Date", "Result"], ["S1", "W30", "2024-07-15", "Pass"]]),
+                ("W31-24", []),  # completely empty — no rows at all
+            ],
+        )
+
+        periods = import_bdt_summary_workbook(xlsx_path)
+        assert set(periods.keys()) == {"W30-24", "W31-24"}
+        assert periods["W30-24"] == 1
+        assert periods["W31-24"] == 0
+
+        # verify only W30-24 row exists
+        from alarm_app.db.engine import get_shared_session
+        from alarm_app.db.models import BDTSummaryCatalog
+
+        session = get_shared_session()
+        try:
+            all_rows = session.query(BDTSummaryCatalog).all()
+            assert len(all_rows) == 1
+            assert all_rows[0].site_id == "S1"
+        finally:
+            session.close()
+
+    def test_completely_empty_sheet_clears_previous_period(self, tmp_path):
+        """Importing a completely empty sheet for a previously populated period clears stale rows."""
+        # populate a period with rows
+        xlsx_path = tmp_path / "bdt_populated.xlsx"
+        _write_bdt_summary_xlsx(
+            xlsx_path,
+            sheets=[
+                ("W32-24", [["Site ID", "Week", "Test Date", "Result"], ["S1", "W32", "2024-08-01", "Pass"]]),
+            ],
+        )
+        import_bdt_summary_workbook(xlsx_path)
+
+        # now import a completely empty sheet for the same period
+        clear_path = tmp_path / "bdt_clear.xlsx"
+        _write_bdt_summary_xlsx(
+            clear_path,
+            sheets=[("W32-24", [])],  # completely empty sheet, no rows
+        )
+
+        periods = import_bdt_summary_workbook(clear_path)
+        assert periods == {"W32-24": 0}
+
+        from alarm_app.data.catalog_store import query_bdt_summary
+        from alarm_app.db.engine import get_shared_session
+        from alarm_app.db.models import BDTSummaryCatalog
+
+        assert query_bdt_summary(reporting_period="W32-24").empty
+        session = get_shared_session()
+        try:
+            assert session.query(BDTSummaryCatalog).count() == 0
+        finally:
+            session.close()
+
     def test_read_only_workbook_closed_when_bdt_import_empty(self, tmp_path, monkeypatch):
         xlsx_path = tmp_path / "empty_bdt.xlsx"
         import openpyxl

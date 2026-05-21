@@ -320,8 +320,7 @@ def _read_bdt_summary_rows(wb, path: Path) -> tuple[list[dict[str, Any]], dict[s
             raw_rows.append(list(row_cells))
 
         if len(raw_rows) < 2:
-            if raw_rows:
-                period_counts[sheet_name] = 0
+            period_counts[sheet_name] = 0
             continue  # skip empty or header-only sheets
 
         raw_headers = [str(h).strip() if h is not None else "" for h in raw_rows[0]]
