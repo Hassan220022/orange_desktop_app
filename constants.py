@@ -120,6 +120,31 @@ TEMP_WIDTHS = {
     "match_window": 120,
 }
 
+# ── HT Meet Workbook dialog constants ──────────────────────────
+HT_MEET_HEADERS = {
+    "Site Name": "Site Name",
+    "Alarm Source": "Alarm Source",
+    "Last Occurred On": "Last Occurred On",
+    "Cleared On": "Cleared On",
+    "Duration(hh:mm:ss)": "Duration",
+    "Alarm Name": "Alarm Name",
+    "Clearance Status": "Status",
+    "Cleared By": "Cleared By",
+    "Alarm Reporting Type": "Reporting Type",
+}
+
+HT_MEET_WIDTHS = {
+    "Site Name": 200,
+    "Alarm Source": 280,
+    "Last Occurred On": 170,
+    "Cleared On": 170,
+    "Duration(hh:mm:ss)": 135,
+    "Alarm Name": 220,
+    "Clearance Status": 90,
+    "Cleared By": 130,
+    "Alarm Reporting Type": 130,
+}
+
 # ── BDT validation constants ──────────────────────────────
 BDT_DEFAULT_TOLERANCE = 0.15   # 15% — fractional sizing tolerance for R8
 BDT_DEFAULT_HEALTH_PCT = 0.80  # 80% default battery health (lead-acid)

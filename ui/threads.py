@@ -18,10 +18,8 @@ try:
     from alarm_app.core.duration import duration_to_secs as _duration_to_secs
     from alarm_app.core.duration import secs_to_hhmmss as _secs_to_hhmmss
     from alarm_app.core.temp_alarm import (
-        compute_temp_alarm_matches,
+        compute_ht_meet_rows,
         compute_temp_alarm_matches_for_query,
-        filter_temp_matches_to_query,
-        filter_temp_matches_to_selected_temps,
     )
     from alarm_app.data import loaders as _loaders
     from alarm_app.data import state
@@ -41,10 +39,8 @@ except ImportError:
     from core.duration import duration_to_secs as _duration_to_secs
     from core.duration import secs_to_hhmmss as _secs_to_hhmmss
     from core.temp_alarm import (
-        compute_temp_alarm_matches,
+        compute_ht_meet_rows,
         compute_temp_alarm_matches_for_query,
-        filter_temp_matches_to_query,
-        filter_temp_matches_to_selected_temps,
     )
     from data import loaders as _loaders
     from data import state
@@ -640,38 +636,39 @@ class BackupTimeThread(QThread):
 
 
 class TempAlarmThread(QThread):
-    """Compute temp alarms not covered by Power windows in a background thread."""
+    """Compute HT Alarm Workbook Meet preview in a background thread."""
 
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(object, str, object)
     error = pyqtSignal(str)
 
-    def __init__(self, df: pd.DataFrame | None = None, alarm_query=None, margin_minutes: int = 60, result_filter_query=None, selected_temp_df: pd.DataFrame | None = None):
+    def __init__(self, df: pd.DataFrame | None = None, alarm_query=None, margin_minutes: int = 60, result_filter_query=None, selected_temp_df: pd.DataFrame | None = None, week_label: str | None = None):
         super().__init__()
         self._df = df
         self._alarm_query = alarm_query
         self._margin_minutes = margin_minutes
         self._result_filter_query = result_filter_query
         self._selected_temp_df = selected_temp_df
+        self._week_label = week_label
 
     def run(self):
         try:
-            self.progress.emit(30, "Finding uncovered temp alarms …")
+            self.progress.emit(30, "Computing HT Meet workbook preview …")
             if self._df is not None:
                 source_df = self._df
-                result, err = compute_temp_alarm_matches(source_df, margin_minutes=self._margin_minutes)
             else:
-                result, err, source_df = compute_temp_alarm_matches_for_query(
+                _, _, source_df = compute_temp_alarm_matches_for_query(
                     self._alarm_query,
                     margin_minutes=self._margin_minutes,
                     result_filter_query=self._result_filter_query,
+                    include_full_temp_source=True,
                 )
-            result = filter_temp_matches_to_query(result, self._result_filter_query)
-            if self._selected_temp_df is not None:
-                result = filter_temp_matches_to_selected_temps(result, self._selected_temp_df)
-            if err == "" and result.empty:
-                err = "No uncovered Temp alarms found in selected date scope."
+            # Build HT Meet preview rows using the Reference Workbook daily Meet rule
+            _study, meet = compute_ht_meet_rows(source_df, week_label=self._week_label)
+            err = ""
+            if meet.empty:
+                err = "No HT alarms meet the daily threshold criteria in this scope."
             self.progress.emit(100, "Done")
-            self.finished.emit(result, err, source_df)
+            self.finished.emit(meet, err, source_df)
         except Exception:
             self.error.emit(traceback.format_exc())
