@@ -12,6 +12,7 @@ from alarm_app.db.repos.catalog_repo import (
     delete_bdt_period,
     insert_bdt_rows,
     merge_bdt_period,
+    merge_site_metadata,
     query_site_metadata,
     replace_all_site_metadata,
 )
@@ -74,6 +75,30 @@ class TestSiteMetadataRepo:
 
         assert query_site_metadata(session, "S1") is None
         assert query_site_metadata(session, "S2") is not None
+
+    def test_merge_upserts_and_preserves_unmentioned_sites(self, session):
+        replace_all_site_metadata(
+            session,
+            [
+                {"site_id": "S1", "original_headers_json": "{}", "raw_data_json": '{"version": 1}'},
+                {"site_id": "S2", "original_headers_json": "{}", "raw_data_json": '{"version": 1}'},
+            ],
+        )
+        session.commit()
+
+        count = merge_site_metadata(
+            session,
+            [
+                {"site_id": "S1", "original_headers_json": "{}", "raw_data_json": '{"version": 2}'},
+                {"site_id": "S3", "original_headers_json": "{}", "raw_data_json": '{"version": 1}'},
+            ],
+        )
+        session.commit()
+
+        assert count == 2
+        assert json.loads(query_site_metadata(session, "S1").raw_data_json)["version"] == 2
+        assert json.loads(query_site_metadata(session, "S2").raw_data_json)["version"] == 1
+        assert json.loads(query_site_metadata(session, "S3").raw_data_json)["version"] == 1
 
     def test_query_missing_returns_none(self, session):
         assert query_site_metadata(session, "NOPE") is None

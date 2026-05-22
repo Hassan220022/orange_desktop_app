@@ -1,12 +1,14 @@
 """Tests for data/catalog_store.py."""
 
 import json
+from datetime import datetime
 
 import pandas as pd
 import pytest
 
 from alarm_app.data.catalog_store import (
     merge_bdt_summary,
+    merge_site_metadata,
     query_bdt_summary,
     query_site_metadata,
     read_bdt_summary,
@@ -86,6 +88,51 @@ class TestSiteMetadataDuckDB:
         assert count == 1
         assert len(result) == 1
         assert json.loads(result.iloc[0]["raw_data_json"])["version"] == 2
+
+    def test_merge_upserts_and_preserves_unmentioned_sites(self):
+        replace_site_metadata(
+            pd.DataFrame(
+                [
+                    {"site_id": "S1", "original_headers_json": "{}", "raw_data_json": '{"version":1}'},
+                    {"site_id": "S2", "original_headers_json": "{}", "raw_data_json": '{"version":1}'},
+                ]
+            )
+        )
+
+        count = merge_site_metadata(
+            pd.DataFrame(
+                [
+                    {"site_id": "S1", "original_headers_json": "{}", "raw_data_json": '{"version":2}'},
+                    {"site_id": "S3", "original_headers_json": "{}", "raw_data_json": '{"version":1}'},
+                ]
+            )
+        )
+
+        assert count == 2
+        assert json.loads(query_site_metadata("S1").iloc[0]["raw_data_json"])["version"] == 2
+        assert json.loads(query_site_metadata("S2").iloc[0]["raw_data_json"])["version"] == 1
+        assert json.loads(query_site_metadata("S3").iloc[0]["raw_data_json"])["version"] == 1
+
+    def test_merge_accepts_mixed_datetime_and_placeholder_values(self):
+        rows = [
+            {
+                "site_id": f"S{i}",
+                "on_air_date": None,
+                "original_headers_json": "{}",
+                "raw_data_json": f'{{"site_id":"S{i}"}}',
+            }
+            for i in range(3000)
+        ]
+        rows[22]["on_air_date"] = datetime(2024, 1, 1)
+        rows[2561]["on_air_date"] = "_"
+
+        count = merge_site_metadata(
+            pd.DataFrame(rows)
+        )
+
+        assert count == 3000
+        assert query_site_metadata("S22").iloc[0]["on_air_date"] == "2024-01-01 00:00:00"
+        assert query_site_metadata("S2561").iloc[0]["on_air_date"] == "_"
 
     def test_empty_dataframe_creates_table(self):
         df = pd.DataFrame()

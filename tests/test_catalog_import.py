@@ -1,6 +1,7 @@
 """Integration tests for data/catalog_import.py using tiny xlsx fixtures."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -16,7 +17,12 @@ from alarm_app.data.catalog_import import (
 # ---------------------------------------------------------------------------
 
 
-def _write_network_summary_xlsx(path: Path, *, include_code: bool = True) -> None:
+def _write_network_summary_xlsx(
+    path: Path,
+    *,
+    include_code: bool = True,
+    rows: list[list] | None = None,
+) -> None:
     import openpyxl
 
     wb = openpyxl.Workbook()
@@ -26,12 +32,12 @@ def _write_network_summary_xlsx(path: Path, *, include_code: bool = True) -> Non
     headers = ["Code", "Site  Name", "Area", "Subcontractor", "Battery Type"]
     ws.append(headers)
 
-    rows = [
+    data_rows = rows or [
         ["ABC-123", "Alpha Site", "North", "SubCo A", "VRLA"],
         ["XYZ-456", "Beta Site", "South", "SubCo B", "Li-Ion"],
         ["DEF-789", "Gamma Site", "East", "SubCo A", "VRLA"],
     ]
-    for r in rows:
+    for r in data_rows:
         ws.append(r)
 
     if not include_code:
@@ -143,6 +149,67 @@ class TestNetworkSummaryImport:
         assert len(result) == 1
         raw3 = json.loads(result.iloc[0]["raw_data_json"])
         assert raw3["area"] == "East"
+
+    def test_import_merges_with_existing_site_metadata_by_site_id(self, tmp_path):
+        initial_path = tmp_path / "network_summary_initial.xlsx"
+        _write_network_summary_xlsx(initial_path, include_code=True)
+        import_network_summary_db_sheet(initial_path)
+
+        update_path = tmp_path / "network_summary_update.xlsx"
+        _write_network_summary_xlsx(
+            update_path,
+            include_code=True,
+            rows=[
+                ["ABC-123", "Alpha Site Updated", "Central", "SubCo C", "Li-Ion"],
+                ["NEW-001", "New Site", "West", "SubCo D", "VRLA"],
+            ],
+        )
+
+        count = import_network_summary_db_sheet(update_path)
+
+        assert count == 2
+
+        from alarm_app.data.catalog_store import query_site_metadata as duckdb_query
+        from alarm_app.db.engine import get_shared_session
+        from alarm_app.db.repos.catalog_repo import query_site_metadata
+
+        session = get_shared_session()
+        try:
+            updated = query_site_metadata(session, "ABC123")
+            preserved = query_site_metadata(session, "DEF789")
+            inserted = query_site_metadata(session, "NEW001")
+            assert updated is not None
+            assert preserved is not None
+            assert inserted is not None
+            assert json.loads(updated.raw_data_json)["site_name"] == "Alpha Site Updated"
+            assert json.loads(preserved.raw_data_json)["site_name"] == "Gamma Site"
+            assert json.loads(inserted.raw_data_json)["area"] == "West"
+        finally:
+            session.close()
+
+        assert json.loads(duckdb_query("ABC123").iloc[0]["raw_data_json"])["site_name"] == "Alpha Site Updated"
+        assert not duckdb_query("DEF789").empty
+        assert not duckdb_query("NEW001").empty
+
+    def test_import_accepts_mixed_date_and_placeholder_columns(self, tmp_path):
+        import openpyxl
+
+        xlsx_path = tmp_path / "network_summary_mixed_dates.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "DB"
+        ws.append(["Code", "Site Name", "On Air Date"])
+        ws.append(["ABC-123", "Alpha", datetime(2024, 1, 1)])
+        ws.append(["XYZ-456", "Beta", "_"])
+        wb.save(xlsx_path)
+
+        count = import_network_summary_db_sheet(xlsx_path)
+
+        from alarm_app.data.catalog_store import query_site_metadata as duckdb_query
+
+        assert count == 2
+        assert duckdb_query("ABC123").iloc[0]["on_air_date"] == "2024-01-01 00:00:00"
+        assert duckdb_query("XYZ456").iloc[0]["on_air_date"] == "_"
 
     def test_sqlite_commit_failure_restores_duckdb_snapshot(self, tmp_path, monkeypatch):
         xlsx_path = tmp_path / "network_summary.xlsx"

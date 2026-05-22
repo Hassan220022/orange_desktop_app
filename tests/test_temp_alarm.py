@@ -868,17 +868,17 @@ def test_date_scoped_temp_excludes_power_more_than_one_day_earlier():
     assert "No uncovered Temp alarms" in err
 
 
-def test_temp_source_query_removes_date_scope_before_coverage_check():
+def test_temp_source_query_preserves_viewer_scope_for_ht_preview():
     query = AlarmQuery(date_from=pd.Timestamp("2026-02-04"), date_to=pd.Timestamp("2026-02-04"))
 
     source_query = AlarmViewer._build_temp_alarm_source_query(query)
 
-    assert source_query.date_from is None
-    assert source_query.date_to is None
-    assert source_query.manual_days is None
+    assert source_query.date_from == query.date_from
+    assert source_query.date_to == query.date_to
+    assert source_query.manual_days == query.manual_days
 
 
-def test_query_path_scopes_broad_source_to_selected_temp_sites(monkeypatch):
+def test_query_path_preserves_viewer_scope_for_ht_power_source(monkeypatch):
     selected_temp = _make_df([
         {
             "site_id": "SITE_A",
@@ -906,7 +906,17 @@ def test_query_path_scopes_broad_source_to_selected_temp_sites(monkeypatch):
         return power_rows
 
     monkeypatch.setattr("alarm_app.core.temp_alarm.query_alarms", fake_query_alarms)
-    selected_query = AlarmQuery(date_from=pd.Timestamp("2026-02-04"), date_to=pd.Timestamp("2026-02-04"))
+    selected_query = AlarmQuery(
+        date_from=pd.Timestamp("2026-02-04"),
+        date_to=pd.Timestamp("2026-02-04"),
+        manual_days=[pd.Timestamp("2026-02-04")],
+        min_duration_secs=900,
+        vendor="HUAWEI",
+        network_type="4G",
+        allowed_values={"office": ["Cairo"]},
+        column_filters={"area": ["North"]},
+        col_filters={"region": ["East"]},
+    )
 
     result, err, source_df = compute_temp_alarm_matches_for_query(
         selected_query,
@@ -921,13 +931,15 @@ def test_query_path_scopes_broad_source_to_selected_temp_sites(monkeypatch):
     assert calls[0].date_from == pd.Timestamp("2026-02-04")
     assert calls[1].category == "Power"
     assert calls[1].site_text == ""
-    assert calls[1].vendor == "All"
-    assert calls[1].network_type == "All"
-    assert calls[1].min_duration_secs is None
-    assert calls[1].col_filters == {}
-    assert calls[1].date_from is None
+    assert calls[1].vendor == "HUAWEI"
+    assert calls[1].network_type == "4G"
+    assert calls[1].min_duration_secs == 900
+    assert calls[1].allowed_values == {"office": ["Cairo"]}
+    assert calls[1].column_filters == {"area": ["North"]}
+    assert calls[1].col_filters == {"region": ["East"]}
+    assert calls[1].date_from == pd.Timestamp("2026-02-04")
     assert calls[1].date_to == pd.Timestamp("2026-02-04")
-    assert calls[1].manual_days is None
+    assert list(calls[1].manual_days or []) == [pd.Timestamp("2026-02-04")]
     assert set(calls[1].site_scope_keys) == {"SITE_A"}
 
 

@@ -82,7 +82,7 @@ def import_network_summary_db_sheet(workbook_path: str | Path) -> int:
     1. Open *workbook_path* with openpyxl, locate ``DB`` sheet.
     2. Validate ``Code`` column exists and has non-empty rows.
     3. Preserve every column; normalize headers.
-    4. Replace SQLite and DuckDB site_metadata_catalog all-or-nothing.
+    4. Merge SQLite and DuckDB site_metadata_catalog all-or-nothing by site_id.
 
     Returns number of sites imported.
     Raises ``ValueError`` when ``Code`` is missing or no valid rows.
@@ -101,24 +101,26 @@ def import_network_summary_db_sheet(workbook_path: str | Path) -> int:
     # -- write SQLite --
     try:
         from alarm_app.db.engine import get_shared_session
-        from alarm_app.db.repos.catalog_repo import replace_all_site_metadata
+        from alarm_app.db.repos.catalog_repo import merge_site_metadata
     except ImportError:
         from db.engine import get_shared_session
-        from db.repos.catalog_repo import replace_all_site_metadata
+        from db.repos.catalog_repo import merge_site_metadata
 
     # -- write DuckDB --
     try:
+        from alarm_app.data.catalog_store import merge_site_metadata as merge_duckdb_site_metadata
         from alarm_app.data.catalog_store import read_site_metadata, replace_site_metadata
     except ImportError:
+        from data.catalog_store import merge_site_metadata as merge_duckdb_site_metadata
         from data.catalog_store import read_site_metadata, replace_site_metadata
 
     session = get_shared_session()
     duckdb_snapshot = read_site_metadata()
     duckdb_written = False
     try:
-        count_sql = replace_all_site_metadata(session, rows_list)
+        count_sql = merge_site_metadata(session, rows_list)
         df = pd.DataFrame(rows_list)
-        replace_site_metadata(df)
+        merge_duckdb_site_metadata(df)
         duckdb_written = True
         session.commit()
     except Exception:

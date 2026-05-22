@@ -38,6 +38,7 @@ class UIBridge:
     edit_bdt_dir: QLineEdit
     lbl_bdt_file_count: QLabel
     bdt_file_list: QListWidget
+    btn_bdt_summary: QPushButton
 
     # ── From SearchPanel ──
     edit_site: QLineEdit
@@ -63,6 +64,7 @@ class UIBridge:
     btn_backup: QPushButton
     btn_temp: QPushButton
     btn_site_sheet: QPushButton
+    btn_network_summary: QPushButton
     btn_site_report: QPushButton
     btn_both: QPushButton
 
@@ -82,6 +84,7 @@ class UIBridge:
             edit_bdt_dir=bdt_sidebar.edit_dir,
             lbl_bdt_file_count=bdt_sidebar.lbl_file_count,
             bdt_file_list=bdt_sidebar.file_list,
+            btn_bdt_summary=bdt_sidebar.btn_bdt_summary,
             # SearchPanel
             edit_site=search_panel.edit_site,
             cb_cat=search_panel.cb_cat,
@@ -106,6 +109,7 @@ class UIBridge:
             btn_backup=search_panel.btn_backup,
             btn_temp=search_panel.btn_temp,
             btn_site_sheet=search_panel.btn_site_sheet,
+            btn_network_summary=search_panel.btn_network_summary,
             btn_site_report=search_panel.btn_site_report,
             btn_both=search_panel.btn_both,
         )

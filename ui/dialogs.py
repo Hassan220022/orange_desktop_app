@@ -28,6 +28,7 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -1776,7 +1777,12 @@ class TempAlarmDialog(QDialog):
     def __init__(self, df: pd.DataFrame, source_df: pd.DataFrame, margin_minutes: int = 60, result_filter_query=None, selected_temp_df: pd.DataFrame | None = None, week_label: str | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("HT Alarm Workbook — Meet Preview")
-        self.resize(1180, 700)
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else None
+        max_width = available.width() - 80 if available else 1280
+        target_width = max(1180, min(1280, max_width))
+        self.setMinimumSize(min(target_width, 1240), 720)
+        self.resize(target_width, 760)
         if parent:
             self.setStyleSheet(parent.styleSheet())
         self._source_df = source_df
@@ -1834,16 +1840,17 @@ class TempAlarmDialog(QDialog):
 
     def _build(self):
         lay = QVBoxLayout(self)
-        lay.setSpacing(8)
-        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(12)
+        lay.setContentsMargins(16, 14, 16, 14)
 
         # ── Top header strip ────────────────────────────────────
         top = QFrame()
         top.setObjectName("tempDashboardHeader")
         top.setStyleSheet("QFrame#tempDashboardHeader { background:#313244; border-radius:8px; }")
         tl = QHBoxLayout(top)
-        tl.setContentsMargins(10, 7, 10, 7)
-        tl.setSpacing(9)
+        tl.setContentsMargins(12, 10, 12, 10)
+        tl.setSpacing(10)
+        tl.setAlignment(Qt.AlignVCenter)
 
         # Week label control
         week_label_lbl = QLabel("Export Week")
@@ -1853,7 +1860,7 @@ class TempAlarmDialog(QDialog):
         self._week_input = QLineEdit()
         self._week_input.setPlaceholderText("e.g. W27-24")
         self._week_input.setText(self._week_label or "")
-        self._week_input.setFixedSize(104, 30)
+        self._week_input.setFixedSize(112, 36)
         self._week_input.setAlignment(Qt.AlignCenter)
         self._week_input.setStyleSheet(
             """
@@ -1877,7 +1884,7 @@ class TempAlarmDialog(QDialog):
         tl.addWidget(self._week_input)
 
         self._btn_apply_week = QPushButton("Apply")
-        self._btn_apply_week.setFixedSize(74, 30)
+        self._btn_apply_week.setFixedSize(100, 36)
         self._btn_apply_week.setStyleSheet(
             """
             QPushButton {
@@ -1887,6 +1894,8 @@ class TempAlarmDialog(QDialog):
                 color:#cdd6f4;
                 font-size:11px;
                 font-weight:700;
+                min-width:78px;
+                max-width:78px;
                 padding:0 10px;
             }
             QPushButton:hover { border-color:#89b4fa; }
@@ -1896,29 +1905,51 @@ class TempAlarmDialog(QDialog):
             }
             """
         )
+        self._btn_apply_week.setFixedSize(100, 36)
         self._btn_apply_week.clicked.connect(self._apply_week_now)
         tl.addWidget(self._btn_apply_week)
 
         self._metadata_filter_input = QLineEdit()
         self._metadata_filter_input.setPlaceholderText("Filter site / area / subcontractor")
-        self._metadata_filter_input.setFixedSize(190, 30)
+        self._metadata_filter_input.setFixedSize(220, 36)
+        self._metadata_filter_input.setStyleSheet(
+            """
+            QLineEdit {
+                background:#11111b;
+                border:1px solid #45475a;
+                border-radius:6px;
+                color:#cdd6f4;
+                font-size:13px;
+                padding:0 10px;
+            }
+            QLineEdit:focus { border-color:#89b4fa; }
+            QLineEdit:disabled {
+                background:#313244;
+                border-color:#45475a;
+                color:#6c7086;
+            }
+            """
+        )
+        self._metadata_filter_input.setFixedSize(220, 36)
         self._metadata_filter_input.returnPressed.connect(self._apply_metadata_filter_now)
         self._metadata_filter_input.editingFinished.connect(self._apply_metadata_filter_now)
         tl.addWidget(self._metadata_filter_input)
 
         # Summary metric cards
         self._summary_strip = QHBoxLayout()
-        self._summary_strip.setSpacing(8)
-        tl.addLayout(self._summary_strip, 1)
+        self._summary_strip.setSpacing(10)
+        tl.addLayout(self._summary_strip, 0)
+        tl.addStretch(1)
 
         # Export button card
         export_card = QFrame()
         export_card.setObjectName("tempExportCard")
-        export_card.setFixedWidth(112)
+        export_card.setFixedWidth(120)
         export_card.setStyleSheet("QFrame#tempExportCard { background:transparent; }")
         el = QVBoxLayout(export_card)
         el.setContentsMargins(0, 0, 0, 0)
-        el.setSpacing(4)
+        el.setSpacing(6)
+        el.setAlignment(Qt.AlignCenter)
 
         self._export_status = QLabel("")
         self._export_status.setAlignment(Qt.AlignCenter)
@@ -1929,13 +1960,13 @@ class TempAlarmDialog(QDialog):
 
         self._export_progress = QProgressBar()
         self._export_progress.setRange(0, 0)
-        self._export_progress.setFixedWidth(92)
+        self._export_progress.setFixedWidth(100)
         self._export_progress.hide()
         el.addWidget(self._export_progress, 0, Qt.AlignCenter)
 
         self._btn_export = QPushButton("Export XLSX")
         self._btn_export.setObjectName("btn_export")
-        self._btn_export.setMinimumSize(104, 38)
+        self._btn_export.setMinimumSize(112, 40)
         self._btn_export.clicked.connect(self._export)
         el.addWidget(self._btn_export)
         tl.addWidget(export_card)
@@ -1945,16 +1976,17 @@ class TempAlarmDialog(QDialog):
             "HT alarms that meet the daily threshold (>7 hours HT minus Power). "
             "Set the week label above to scope the workbook export."
         )
-        note.setStyleSheet("color:#6c7086; font-size:11px;")
+        note.setStyleSheet("color:#6c7086; font-size:11px; padding:6px 0;")
         note.setWordWrap(True)
         lay.addWidget(note)
         self._metadata_warning = QLabel(self._metadata_warning_text())
-        self._metadata_warning.setStyleSheet("color:#fab387; font-size:11px;")
+        self._metadata_warning.setStyleSheet("color:#fab387; font-size:11px; padding:6px 0;")
         self._metadata_warning.setWordWrap(True)
         self._metadata_warning.setVisible(bool(self._metadata_warning.text()))
         lay.addWidget(self._metadata_warning)
 
         self._table_host = QVBoxLayout()
+        self._table_host.setSpacing(8)
         lay.addLayout(self._table_host, 1)
         self._render_summary()
         self._render_table()
@@ -2046,7 +2078,10 @@ class TempAlarmDialog(QDialog):
         while self._summary_strip.count():
             item = self._summary_strip.takeAt(0)
             if item.widget():
-                item.widget().deleteLater()
+                widget = item.widget()
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
         df = self._df
         n = len(df)
         site_count = df["Site Name"].nunique() if n and "Site Name" in df.columns else 0
@@ -2067,29 +2102,33 @@ class TempAlarmDialog(QDialog):
         ]:
             box = QFrame()
             box.setObjectName("tempMetricCard")
-            box.setMinimumWidth(112)
+            box.setMinimumWidth(100)
+            box.setMaximumWidth(146)
             box.setStyleSheet("QFrame#tempMetricCard { background:#181825; border-radius:8px; }")
             vb = QVBoxLayout(box)
-            vb.setContentsMargins(8, 6, 8, 6)
-            vb.setSpacing(2)
+            vb.setContentsMargins(10, 8, 10, 8)
+            vb.setSpacing(4)
             lv = QLabel(val)
             lv.setAlignment(Qt.AlignCenter)
             lv.setWordWrap(True)
-            lv.setFont(QFont("Segoe UI", 11, QFont.Bold))
+            lv.setFont(QFont("Segoe UI", 13, QFont.Bold))
             lv.setStyleSheet(f"color:{color};")
             lt = QLabel(label)
             lt.setAlignment(Qt.AlignCenter)
             lt.setWordWrap(True)
-            lt.setStyleSheet("color:#a6adc8; font-size:9px;")
+            lt.setStyleSheet("color:#a6adc8; font-size:10px;")
             vb.addWidget(lv)
             vb.addWidget(lt)
-            self._summary_strip.addWidget(box, 1)
+            self._summary_strip.addWidget(box)
 
     def _render_table(self):
         while self._table_host.count():
             item = self._table_host.takeAt(0)
             if item.widget():
-                item.widget().deleteLater()
+                widget = item.widget()
+                widget.hide()
+                widget.setParent(None)
+                widget.deleteLater()
         df = self._df
         table_df = df.head(MAX_ANALYSIS_TABLE_ROWS)
         if len(df) > len(table_df):
@@ -2103,14 +2142,19 @@ class TempAlarmDialog(QDialog):
         self._tbl.setHorizontalHeaderLabels([HT_MEET_HEADERS[c] for c in cols])
         self._tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._tbl.setAlternatingRowColors(True)
         self._tbl.setSortingEnabled(False)
+        self._tbl.setWordWrap(False)
+        self._tbl.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._tbl.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self._tbl.verticalHeader().setDefaultSectionSize(24)
         self._tbl.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
         hdr = self._tbl.horizontalHeader()
+        hdr.setSectionResizeMode(QHeaderView.Interactive)
         for i, c in enumerate(cols):
             hdr.resizeSection(i, HT_MEET_WIDTHS.get(c, 120))
-        hdr.setStretchLastSection(True)
+        hdr.setStretchLastSection(False)
         try:
             for r, row in enumerate(table_df.itertuples(index=False, name=None)):
                 row_values = dict(zip(table_df.columns, row))
@@ -2126,7 +2170,7 @@ class TempAlarmDialog(QDialog):
         finally:
             self._tbl.setSortingEnabled(True)
             self._tbl.setUpdatesEnabled(True)
-        self._table_host.addWidget(self._tbl)
+        self._table_host.addWidget(self._tbl, 1)
 
     def _export(self):
         if self._export_thread and self._export_thread.isRunning():

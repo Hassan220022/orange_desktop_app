@@ -2,6 +2,7 @@
 
 import os
 import time
+from datetime import date
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
@@ -11,9 +12,11 @@ import pytest
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
 
+from alarm_app.data.alarm_store import AlarmQuery
 from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorStatus
 from alarm_app.ui.dialogs import AppSettingsDialog, TempAlarmDialog, _filter_temp_alarm_source_for_metadata
 from alarm_app.ui.state_manager import StateManager
+from alarm_app.ui.viewer import AlarmViewer
 
 # ── global QApplication singleton ─────────────────────────────────
 _app: QApplication | None = None
@@ -162,6 +165,158 @@ class TestAlarmViewerGUI:
         assert btn is not None
         assert btn.isEnabled()
         assert "Settings" in btn.text()
+
+    def test_catalog_import_buttons_are_in_correct_workspaces(self, gui_app):
+        assert gui_app._ui.btn_network_summary.text() == "Import Network Summary"
+        assert gui_app._search_panel.btn_network_summary.text() == "Import Network Summary"
+        assert gui_app._ui.btn_bdt_summary.text() == "Import BDT Summary"
+        assert gui_app._bdt_sidebar.btn_bdt_summary.text() == "Import BDT Summary"
+        assert not hasattr(gui_app._search_panel, "btn_bdt_summary")
+
+    def test_network_summary_import_action_calls_catalog_import_for_selected_files(self, gui_app, monkeypatch, tmp_path):
+        workbook = tmp_path / "network.xlsx"
+        workbook_2 = tmp_path / "network_2.xlsx"
+        workbook.write_bytes(b"placeholder")
+        workbook_2.write_bytes(b"placeholder")
+        calls = []
+        messages = []
+        monkeypatch.setattr(
+            "alarm_app.ui.viewer.QFileDialog.getOpenFileNames",
+            lambda *args, **kwargs: ([str(workbook), str(workbook_2)], ""),
+        )
+        monkeypatch.setattr("alarm_app.ui.viewer.import_network_summary_db_sheet", lambda path: calls.append(path) or (7 if path == str(workbook) else 2))
+        monkeypatch.setattr("alarm_app.ui.viewer.QMessageBox.information", lambda *args: messages.append(args))
+
+        gui_app._import_network_summary_catalog()
+
+        assert calls == [str(workbook), str(workbook_2)]
+        assert messages[-1][1] == "Network Summary Imported"
+        assert "9 incoming site" in messages[-1][2]
+        assert "2 workbook" in messages[-1][2]
+
+    def test_bdt_summary_import_action_calls_catalog_import_for_selected_files(self, gui_app, monkeypatch, tmp_path):
+        workbook = tmp_path / "bdt.xlsx"
+        workbook_2 = tmp_path / "bdt_2.xlsx"
+        workbook.write_bytes(b"placeholder")
+        workbook_2.write_bytes(b"placeholder")
+        calls = []
+        messages = []
+        monkeypatch.setattr(
+            "alarm_app.ui.viewer.QFileDialog.getOpenFileNames",
+            lambda *args, **kwargs: ([str(workbook), str(workbook_2)], ""),
+        )
+        monkeypatch.setattr(
+            "alarm_app.ui.viewer.import_bdt_summary_workbook",
+            lambda path: calls.append(path) or ({"W27-24": 3, "W28-24": 0} if path == str(workbook) else {"W29-24": 4}),
+        )
+        monkeypatch.setattr("alarm_app.ui.viewer.QMessageBox.information", lambda *args: messages.append(args))
+
+        gui_app._import_bdt_summary_catalog()
+
+        assert calls == [str(workbook), str(workbook_2)]
+        assert messages[-1][1] == "BDT Summary Imported"
+        assert "3 period" in messages[-1][2]
+        assert "7 latest row" in messages[-1][2]
+        assert "2 workbook" in messages[-1][2]
+
+    def test_bdt_summary_import_action_reports_latest_rows_for_duplicate_periods(self, gui_app, monkeypatch, tmp_path):
+        workbook = tmp_path / "bdt.xlsx"
+        workbook_2 = tmp_path / "bdt_2.xlsx"
+        workbook.write_bytes(b"placeholder")
+        workbook_2.write_bytes(b"placeholder")
+        messages = []
+        monkeypatch.setattr(
+            "alarm_app.ui.viewer.QFileDialog.getOpenFileNames",
+            lambda *args, **kwargs: ([str(workbook), str(workbook_2)], ""),
+        )
+        monkeypatch.setattr(
+            "alarm_app.ui.viewer.import_bdt_summary_workbook",
+            lambda path: {"W27-24": 3} if path == str(workbook) else {"W27-24": 4},
+        )
+        monkeypatch.setattr("alarm_app.ui.viewer.QMessageBox.information", lambda *args: messages.append(args))
+
+        gui_app._import_bdt_summary_catalog()
+
+        assert messages[-1][1] == "BDT Summary Imported"
+        assert "1 period" in messages[-1][2]
+        assert "4 latest row" in messages[-1][2]
+
+    def test_network_summary_import_action_reports_partial_batch_failure(self, gui_app, monkeypatch, tmp_path):
+        workbook = tmp_path / "network.xlsx"
+        bad_workbook = tmp_path / "bad_network.xlsx"
+        workbook.write_bytes(b"placeholder")
+        bad_workbook.write_bytes(b"placeholder")
+        warnings = []
+        monkeypatch.setattr(
+            "alarm_app.ui.viewer.QFileDialog.getOpenFileNames",
+            lambda *args, **kwargs: ([str(workbook), str(bad_workbook)], ""),
+        )
+
+        def import_or_raise(path):
+            if path == str(bad_workbook):
+                raise ValueError("missing DB sheet")
+            return 7
+
+        monkeypatch.setattr("alarm_app.ui.viewer.import_network_summary_db_sheet", import_or_raise)
+        monkeypatch.setattr("alarm_app.ui.viewer.QMessageBox.warning", lambda *args: warnings.append(args))
+
+        gui_app._import_network_summary_catalog()
+
+        assert warnings[-1][1] == "Network Summary Import Partially Completed"
+        assert "7 incoming site" in warnings[-1][2]
+        assert "missing DB sheet" in warnings[-1][2]
+
+    def test_ht_source_query_preserves_date_scope(self):
+        query = AlarmQuery(
+            date_from=date(2026, 4, 19),
+            date_to=date(2026, 4, 20),
+            manual_days=[date(2026, 4, 19)],
+            min_duration_secs=900,
+        )
+
+        source_query = AlarmViewer._build_temp_alarm_source_query(query)
+
+        assert source_query.date_from == query.date_from
+        assert source_query.date_to == query.date_to
+        assert list(source_query.manual_days or []) == list(query.manual_days or [])
+        assert source_query.min_duration_secs == 900
+
+    def test_temp_alarm_dataframe_source_respects_date_and_duration_filters(self, gui_app, monkeypatch):
+        captured = {}
+
+        class FakeTempAlarmThread:
+            def __init__(self, df, *args, **kwargs):
+                captured["source"] = df.copy()
+                captured["selected_temp"] = kwargs.get("selected_temp_df").copy()
+                self.progress = _Signal()
+                self.finished = _Signal()
+                self.error = _Signal()
+
+            def start(self):
+                pass
+
+        class _Signal:
+            def connect(self, *_args, **_kwargs):
+                pass
+
+        monkeypatch.setattr("alarm_app.ui.viewer.TempAlarmThread", FakeTempAlarmThread)
+        gui_app._full_df = pd.DataFrame([
+            {"site_id": "A", "alarm_category": "Temp", "occurred_on": "2026-04-19 10:00:00", "cleared_on": "2026-04-19 10:00:10", "_duration_secs": 10.0},
+            {"site_id": "A", "alarm_category": "Temp", "occurred_on": "2026-04-19 11:00:00", "cleared_on": "2026-04-19 11:20:00", "_duration_secs": 1200.0},
+            {"site_id": "A", "alarm_category": "Power", "occurred_on": "2026-04-19 12:00:00", "cleared_on": "2026-04-19 12:30:00", "_duration_secs": 1800.0},
+            {"site_id": "A", "alarm_category": "Temp", "occurred_on": "2026-04-18 11:00:00", "cleared_on": "2026-04-18 12:00:00", "_duration_secs": 3600.0},
+        ])
+        gui_app._ui.chk_mindur.setChecked(True)
+        gui_app._ui.spn_mindur.setValue(15)
+        gui_app._ui.chk_date.setChecked(True)
+        gui_app._ui.chk_date_range.setChecked(True)
+        gui_app._ui.d_from.setDate(date(2026, 4, 19))
+        gui_app._ui.d_to.setDate(date(2026, 4, 19))
+
+        gui_app._show_temp_alarms()
+
+        assert captured["source"]["occurred_on"].tolist() == ["2026-04-19 11:00:00", "2026-04-19 12:00:00"]
+        assert captured["selected_temp"]["occurred_on"].tolist() == ["2026-04-19 11:00:00"]
 
     def test_settings_dialog_changes_theme(self, gui_app, monkeypatch):
         assert gui_app._theme_mode == "auto"
@@ -330,6 +485,55 @@ class TestAlarmViewerGUI:
             _wait_for_dialog_preview(dialog)
             dialog._apply_metadata_filter_now()
             assert dialog._preview_thread is None
+        finally:
+            dialog.close()
+
+    def test_temp_alarm_dialog_replaces_previous_table_widget_immediately(self, gui_app, monkeypatch):
+        monkeypatch.setattr("alarm_app.ui.dialogs._load_site_metadata_catalog", lambda: pd.DataFrame())
+
+        dialog = TempAlarmDialog(pd.DataFrame(), pd.DataFrame(), week_label="W17-26", parent=gui_app)
+        try:
+            _wait_for_dialog_preview(dialog)
+            old_table = dialog._tbl
+
+            dialog._df = pd.DataFrame([
+                {
+                    "Site Name": "A",
+                    "Alarm Source": "SRC_A",
+                    "Last Occurred On": "4/19/26 04:21",
+                    "Cleared On": "4/19/26 04:22",
+                    "Duration(hh:mm:ss)": "00:00:34",
+                    "Alarm Name": "BASE STATION EXTERNAL ALARM NOTIFICATION",
+                }
+            ])
+            dialog._render_table()
+
+            assert old_table is not dialog._tbl
+            assert old_table.parent() is None
+        finally:
+            dialog.close()
+
+    def test_temp_alarm_dialog_header_and_table_layout_sizing(self, gui_app, monkeypatch):
+        monkeypatch.setattr("alarm_app.ui.dialogs._load_site_metadata_catalog", lambda: pd.DataFrame())
+
+        dialog = TempAlarmDialog(pd.DataFrame(), pd.DataFrame(), week_label="W17-26", parent=gui_app)
+        try:
+            dialog.show()
+            QApplication.processEvents()
+            _wait_for_dialog_preview(dialog)
+
+            assert dialog.minimumHeight() >= 720
+            top = dialog.layout().itemAt(0).widget()
+            assert top.minimumSizeHint().width() <= dialog.width() - 32
+            assert dialog._week_input.size().height() == 36
+            assert dialog._btn_apply_week.size().height() == 36
+            assert dialog._btn_apply_week.width() == 100
+            assert dialog._metadata_filter_input.size().height() == 36
+            assert dialog._metadata_filter_input.width() >= 220
+            assert dialog._summary_strip.spacing() >= 10
+            assert dialog._table_host.spacing() >= 8
+            assert dialog._tbl.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded
+            assert dialog._tbl.horizontalHeader().stretchLastSection() is False
         finally:
             dialog.close()
 

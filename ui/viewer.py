@@ -55,6 +55,7 @@ try:
     from alarm_app.core.filters import compute_date_mask, parse_manual_days
     from alarm_app.core.temp_alarm import ht_export_week_from_date
     from alarm_app.data import alarm_store, state
+    from alarm_app.data.catalog_import import import_bdt_summary_workbook, import_network_summary_db_sheet
     from alarm_app.data.loaders import discover_alarm_files
     from alarm_app.data.site_report import (
         build_site_alarm_report,
@@ -96,6 +97,7 @@ except ImportError:
     from core.filters import compute_date_mask, parse_manual_days
     from core.temp_alarm import ht_export_week_from_date
     from data import alarm_store, state
+    from data.catalog_import import import_bdt_summary_workbook, import_network_summary_db_sheet
     from data.loaders import discover_alarm_files
     from data.site_report import (
         build_site_alarm_report,
@@ -1154,8 +1156,8 @@ class AlarmViewer(QMainWindow):
 
     @staticmethod
     def _build_temp_alarm_source_query(query: alarm_store.AlarmQuery) -> alarm_store.AlarmQuery:
-        """Remove Temp date scope from the source rows used for Power matching."""
-        return replace(query, date_from=None, date_to=None, manual_days=None)
+        """Build source rows for HT Meet without dropping user date/duration scope."""
+        return replace(query, limit=None, offset=0, sort_by=None, sort_desc=False)
 
     def _refresh_alarm_stats(self, query: alarm_store.AlarmQuery | None = None):
         summary = alarm_store.stats(query or self._build_alarm_query(limit=None, offset=0, ignore_sort=True))
@@ -2393,7 +2395,7 @@ class AlarmViewer(QMainWindow):
         # Include both Temp and Power rows as source for HT Meet computation
         source_for_meet = self._apply_filters(
             self._full_df,
-            exclude_columns={"alarm_category", "occurred_on"},
+            exclude_columns={"alarm_category"},
         )
         # Keep selected_temp for scope context
         selected_temp = self._apply_filters(
@@ -2527,6 +2529,125 @@ class AlarmViewer(QMainWindow):
         )
         self._sbar.showMessage(
             f"Loaded site sheet scope: {len(site_keys):,} site IDs from {os.path.basename(in_path)}")
+
+    def _import_network_summary_catalog(self):
+        in_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Import Network Summary Workbook(s)",
+            self._ui.edit_dir.text().strip() or str(Path.home()),
+            "Excel Files (*.xlsx *.xlsm *.xls)",
+        )
+        if not in_paths:
+            return
+        button = getattr(self._ui, "btn_network_summary", None)
+        count = 0
+        imported_paths: list[str] = []
+        failures: list[tuple[str, str]] = []
+        try:
+            if button is not None:
+                button.setEnabled(False)
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            self._sbar.showMessage("Importing Network Summary catalog …")
+            for in_path in in_paths:
+                try:
+                    count += import_network_summary_db_sheet(in_path)
+                    imported_paths.append(in_path)
+                except Exception as exc:
+                    failures.append((in_path, str(exc)))
+        finally:
+            QApplication.restoreOverrideCursor()
+            if button is not None:
+                button.setEnabled(True)
+        if failures and not imported_paths:
+            QMessageBox.critical(
+                self,
+                "Network Summary Import Failed",
+                "No workbook was imported.\n\n" + "\n".join(f"{path}: {error}" for path, error in failures),
+            )
+            self._sbar.showMessage("Network Summary import failed")
+            return
+        if failures:
+            QMessageBox.warning(
+                self,
+                "Network Summary Import Partially Completed",
+                f"Merged {count:,} incoming site metadata row(s) from {len(imported_paths):,} workbook(s).\n"
+                f"Failed {len(failures):,} workbook(s):\n\n"
+                + "\n".join(f"{path}: {error}" for path, error in failures),
+            )
+            self._sbar.showMessage(
+                f"Network Summary catalog partially imported: {count:,} incoming site row(s), {len(failures):,} failed workbook(s)"
+            )
+            return
+        QMessageBox.information(
+            self,
+            "Network Summary Imported",
+            f"Merged {count:,} incoming site metadata row(s) from {len(in_paths):,} workbook(s) into the Site Metadata Catalog.\n\n"
+            + "\n".join(in_paths),
+        )
+        self._sbar.showMessage(f"Network Summary catalog imported: {count:,} site(s), {len(in_paths):,} workbook(s)")
+
+    def _import_bdt_summary_catalog(self):
+        in_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Import BDT Summary Workbook(s)",
+            self._ui.edit_dir.text().strip() or str(Path.home()),
+            "Excel Files (*.xlsx *.xlsm *.xls)",
+        )
+        if not in_paths:
+            return
+        button = getattr(self._ui, "btn_bdt_summary", None)
+        period_counts: dict[str, int] = {}
+        imported_paths: list[str] = []
+        failures: list[tuple[str, str]] = []
+        try:
+            if button is not None:
+                button.setEnabled(False)
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            self._sbar.showMessage("Importing BDT Summary catalog …")
+            for in_path in in_paths:
+                try:
+                    imported_counts = import_bdt_summary_workbook(in_path)
+                    imported_paths.append(in_path)
+                except Exception as exc:
+                    failures.append((in_path, str(exc)))
+                    continue
+                for period, row_count in imported_counts.items():
+                    period_counts[period] = int(row_count or 0)
+        finally:
+            QApplication.restoreOverrideCursor()
+            if button is not None:
+                button.setEnabled(True)
+        period_count = len(period_counts)
+        row_count = sum(int(value or 0) for value in period_counts.values())
+        if failures and not imported_paths:
+            QMessageBox.critical(
+                self,
+                "BDT Summary Import Failed",
+                "No workbook was imported.\n\n" + "\n".join(f"{path}: {error}" for path, error in failures),
+            )
+            self._sbar.showMessage("BDT Summary import failed")
+            return
+        if failures:
+            QMessageBox.warning(
+                self,
+                "BDT Summary Import Partially Completed",
+                f"Imported {row_count:,} latest row(s) across {period_count:,} period(s) from {len(imported_paths):,} workbook(s).\n"
+                f"Failed {len(failures):,} workbook(s):\n\n"
+                + "\n".join(f"{path}: {error}" for path, error in failures),
+            )
+            self._sbar.showMessage(
+                f"BDT Summary catalog partially imported: {row_count:,} latest row(s), {period_count:,} period(s), {len(failures):,} failed workbook(s)"
+            )
+            return
+        QMessageBox.information(
+            self,
+            "BDT Summary Imported",
+            f"Imported {row_count:,} latest row(s) across {period_count:,} period(s) from {len(in_paths):,} workbook(s) into the BDT Summary Catalog.\n\n"
+            + "\n".join(in_paths),
+        )
+        self._sbar.showMessage(
+            f"BDT Summary catalog imported: {row_count:,} row(s), {period_count:,} period(s), {len(in_paths):,} workbook(s)"
+        )
 
     def _export_site_sheet_report(self):
         if not self._has_query_backed_alarm_data() and self._full_df.empty:

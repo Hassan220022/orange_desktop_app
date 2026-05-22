@@ -47,6 +47,35 @@ def replace_all_site_metadata(
     return count
 
 
+def merge_site_metadata(
+    session: Session,
+    rows: list[dict[str, Any]],
+) -> int:
+    """Upsert site-metadata *rows* by site_id, preserving unrelated sites.
+
+    Each dict must have keys: ``site_id``, ``original_headers_json``,
+    ``raw_data_json``. Duplicate site IDs in *rows* use the last row.
+    Returns the number of unique site IDs merged.
+    """
+    by_site_id: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        site_id = str(row.get("site_id") or "").strip()
+        if site_id:
+            by_site_id[site_id] = row
+
+    for site_id, row in by_site_id.items():
+        record = session.get(SiteMetadataCatalog, site_id)
+        if record is None:
+            record = SiteMetadataCatalog(site_id=site_id)
+            session.add(record)
+        record.original_headers_json = row["original_headers_json"]
+        record.raw_data_json = row["raw_data_json"]
+    safe_flush(session)
+    count = len(by_site_id)
+    _log.info("Site metadata catalog merged: %d rows", count)
+    return count
+
+
 def query_site_metadata(session: Session, site_id: str) -> SiteMetadataCatalog | None:
     """Look up a single site-metadata row by normalized site_id."""
     return session.get(SiteMetadataCatalog, site_id)

@@ -176,6 +176,13 @@ class BdtWorkspacePanel(QWidget):
         )
         actions_lay.addWidget(btn_daily)
 
+        self.btn_bdt_summary = QPushButton("Import BDT Summary")
+        self.btn_bdt_summary.setObjectName("btn_dir")
+        self._mark_compact(self.btn_bdt_summary)
+        self.btn_bdt_summary.setToolTip("Import BDT Summary workbook sheets into the BDT Summary Catalog")
+        self.btn_bdt_summary.clicked.connect(self._viewer._import_bdt_summary_catalog)
+        actions_lay.addWidget(self.btn_bdt_summary)
+
         btn_export = QPushButton("Export Results")
         btn_export.setObjectName("btn_load")
         self._mark_compact(btn_export)
@@ -210,6 +217,7 @@ class BdtWorkspacePanel(QWidget):
             btn_validate,
             btn_report,
             btn_daily,
+            self.btn_bdt_summary,
             btn_export,
         ]
         self._adaptive_small_buttons = [btn_all, btn_none]
@@ -217,6 +225,7 @@ class BdtWorkspacePanel(QWidget):
             btn_validate,
             btn_report,
             btn_daily,
+            self.btn_bdt_summary,
             btn_export,
         ]
 

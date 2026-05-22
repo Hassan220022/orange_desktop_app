@@ -322,6 +322,14 @@ class SearchPanel(QWidget):
         self.btn_site_sheet.clicked.connect(viewer._upload_site_sheet)
         row3.addWidget(self.btn_site_sheet)
 
+        self.btn_network_summary = QPushButton("Import Network Summary")
+        self.btn_network_summary.setObjectName("btn_dir")
+        self.btn_network_summary.setCursor(Qt.PointingHandCursor)
+        self._mark_compact(self.btn_network_summary)
+        self.btn_network_summary.setToolTip("Import Network Summary DB sheet into the Site Metadata Catalog")
+        self.btn_network_summary.clicked.connect(viewer._import_network_summary_catalog)
+        row3.addWidget(self.btn_network_summary)
+
         self.btn_site_report = QPushButton("Generate Site Report")
         self.btn_site_report.setObjectName("btn_export")
         self.btn_site_report.setCursor(Qt.PointingHandCursor)

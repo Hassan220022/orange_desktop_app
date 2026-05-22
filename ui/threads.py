@@ -661,7 +661,7 @@ class TempAlarmThread(QThread):
                     self._alarm_query,
                     margin_minutes=self._margin_minutes,
                     result_filter_query=self._result_filter_query,
-                    include_full_temp_source=True,
+                    include_full_temp_source=False,
                 )
             # Build HT Meet preview rows using the Reference Workbook daily Meet rule
             _study, meet = compute_ht_meet_rows(source_df, week_label=self._week_label)
