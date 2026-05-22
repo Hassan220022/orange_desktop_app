@@ -872,9 +872,9 @@ def _apply_temp_sheet_layout(ws, title: str, column_count: int, row_count: int) 
         if "HT Study" in title:
             ws.freeze_panes = "A3722" if row_count + 1 >= 3722 else "A2"
     else:
-        widths = [6, 34, 12, 12, 14, 16, 12, 20, 20, 12]
+        summary_widths = [6, 34, 12, 12, 14, 16, 12, 20, 20, 12]
         for index in range(1, column_count + 1):
-            width = widths[index - 1] if index <= len(widths) else 12
+            width = summary_widths[index - 1] if index <= len(summary_widths) else 12
             ws.column_dimensions[get_column_letter(index)].width = width
     ws.row_dimensions[1].height = 45
     ws.auto_filter.ref = f"A1:{get_column_letter(max(column_count, 1))}{row_count + 1}"
