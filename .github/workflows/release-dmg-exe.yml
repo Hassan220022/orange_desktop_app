@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   prepare-version:
-    runs-on: windows-k3s
+    runs-on: ${{ vars.WINDOWS_RUNNER || 'windows-latest' }}
     timeout-minutes: 10
     outputs:
       version: ${{ steps.read.outputs.value }}
@@ -35,7 +35,7 @@ jobs:
           "Building release for version $version"
 
   build-windows-installer:
-    runs-on: windows-k3s
+    runs-on: ${{ vars.WINDOWS_RUNNER || 'windows-latest' }}
     needs: prepare-version
     timeout-minutes: 90
     steps:
@@ -94,7 +94,7 @@ jobs:
           if-no-files-found: error
 
   publish-release:
-    runs-on: windows-k3s
+    runs-on: ${{ vars.WINDOWS_RUNNER || 'windows-latest' }}
     needs: [prepare-version, build-windows-installer]
     permissions:
       contents: write

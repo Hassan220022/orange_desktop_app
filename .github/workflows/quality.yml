@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   quality:
-    runs-on: windows-k3s
+    runs-on: ${{ vars.WINDOWS_RUNNER || 'windows-latest' }}
     timeout-minutes: 35
 
     steps:
