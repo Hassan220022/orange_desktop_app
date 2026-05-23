@@ -1654,7 +1654,10 @@ class LocalDataService:
             if upload is None:
                 session = db_engine.get_session()
                 try:
-                    upload = _build_uploaded_file_session_query(session, source_file_id)
+                    try:
+                        upload = _build_uploaded_file_session_query(session, source_file_id)
+                    except Exception:
+                        upload = None
                     if upload is None:
                         return None, source_file_id, f"unknown source_file_id: {source_file_id}"
                     source_path, error = _validate_uploaded_file_record(upload)

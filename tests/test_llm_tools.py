@@ -2195,6 +2195,23 @@ def test_export_report_rejects_unknown_source_file_id(tmp_path):
     assert result == {"error": "unknown source_file_id: missing-upload"}
 
 
+def test_export_report_rejects_unknown_source_file_id_when_upload_table_missing(monkeypatch, tmp_path):
+    def _raise_missing_table(session, source_file_id):
+        raise RuntimeError("no such table: uploaded_files")
+
+    monkeypatch.setattr(service_mod, "_build_uploaded_file_session_query", _raise_missing_table)
+    service = LocalDataService(export_dir=tmp_path / "exports", upload_allowlist={})
+
+    result = service.export_report(
+        report_type="site_alarm_report",
+        source_file_id="missing-upload",
+        format="csv",
+        name="vip_report",
+    )
+
+    assert result == {"error": "unknown source_file_id: missing-upload"}
+
+
 def test_export_report_rejects_disallowed_allowlisted_suffix(tmp_path):
     source = tmp_path / "vip.txt"
     source.write_text("Site Code\nAAA001\n", encoding="utf-8")
