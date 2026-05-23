@@ -30,6 +30,19 @@ _OBJECT_OUTPUT = {"type": "object", "additionalProperties": True}
 _OBJECT_ROWS = {"type": "array", "items": _OBJECT_OUTPUT}
 _STRING_LIST = {"type": "array", "items": {"type": "string"}}
 _NUMBER_LIST = {"type": "array", "items": {"type": "number"}}
+_PAGING_PROPERTIES = {
+    "limit": {"type": "integer", "minimum": 0, "maximum": 1000, "xClampMaximum": True},
+    "offset": {"type": "integer", "minimum": 0},
+}
+_PAGING_OUTPUT = {
+    "rows": _OBJECT_ROWS,
+    "returned": {"type": "integer"},
+    "limit": {"type": "integer"},
+    "offset": {"type": "integer"},
+    "has_more": {"type": "boolean"},
+    "total": {"type": "integer"},
+    "error": {"type": "string"},
+}
 
 
 TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -73,6 +86,24 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "row_count": {"type": "integer"},
             "error": {"type": "string"},
         }),
+    },
+    "query_alarm_events": {
+        "description": "Read all stored alarm rows from the local DuckDB alarm store with safe filters, sorting, and pagination.",
+        "inputSchema": _schema({
+            "site_text": {"type": "string", "description": "Fuzzy site id/name filter."},
+            "site_code": {"type": "string", "description": "Alias for normalized Site ID."},
+            "site_id": {"type": "string", "description": "Alias for normalized Site ID."},
+            "category": {"type": "string", "description": "Alarm category such as Power, Down, Door, or All."},
+            "vendor": {"type": "string"},
+            "network_type": {"type": "string"},
+            "date_from": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
+            "date_to": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
+            "sort_by": {"type": "string", "description": "Sortable column name."},
+            "sort_direction": {"type": "string", "enum": ["asc", "desc"], "description": "Sort direction."},
+            "sort_desc": {"type": "boolean", "description": "Deprecated explicit sort direction flag (overridden by sort_direction when provided)."},
+            **_PAGING_PROPERTIES,
+        }),
+        "outputSchema": _output_schema(_PAGING_OUTPUT),
     },
     "query_backup_times": {
         "description": "Compute backup-time site results from local alarms and return sites whose hold-up exceeds a threshold.",
@@ -224,6 +255,78 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "error": {"type": "string"},
         }),
     },
+    "get_computed_report": {
+        "description": "Read computed chart-like or report-like rows for backups and charts without creating files.",
+        "inputSchema": _schema({
+            "report_type": {
+                "type": "string",
+                "description": "Supported values: backup_times, alarm_category_counts, alarm_daily_counts, alarm_duration_by_category, bdt_verdict_counts, bdt_duration_trend, ht_meet, ht_weekly_summary, ht_consolidated_history, bdt_export, accepted_pm_report, or chart:* aliases.",
+            },
+            "site_code": {"type": "string"},
+            "site_id": {"type": "string"},
+            "site_text": {"type": "string", "description": "Site fuzzy text filter for alarm-derived report types."},
+            "export_week": {"type": "string", "description": "Required HT/summary period input (e.g. W01-26)."},
+            "week_label": {"type": "string", "description": "Alias for export_week."},
+            "source_file_id": {"type": "string", "description": "Allowlisted uploaded file id for source-file report types."},
+            "section": {"type": "string", "description": "Section selector for bdt_export."},
+            "health_pct": {"type": "number", "minimum": 0},
+            "date_from": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
+            "date_to": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
+            "category": {"type": "string", "description": "Alarm category such as Power, Down, Door, or All."},
+            "vendor": {"type": "string"},
+            "network_type": {"type": "string"},
+            "min_minutes": {"type": "number", "minimum": 0},
+            "include_raw_json": {"type": "boolean", "description": "Include flattened raw JSON fields in row results."},
+            **_PAGING_PROPERTIES,
+        }, required=["report_type"]),
+        "outputSchema": _output_schema({
+            "report_type": {"type": "string"},
+            "rows": _OBJECT_ROWS,
+            "returned": {"type": "integer"},
+            "limit": {"type": "integer"},
+            "offset": {"type": "integer"},
+            "has_more": {"type": "boolean"},
+            "total": {"type": "integer"},
+            "row_count": {"type": "integer"},
+            "site_count": {"type": "integer"},
+            "site_ids": _STRING_LIST,
+            "min_minutes": {"type": "number"},
+            "threshold_minutes": {"type": "number"},
+            "points": {"type": "integer"},
+            "labels": _STRING_LIST,
+            "values": _NUMBER_LIST,
+            "series": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "value": {"type": "number"},
+                    },
+                    "additionalProperties": True,
+                },
+            },
+            "error": {"type": "string"},
+            "required": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "action": {"type": "string"},
+            "section": {"type": "string"},
+            "sections": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
+            "export_week": {"type": "string"},
+            "week_label": {"type": "string"},
+            "sheet_name": {"type": "string"},
+            "site_column": {"type": "string"},
+            "date_column": {"type": "string"},
+            "status_column": {"type": "string"},
+            "health_pct": {"type": "number"},
+            "source_file_id": {"type": "string"},
+        }),
+    },
     "read_photo_blob": {
         "description": "Read one stored photo blob by SHA-256 as base64. Use only when the user explicitly asks to inspect an image.",
         "inputSchema": _schema({
@@ -348,6 +451,70 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "error": {"type": "string"},
         }),
     },
+    "query_bdt_full": {
+        "description": "Read BDT summary, validation runs, rules, photos, and review events for one site period with shared pagination.",
+        "inputSchema": _schema({
+            "site_code": {"type": "string", "description": "Normalized or raw site code."},
+            "site_id": {"type": "string", "description": "Alias for site_code."},
+            "reporting_period": {"type": "string"},
+            "period": {"type": "string", "description": "Alias for reporting_period."},
+            "week": {"type": "string"},
+            "date_from": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
+            "date_to": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
+            "overall": {"type": "string", "description": "Overall BDT verdict."},
+            "rule_id": {"type": "string", "description": "Rule code such as R3 or R10."},
+            "rule_verdict": {"type": "string", "description": "Rule verdict such as Accepted, Rejected, Revise, No data."},
+            "include_raw_json": {"type": "boolean", "description": "Include raw JSON payload fields."},
+            **_PAGING_PROPERTIES,
+        }),
+        "outputSchema": _output_schema({
+            "bdt_summary": _output_schema(_PAGING_OUTPUT),
+            "validation_runs": _output_schema(_PAGING_OUTPUT),
+            "bdt_tests": _output_schema(_PAGING_OUTPUT),
+            "rule_results": _output_schema(_PAGING_OUTPUT),
+            "photos": _output_schema(_PAGING_OUTPUT),
+            "review_events": _output_schema(_PAGING_OUTPUT),
+            "error": {"type": "string"},
+        }),
+    },
+    "list_sites": {
+        "description": (
+            "Read-only inventory index across all known sites, with optional filters for metadata, statuses, and data source presence."
+        ),
+        "inputSchema": _schema({
+            "site_text": {"type": "string", "description": "Match normalized site id or site_name."},
+            "site_code": {"type": "string", "description": "Alias for site_text."},
+            "site_id": {"type": "string", "description": "Alias for site_text."},
+            "area": {"type": "string"},
+            "contractor": {"type": "string"},
+            "subcontractor": {"type": "string"},
+            "backup_status": {"type": "string"},
+            "battery_status": {"type": "string"},
+            "has_metadata": {"type": "boolean"},
+            "has_alarms": {"type": "boolean"},
+            "has_bdt_summary": {"type": "boolean"},
+            "has_bdt_validation": {"type": "boolean"},
+            "has_bdt": {"type": "boolean"},
+            **_PAGING_PROPERTIES,
+        }),
+        "outputSchema": _output_schema(_PAGING_OUTPUT),
+    },
+    "query_network_summary": {
+        "description": "Read full imported Network Summary/Site Metadata rows with normalized and original workbook-header fields.",
+        "inputSchema": _schema({
+            "site_text": {"type": "string", "description": "Site id/text filter."},
+            "site_id": {"type": "string", "description": "Alias for site_code."},
+            "site_code": {"type": "string", "description": "Alias for site_id."},
+            "area": {"type": "string"},
+            "subcontractor": {"type": "string"},
+            "contractor": {"type": "string"},
+            "backup_status": {"type": "string"},
+            "battery_status": {"type": "string"},
+            "include_raw_json": {"type": "boolean"},
+            **_PAGING_PROPERTIES,
+        }),
+        "outputSchema": _output_schema(_PAGING_OUTPUT),
+    },
     "get_site_alarm_context": {
         "description": "Return combined alarm statistics and recent alarm rows for a given site.",
         "inputSchema": _schema({
@@ -363,6 +530,101 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "alarm_rows": _OBJECT_ROWS,
             "alarm_total": {"type": "integer"},
             "error": {"type": "string"},
+        }),
+    },
+    "get_site_full_context": {
+        "description": "Return one-site full context including network summary, alarm statistics, alarm rows, and BDT sections.",
+        "inputSchema": _schema({
+            "site_code": {"type": "string", "description": "Normalized or raw site code."},
+            "site_id": {"type": "string", "description": "Alias for site_code."},
+            "metadata_limit": {"type": "integer", "minimum": 0, "maximum": 1000, "xClampMaximum": True},
+            "metadata_offset": {"type": "integer", "minimum": 0},
+            "alarm_limit": {"type": "integer", "minimum": 0, "maximum": 1000, "xClampMaximum": True},
+            "alarm_offset": {"type": "integer", "minimum": 0},
+            "bdt_limit": {"type": "integer", "minimum": 0, "maximum": 1000, "xClampMaximum": True},
+            "bdt_offset": {"type": "integer", "minimum": 0},
+            "date_from": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
+            "date_to": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
+            "category": {"type": "string", "description": "Alarm category such as Power, Down, Door, or All."},
+            "vendor": {"type": "string"},
+            "network_type": {"type": "string"},
+            "reporting_period": {"type": "string", "description": "BDT reporting period alias."},
+            "period": {"type": "string", "description": "Alias for reporting_period."},
+            "week": {"type": "string"},
+            "overall": {"type": "string", "description": "Filter BDT runs by overall verdict."},
+            "rule_id": {"type": "string", "description": "Filter BDT rule results by rule code."},
+            "rule_verdict": {"type": "string", "description": "Filter BDT rule results by verdict."},
+            "include_raw_json": {"type": "boolean", "description": "Include raw JSON payload fields."},
+        }),
+        "outputSchema": _output_schema({
+            "site_id": {"type": "string"},
+            "site_code": {"type": "string"},
+            "network_summary": _output_schema(_PAGING_OUTPUT),
+            "alarm_stats": _output_schema(_OBJECT_OUTPUT),
+            "alarm_rows": _output_schema(_PAGING_OUTPUT),
+            "bdt_summary": _output_schema(_PAGING_OUTPUT),
+            "validation_runs": _output_schema(_PAGING_OUTPUT),
+            "bdt_tests": _output_schema(_PAGING_OUTPUT),
+            "rule_results": _output_schema(_PAGING_OUTPUT),
+            "photos": _output_schema(_PAGING_OUTPUT),
+            "review_events": _output_schema(_PAGING_OUTPUT),
+            "bdt_error": {"type": "string"},
+            "error": {"type": "string"},
+        }),
+    },
+    "get_sites_context_report": {
+        "description": "Return workbook-like all-sites context by sheet, with manifest and pagination metadata.",
+        "inputSchema": _schema({
+            "sheet": {"type": "string", "description": "Optional sheet name (case-insensitive). If omitted, returns manifest."},
+            "site_text": {"type": "string", "description": "Site id/text filter."},
+            "site_code": {"type": "string", "description": "Alias for site_text."},
+            "site_id": {"type": "string", "description": "Alias for site_text."},
+            "area": {"type": "string"},
+            "contractor": {"type": "string"},
+            "subcontractor": {"type": "string"},
+            "backup_status": {"type": "string"},
+            "battery_status": {"type": "string"},
+            "has_metadata": {"type": "boolean"},
+            "has_alarms": {"type": "boolean"},
+            "has_bdt_summary": {"type": "boolean"},
+            "has_bdt_validation": {"type": "boolean"},
+            "has_bdt": {"type": "boolean"},
+            "category": {"type": "string", "description": "Alarm category such as Power, Down, Door, or All."},
+            "vendor": {"type": "string"},
+            "network_type": {"type": "string"},
+            "date_from": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
+            "date_to": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
+            "reporting_period": {"type": "string", "description": "BDT reporting period."},
+            "period": {"type": "string", "description": "Alias for reporting_period."},
+            "week": {"type": "string"},
+            "overall": {"type": "string", "description": "Filter BDT validation runs by overall verdict."},
+            "rule_id": {"type": "string", "description": "Filter BDT rule results by rule code."},
+            "rule_verdict": {"type": "string", "description": "Filter BDT rule results by verdict."},
+            "include_raw_json": {"type": "boolean", "description": "Include raw JSON payload fields."},
+            **_PAGING_PROPERTIES,
+        }),
+        "outputSchema": _output_schema({
+            "sheets": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "total": {"type": "integer"},
+                        "available": {"type": "boolean"},
+                    },
+                    "additionalProperties": True,
+                },
+            },
+            "sheet": {"type": "string"},
+            "rows": _OBJECT_ROWS,
+            "returned": {"type": "integer"},
+            "limit": {"type": "integer"},
+            "offset": {"type": "integer"},
+            "has_more": {"type": "boolean"},
+            "total": {"type": "integer"},
+            "error": {"type": "string"},
+            "error_sheet": {"type": "string"},
         }),
     },
 }
@@ -469,7 +731,10 @@ def _validate_tool_arguments(arguments: Any, input_schema: dict[str, Any]) -> di
                 return f"{field} must be >= {minimum}"
             maximum = field_schema.get("maximum")
             if maximum is not None and value > maximum:
-                return f"{field} must be <= {maximum}"
+                if field_schema.get("xClampMaximum"):
+                    args[field] = maximum
+                else:
+                    return f"{field} must be <= {maximum}"
 
     return args
 

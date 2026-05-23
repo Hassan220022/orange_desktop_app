@@ -38,9 +38,11 @@ _Avoid_: Site Metadata Catalog, Network Summary
 
 The catalog is stored in both the alarm analytics database and the app database. Every sheet in a BDT Summary Workbook is considered a BDT summary sheet; sheets differ by export year or reporting period. Workbooks may contain one, two, three, or more sheets, and sheet count/year coverage are not fixed.
 Importing a BDT Summary Workbook merges by reporting period: rows for periods present in the imported workbook replace existing rows for those periods, while existing periods not present in the workbook remain in the catalog. Reporting period identity depends on the summary/data type; for yearly BDT summary sheets, the source sheet name is preserved as the sheet/reporting-period key, while row-level week, test date, and test year are also stored for querying.
+MCP BDT Summary responses should include both normalized query-friendly fields and original BDT Summary Workbook header fields.
 
 **Site ID**:
 The canonical, stable site key used to connect alarms, Network Summary metadata, BDT records, weekly summaries, and consolidated history. It corresponds to the Network Summary `Code` value and the alarm data `site_id` value after normalization, and it does not change over time.
+MCP schemas may expose `site_id` and `site_code` as equal aliases for this same normalized value.
 _Avoid_: Short Code, Site Code, Rectifier Code as separate identities
 
 **Site Metadata**:
@@ -51,9 +53,10 @@ _Avoid_: Alarm fields, BDT-only fields
 The searchable collection of all Network Summary `DB` sheet columns keyed by **Site ID**. It is used both for HT Alarm Workbook enrichment and for answering site questions through AI or MCP tooling, with exports and other services joining to it on demand.
 _Avoid_: Export-only metadata, hidden lookup
 
-The catalog is stored in both the alarm analytics database and the app database so alarm workflows, BDT workflows, AI, and MCP queries can all access it without treating it as export-only data. The Network Summary workbook is the source of truth; imports replace both database copies from the same workbook.
-Imports are all-or-nothing across both database copies; partial Site Metadata Catalog updates are invalid.
+The catalog is stored in both the alarm analytics database and the app database so alarm workflows, BDT workflows, AI, and MCP queries can all access it without treating it as export-only data. The Network Summary workbook is the source of truth for imported rows. Imports merge by normalized **Site ID**: imported rows replace matching **Site ID** values and preserve sites not present in the imported Network Summary.
+A single Network Summary import should not leave only one database copy updated. In a multi-file import batch, successful files may remain imported if a later file fails and the user is told which files failed.
 The catalog uses normalized query-friendly field names while preserving a mapping back to the original Network Summary column headers.
+MCP Site Metadata responses should include both normalized query-friendly fields and original Network Summary workbook-header fields.
 Initial use is HT Alarm Workbook enrichment and AI/MCP querying. Main Alarm page metadata filters are a later enhancement.
 The catalog should be accessible both as database tables for flexible queries and through app-level helper functions for common site lookups, site searches, and site alarm context.
 Alarm enrichment uses exact normalized **Site ID** matches first. If an alarm row has missing or invalid **Site ID**, the app may parse a **Site ID** from the alarm source as a fallback. Fuzzy matching is not valid for enrichment.
@@ -68,6 +71,19 @@ _Avoid_: Site ID replacement, primary site key
 **Rectifier Code**:
 The Network Summary identifier for a specific rectifier row at a **Site ID**, such as `0001AL2`. It may also be called rectifier ID in discussion, but **Rectifier Code** is the canonical term.
 _Avoid_: Treating it as the site key
+
+**MCP Site Data Parity**:
+AI/MCP access to the same structured operational site records and computed report outputs the app can inspect, including **Site Metadata**, alarm rows, **BDT Summary Catalog** rows, BDT validation data, rule results, photo metadata, Backup Time calculations, HT Alarm Workbook Meet logic, Weekly Summary and Consolidated History rows, BDT verdict calculations, accepted PM report logic, charts, and report sections. “Everything” means every structured row and field related to all sites is reachable through paginated queries or workbook-like report sections; it does not mean returning all rows in one response, transporting raw BDT image bytes through broad context queries, importing files, mutating app data, exposing desktop UI state/settings, or exposing raw local file paths. For MCP site discovery, “all sites” is the union of site identities found in Site Metadata, alarm rows, BDT Summary Catalog rows, and BDT validation data, with source flags showing which data exists for each **Site ID**. Computed MCP outputs must reuse shared app logic rather than reimplementing formulas in MCP-only code.
+For alarms, MCP Site Data Parity means every alarm field currently stored in app/DuckDB storage. It does not imply original uploaded alarm columns that were never preserved.
+Date/period-sensitive MCP computations should ask the user for missing required week/date scope instead of silently inferring a period from latest data or UI state.
+MCP tools use saved database/catalog state and explicit tool arguments only; they do not read transient GUI filters, unsaved import previews, selected tabs, desktop UI settings, or other app-interface state.
+Source-file-dependent MCP reports, such as accepted PM report logic, may use verified app-known uploads or MCP allowlisted uploads internally, but they must not read arbitrary raw local paths supplied by the model.
+MCP responses should ignore/redact raw local filesystem paths and expose stable IDs, original names, hashes, sizes, MIME types, dimensions, source kind, and parsed timestamps instead.
+Site-related operational person/comment fields, such as engineer names, reviewer names, and BDT/Network Summary comments, remain part of MCP Site Data Parity when they are present in site metadata, BDT rows, validation records, review events, or report content. Site-related review events are operational review history and may be exposed through MCP with file paths redacted.
+Raw JSON payload columns should be parsed into normal MCP fields by default. Raw JSON strings may be exposed only when explicitly requested for auditing/debugging.
+Broad MCP tools default to 500 rows per call and honor caller-requested page sizes with a hard cap of 1000 rows per call. Larger datasets remain reachable through repeated paginated calls.
+Paginated MCP responses always include returned row count, limit, offset, and whether more rows are available; total row count is included when cheap to compute.
+_Avoid_: One giant MCP response, bulk image transport, write-capable plugin access
 
 **Weekly Summary**:
 A report sheet for one export week only. Each row summarizes one site for that week.

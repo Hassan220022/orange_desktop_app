@@ -57,14 +57,64 @@ def _chat_message(role: str, content: str) -> dict[str, Any]:
 
 
 LOCAL_PATH_REDACTION = "[local path redacted]"
-LOCAL_PATH_PATTERN = re.compile(r"(?<![\w:])(?:/(?:Users|private|var|tmp|Volumes|home)/.*|[A-Za-z]:\\.*)")
-PATH_KEYS = {"path", "local_path", "source_file_path"}
+LOCAL_PATH_ROOTS = r"Users|private|var|tmp|Volumes|home|opt|usr|etc"
+LOCAL_PATH_EXTENSION_CHAIN = r"[A-Za-z0-9]{1,12}(?:\.[A-Za-z0-9]{1,12})*"
+LOCAL_PATH_TOKEN = r"[^\s\"'\n\r\t\f\v,;:)\]}]+"
+LOCAL_PATH_SPACE_WORD = r"[^\s\"'\n\r\t\f\v,;:)\]}\\/]+"
+LOCAL_PATH_PROSE_LEADERS = r"with|for|during|before|after|while|and|or|but|then|when|from|to|in|on|at|ratio|backup"
+LOCAL_PATH_SPACE_LEADER = rf"(?!(?i:{LOCAL_PATH_PROSE_LEADERS})\b){LOCAL_PATH_SPACE_WORD}"
+LOCAL_PATH_SPACE_CONTINUATION = (
+    rf"(?: {LOCAL_PATH_SPACE_LEADER}(?: {LOCAL_PATH_SPACE_WORD})*[\\/]{LOCAL_PATH_TOKEN})*"
+)
+LOCAL_PATH_VALUE_PATTERN = re.compile(
+    rf"(?<![\w:])(?:"
+    rf"(?:/(?:{LOCAL_PATH_ROOTS})(?:/[^\"'\n\r\t\f\v]+)*)"
+    r"|"
+    r"(?:[A-Za-z]:[\\/][^\"'\n\r\t\f\v]+)"
+    r"|"
+    r"(?:\\\\[^\"'\n\r\t\f\v]+)"
+    r")"
+)
+LOCAL_PATH_QUOTED_PATTERN = re.compile(
+    rf"(?P<quote>[\"'])(?P<path>(?:/(?:{LOCAL_PATH_ROOTS})(?:/[^\"'\n\r\t\f\v]+)*"
+    r"|"
+    r"[A-Za-z]:[\\/][^\"'\n\r\t\f\v]+"
+    r"|"
+    r"\\\\[^\"'\n\r\t\f\v]+))(?P=quote)"
+)
+LOCAL_PATH_WITH_EXTENSION_PATTERN = re.compile(
+    rf"(?<![\w:])(?:"
+    rf"(?:/(?:{LOCAL_PATH_ROOTS})(?:/[^\"'\n\r\t\f\v]+?)+\.(?:{LOCAL_PATH_EXTENSION_CHAIN}))"
+    r"|"
+    rf"(?:[A-Za-z]:[\\/][^\"'\n\r\t\f\v]+?\.(?:{LOCAL_PATH_EXTENSION_CHAIN}))"
+    r"|"
+    rf"(?:\\\\[^\"'\n\r\t\f\v]+?\.(?:{LOCAL_PATH_EXTENSION_CHAIN}))"
+    r")"
+    r"(?=$|[\s,.;:)\]}\"'])"
+)
+LOCAL_PATH_PATTERN = re.compile(
+    rf"(?<![\w:])(?:"
+    rf"(?:/(?:{LOCAL_PATH_ROOTS})(?:/{LOCAL_PATH_TOKEN})+)"
+    r"|"
+    rf"(?:[A-Za-z]:[\\/]{LOCAL_PATH_TOKEN})"
+    r"|"
+    rf"(?:\\\\{LOCAL_PATH_TOKEN})"
+    r")"
+    rf"{LOCAL_PATH_SPACE_CONTINUATION}"
+)
+PATH_KEYS = {"path", "local_path", "source_file_path", "source_path", "original_path", "file_path"}
 
 
 def _redact_model_bound_text(value: str) -> str:
     text = str(value)
-    if os.path.isabs(text.strip()):
+    stripped = text.strip()
+    if os.path.isabs(stripped) or LOCAL_PATH_VALUE_PATTERN.fullmatch(stripped):
         return LOCAL_PATH_REDACTION
+    text = LOCAL_PATH_QUOTED_PATTERN.sub(
+        lambda match: f"{match.group('quote')}{LOCAL_PATH_REDACTION}{match.group('quote')}",
+        text,
+    )
+    text = LOCAL_PATH_WITH_EXTENSION_PATTERN.sub(LOCAL_PATH_REDACTION, text)
     return LOCAL_PATH_PATTERN.sub(LOCAL_PATH_REDACTION, text)
 
 
