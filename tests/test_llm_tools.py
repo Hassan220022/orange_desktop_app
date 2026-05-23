@@ -4161,6 +4161,44 @@ def test_list_sites_service_reports_source_errors_with_redaction(monkeypatch, tm
     assert "[local path redacted]" in error_text
     assert str(tmp_path) not in error_text
 
+
+def test_list_sites_bdt_summary_site_ids_fallback_reports_errors(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.catalog_store.read_site_metadata",
+        lambda: pd.DataFrame([{"site_id": "AAA001", "site_name": "Alpha"}]),
+    )
+
+    def _missing_site_ids_reader():
+        raise AttributeError("read_bdt_summary_site_ids missing")
+
+    def _broken_fallback_reader():
+        raise RuntimeError(f"failed to read {tmp_path}/bdt-summary.duckdb")
+
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.catalog_store.read_bdt_summary_site_ids",
+        _missing_site_ids_reader,
+    )
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.catalog_store.read_bdt_summary",
+        _broken_fallback_reader,
+    )
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.catalog_store.read_bdt_summary_site_stats",
+        lambda: {},
+    )
+    monkeypatch.setattr(LocalDataService, "_alarm_site_ids", lambda self: (set(), []))
+    monkeypatch.setattr(LocalDataService, "_alarm_site_stats", lambda self: ({}, []))
+    monkeypatch.setattr(LocalDataService, "_bdt_validation_site_ids", lambda self: (set(), []))
+    monkeypatch.setattr(LocalDataService, "_bdt_validation_site_stats", lambda self: ({}, []))
+
+    result = LocalDataService().list_sites(limit=10)
+
+    assert result["total"] == 1
+    assert result["rows"][0]["site_id"] == "AAA001"
+    assert result["source_errors"]["bdt_summary"] == ["failed to read [local path redacted]"]
+    assert str(tmp_path) not in result["source_errors"]["bdt_summary"][0]
+
+
 def test_dispatch_query_network_summary_clamps_oversized_limit(monkeypatch):
     def _query_network_summary(**kwargs):
         kwargs["offset"] = kwargs.get("offset", 0)

@@ -2654,6 +2654,10 @@ class LocalDataService:
             return catalog_store.read_bdt_summary_site_ids(), []
         except AttributeError:
             # Backward-compatible fallback for older catalog store versions.
+            pass
+        except Exception as exc:
+            return set(), [str(exc)]
+        try:
             df = catalog_store.read_bdt_summary()
         except Exception as exc:
             return set(), [str(exc)]
