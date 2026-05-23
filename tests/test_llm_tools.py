@@ -1145,6 +1145,28 @@ def test_query_alarm_events_returns_paging_metadata(monkeypatch):
     assert {result["rows"][0]["site_id"], result["rows"][1]["site_id"]} == {"AAA001", "AAA002"}
 
 
+def test_query_alarm_events_limit_zero_has_no_more_rows(monkeypatch):
+    service = LocalDataService()
+
+    def fake_query_alarms(q):
+        assert q.limit == 0
+        return pd.DataFrame([])
+
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.alarm_store.query_alarms",
+        fake_query_alarms,
+    )
+    monkeypatch.setattr("alarm_app.llm_tools.service.alarm_store.count_alarms", lambda q: 7)
+
+    result = service.query_alarm_events(limit=0)
+
+    assert result["rows"] == []
+    assert result["returned"] == 0
+    assert result["limit"] == 0
+    assert result["total"] == 7
+    assert result["has_more"] is False
+
+
 def test_query_alarm_events_integration_pagination_real_store(tmp_path, monkeypatch):
     monkeypatch.setattr(service_mod.state, "ALARM_DB_FILE", tmp_path / "alarms.duckdb")
     monkeypatch.setattr(service_mod.state, "ALARM_DB_FALLBACK_FILE", tmp_path / "alarms.local.duckdb")
@@ -5040,6 +5062,80 @@ def test_query_bdt_full_pagination_uses_db_paging_for_db_sections(monkeypatch):
     assert result["review_events"]["returned"] == 1
     assert result["review_events"]["rows"][0]["filename"] == "review2.xlsx"
     assert result["review_events"]["has_more"] is False
+
+
+def test_query_bdt_full_limit_zero_has_no_more_rows_for_db_sections(monkeypatch):
+    run = service_mod.PMValidationRun(
+        id=91,
+        bdt_test_id=901,
+        overall_verdict="Accepted",
+        run_at=pd.Timestamp("2026-08-01T09:00:00"),
+        created_at=pd.Timestamp("2026-08-01T09:00:00"),
+    )
+    bdt = service_mod.BDTTest(
+        id=901,
+        site_code="SITE00",
+        file_id=991,
+        test_date=date(2026, 8, 1),
+        time_in="08:00",
+        time_out="08:30",
+        discharge_readings_json="[]",
+        string_discharge_readings_json="[]",
+    )
+    upload = service_mod.UploadedFile(id=991, original_name="site00.xlsx", original_path="/tmp/site00.xlsx")
+    rule = service_mod.PMRuleCatalog(id=71, rule_code="R71", name="Voltage")
+    rule_result = service_mod.PMRuleResult(
+        id=771,
+        validation_run_id=91,
+        verdict="Accepted",
+        created_at=pd.Timestamp("2026-08-01T09:30:00"),
+    )
+    photo = service_mod.BDTPhoto(
+        id=881,
+        slot_index=0,
+        slot_category="battery",
+        bdt_test_id=901,
+        created_at=pd.Timestamp("2026-08-01T09:45:00"),
+    )
+    blob = service_mod.BlobAsset(sha256="photo-sha", mime_type="image/png", file_size=12, local_path="/tmp/photo.png")
+    review = service_mod.ReviewEvent(
+        event_type="final",
+        site_code="SITE00",
+        test_date=date(2026, 8, 1),
+        reviewer="alice",
+        filename="review.xlsx",
+        verdict="Accepted",
+        reviewed_at=pd.Timestamp("2026-08-01T10:00:00"),
+        created_at=pd.Timestamp("2026-08-01T10:00:00"),
+    )
+
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.catalog_store.query_bdt_summary",
+        lambda *args, **kwargs: pd.DataFrame([
+            {"site_id": "SITE00", "reporting_period": "P1", "raw_data_json": "{}"}
+        ]),
+    )
+    _stub_db_session(
+        monkeypatch,
+        {
+            (service_mod.PMValidationRun, service_mod.BDTTest, service_mod.UploadedFile): [(run, bdt, upload)],
+            (service_mod.BDTTest, service_mod.UploadedFile): [(bdt, upload)],
+            (service_mod.PMRuleResult, service_mod.PMRuleCatalog, service_mod.PMValidationRun, service_mod.BDTTest): [
+                (rule_result, rule, run, bdt)
+            ],
+            (service_mod.BDTPhoto, service_mod.BDTTest, service_mod.BlobAsset): [(photo, bdt, blob)],
+            (service_mod.ReviewEvent,): [review],
+        },
+    )
+
+    result = service_mod.LocalDataService().query_bdt_full(site_code="SITE00", limit=0)
+
+    for section in ("bdt_summary", "validation_runs", "bdt_tests", "rule_results", "photos", "review_events"):
+        assert result[section]["rows"] == []
+        assert result[section]["returned"] == 0
+        assert result[section]["limit"] == 0
+        assert result[section]["total"] == 1
+        assert result[section]["has_more"] is False
 
 
 def test_query_bdt_full_rule_results_limit_uses_query_count(monkeypatch):

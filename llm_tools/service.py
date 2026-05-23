@@ -425,7 +425,7 @@ def _paged_payload_from_page(
         "returned": returned,
         "limit": limit,
         "offset": offset,
-        "has_more": offset + returned < total,
+        "has_more": limit > 0 and offset + returned < total,
         "total": total,
     }
 
@@ -748,7 +748,7 @@ class LocalDataService:
                     "returned": len(rows),
                     "limit": q.limit or 0,
                     "offset": q.offset,
-                    "has_more": (q.offset + len(rows)) < total,
+                    "has_more": (q.limit or 0) > 0 and (q.offset + len(rows)) < total,
                     "total": total,
                 }
 
