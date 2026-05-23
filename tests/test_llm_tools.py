@@ -263,6 +263,19 @@ def test_page_records_includes_total_when_supplied():
     assert result["has_more"] is True
 
 
+def test_page_records_limit_zero_has_no_more_rows():
+    result = _page_records([{"id": 1}], limit=0, offset=0, total=1)
+
+    assert result == {
+        "rows": [],
+        "returned": 0,
+        "limit": 0,
+        "offset": 0,
+        "has_more": False,
+        "total": 1,
+    }
+
+
 def test_sanitize_mcp_record_removes_local_paths_and_expands_json():
     record = {
         "site_id": "0A63DE",
@@ -5318,6 +5331,25 @@ def test_query_network_summary_service_returns_paged_sanitized_rows(monkeypatch)
     assert "local_path" not in result["rows"][0]
     assert "original_path" not in result["rows"][0]
     assert result["rows"][0]["Site Code"] == "AAA001"
+
+
+def test_query_network_summary_keeps_contractor_and_subcontractor_filters_independent(monkeypatch):
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.catalog_store.read_site_metadata",
+        lambda: pd.DataFrame([
+            {"site_id": "AAA001", "subcontractor": "Acme", "contractor": "Other"},
+            {"site_id": "BBB002", "subcontractor": "Other", "contractor": "Acme"},
+        ]),
+    )
+    service = LocalDataService()
+
+    contractor_result = service.query_network_summary(contractor="Acme")
+    subcontractor_result = service.query_network_summary(subcontractor="Acme")
+
+    assert contractor_result["total"] == 1
+    assert contractor_result["rows"][0]["site_id"] == "BBB002"
+    assert subcontractor_result["total"] == 1
+    assert subcontractor_result["rows"][0]["site_id"] == "AAA001"
 
 
 def test_query_network_summary_service_keeps_raw_json_when_requested(monkeypatch):

@@ -405,7 +405,7 @@ def _page_records(
         "returned": len(page),
         "limit": limit,
         "offset": offset,
-        "has_more": (offset + len(page)) < (total if total is not None else len(rows)),
+        "has_more": limit > 0 and (offset + len(page)) < (total if total is not None else len(rows)),
     }
     if total is not None:
         payload["total"] = total
@@ -2911,7 +2911,8 @@ class LocalDataService:
     def query_network_summary(self, **kwargs) -> dict[str, Any]:
         site_raw = str(kwargs.get("site_text") or kwargs.get("site_id") or kwargs.get("site_code") or "").strip()
         area = str(kwargs.get("area") or "").strip()
-        subcontractor = str(kwargs.get("subcontractor") or kwargs.get("contractor") or "").strip()
+        subcontractor = str(kwargs.get("subcontractor") or "").strip()
+        contractor = str(kwargs.get("contractor") or "").strip()
         backup_status = str(kwargs.get("backup_status") or "").strip()
         battery_status = str(kwargs.get("battery_status") or "").strip()
         include_raw_json = bool(kwargs.get("include_raw_json", False))
@@ -2965,9 +2966,14 @@ class LocalDataService:
             submask = pd.Series(False, index=filtered.index)
             if "subcontractor" in filtered.columns:
                 submask |= filtered["subcontractor"].fillna("").astype(str).str.contains(sub_text, case=False, regex=False, na=False)
-            if "contractor" in filtered.columns:
-                submask |= filtered["contractor"].fillna("").astype(str).str.contains(sub_text, case=False, regex=False, na=False)
             filtered = filtered[submask]
+
+        if contractor:
+            contractor_text = str(contractor).strip()
+            if "contractor" in filtered.columns:
+                filtered = filtered[filtered["contractor"].fillna("").astype(str).str.contains(contractor_text, case=False, regex=False, na=False)]
+            else:
+                filtered = filtered.iloc[0:0]
 
         if backup_status:
             backup_text = str(backup_status).strip()
