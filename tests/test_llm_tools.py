@@ -1531,6 +1531,40 @@ def test_dispatch_tool_routes_computed_report_backup_times():
     }
 
 
+def test_dispatch_tool_computed_report_backup_times_limit_zero_has_no_more_rows():
+    class _Service(LocalDataService):
+        def __init__(self):
+            self.called_with = None
+
+        def query_backup_times(self, **kwargs):
+            self.called_with = kwargs
+            return {
+                "rows": [],
+                "total_count": 3,
+                "row_count": 0,
+                "site_count": 3,
+                "site_ids": [],
+                "min_minutes": 0,
+                "threshold_minutes": 0,
+            }
+
+    service = _Service()
+
+    result = dispatch_tool(
+        service,
+        "get_computed_report",
+        {"report_type": "backup_times", "limit": 0},
+    )
+
+    assert service.called_with is not None
+    assert service.called_with["limit"] == 0
+    assert result["rows"] == []
+    assert result["returned"] == 0
+    assert result["limit"] == 0
+    assert result["total"] == 3
+    assert result["has_more"] is False
+
+
 def test_dispatch_tool_routes_computed_report_alarm_chart(monkeypatch):
     class _Service(LocalDataService):
         pass
@@ -1554,6 +1588,32 @@ def test_dispatch_tool_routes_computed_report_alarm_chart(monkeypatch):
     assert result["points"] == 2
     assert result["labels"] == ["P1", "P2"]
     assert result["values"] == [1.25, 2.5]
+
+
+def test_dispatch_tool_computed_report_alarm_chart_limit_zero_has_no_more_points(monkeypatch):
+    service = LocalDataService()
+
+    monkeypatch.setattr(
+        service,
+        "_alarm_rows_for_sites",
+        lambda *args, **kwargs: pd.DataFrame([{"site_code": "AAA001", "alarm_category": "Power"}]),
+    )
+    monkeypatch.setattr(service, "_alarm_graph_series", lambda _df, graph_type: (["P1", "P2"], [1.0, 2.0]))
+
+    result = dispatch_tool(
+        service,
+        "get_computed_report",
+        {"report_type": "chart:alarm_category_counts", "site_code": "AAA001", "limit": 0},
+    )
+
+    assert result["points"] == 2
+    assert result["labels"] == []
+    assert result["values"] == []
+    assert result["series"] == []
+    assert result["returned"] == 0
+    assert result["limit"] == 0
+    assert result["total"] == 2
+    assert result["has_more"] is False
 
 
 def test_dispatch_tool_routes_computed_report_bdt_chart(monkeypatch):
@@ -2042,7 +2102,7 @@ def test_dispatch_tool_computed_report_chart_limit_zero_yields_empty_page(monkey
     assert result["returned"] == 0
     assert result["labels"] == []
     assert result["values"] == []
-    assert result["has_more"] is True
+    assert result["has_more"] is False
 
 
 def test_dispatch_tool_returns_error_for_unsupported_computed_report_type():

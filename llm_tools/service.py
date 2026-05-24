@@ -906,7 +906,7 @@ class LocalDataService:
             "returned": len(page),
             "limit": limit,
             "offset": offset,
-            "has_more": (offset + len(page)) < total,
+            "has_more": limit > 0 and (offset + len(page)) < total,
             "total": total,
         }
 
@@ -1277,7 +1277,7 @@ class LocalDataService:
                 "returned": len(rows),
                 "limit": backup_limit,
                 "offset": offset,
-                "has_more": (offset + len(rows)) < total,
+                "has_more": backup_limit > 0 and (offset + len(rows)) < total,
                 "total": total,
                 "row_count": len(rows),
                 "total_count": int(payload.get("total_count") or 0) if isinstance(payload, dict) else 0,
