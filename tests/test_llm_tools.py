@@ -212,6 +212,13 @@ class _FakeSession:
         self.closed = True
 
 
+class _ScalarRow:
+    def __init__(self, value: Any, **attrs: Any):
+        self._mapping = {"value": value}
+        for name, attr_value in attrs.items():
+            setattr(self, name, attr_value)
+
+
 def _stub_db_session(monkeypatch, query_map: dict[tuple[Any, ...], list[tuple[Any, ...]]]):
     session = _FakeSession(query_map)
     monkeypatch.setattr(service_mod.db_engine, "get_session", lambda: session)
@@ -1676,6 +1683,27 @@ def test_dispatch_tool_computed_report_alarm_chart_propagates_filters_with_site_
     assert result["points"] == 1
 
 
+def test_dispatch_tool_computed_report_alarm_chart_returns_structured_error_for_query_failure(monkeypatch):
+    service = LocalDataService()
+
+    def _raise_query_error(fn):
+        raise RuntimeError("duckdb missing at /tmp/alarm.duckdb")
+
+    monkeypatch.setattr(service, "_with_alarm_source", _raise_query_error)
+
+    result = dispatch_tool(service, "get_computed_report", {"report_type": "alarm_category_counts"})
+
+    assert result["report_type"] == "alarm_category_counts"
+    assert result["rows"] == []
+    assert result["series"] == []
+    assert result["labels"] == []
+    assert result["values"] == []
+    assert result["returned"] == 0
+    assert result["has_more"] is False
+    assert result["error"] == "duckdb missing at [local path redacted]"
+    assert "/tmp/alarm.duckdb" not in json.dumps(result)
+
+
 def test_dispatch_tool_computed_report_bdt_chart_paginates_and_aggregates_all_rows(monkeypatch):
     service = LocalDataService()
     calls: list[tuple[int, int]] = []
@@ -1766,6 +1794,28 @@ def test_dispatch_tool_computed_report_ht_meet_returns_rows_and_redacts_paths(mo
     assert result["report_type"] == "ht_meet"
     assert result["rows"] == [{"site_id": "AAA001", "site_name": "Alpha", "alarm_source": "tmpfile"}]
     assert result["returned"] == 1
+
+
+def test_dispatch_tool_computed_report_ht_returns_structured_error_for_query_failure(monkeypatch):
+    service = LocalDataService()
+
+    def _raise_query_error(fn):
+        raise RuntimeError("duckdb locked at /tmp/ht-source.duckdb")
+
+    monkeypatch.setattr(service, "_with_alarm_source", _raise_query_error)
+
+    result = dispatch_tool(
+        service,
+        "get_computed_report",
+        {"report_type": "ht_meet", "export_week": "W22-26"},
+    )
+
+    assert result["report_type"] == "ht_meet"
+    assert result["rows"] == []
+    assert result["returned"] == 0
+    assert result["has_more"] is False
+    assert result["error"] == "duckdb locked at [local path redacted]"
+    assert "/tmp/ht-source.duckdb" not in json.dumps(result)
 
 
 def test_dispatch_tool_computed_report_ht_consolidated_uses_filtered_history_source(monkeypatch):
@@ -3654,6 +3704,7 @@ def test_get_sites_context_report_manifest_includes_all_supported_sheets(monkeyp
     result = service.get_sites_context_report()
 
     assert "sheets" in result
+    assert result["sheet"] == ""
     names = [entry["name"] for entry in result["sheets"]
             ]
     assert names == [
@@ -4168,6 +4219,35 @@ def test_list_sites_bdt_validation_stats_merge_normalized_site_ids(monkeypatch):
     assert stats["AAA001"]["latest_validation_run_at"] == "2026-03-02T08:00:00"
 
 
+def test_list_sites_bdt_validation_site_ids_extract_sqlalchemy_row_scalars(monkeypatch):
+    class _Query:
+        def join(self, *args, **kwargs):
+            return self
+
+        def distinct(self, *args, **kwargs):
+            return self
+
+        def all(self):
+            return [_ScalarRow("AAA-001")]
+
+    class _Session:
+        def __init__(self):
+            self.closed = False
+
+        def query(self, *args, **kwargs):
+            return _Query()
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(service_mod.db_engine, "get_session", _Session)
+
+    ids, errors = LocalDataService()._bdt_validation_site_ids()
+
+    assert errors == []
+    assert ids == {"AAA001"}
+
+
 def test_list_sites_service_uses_metadata_aliases_from_raw_data_json(monkeypatch):
     metadata_df = pd.DataFrame([
         {
@@ -4513,6 +4593,7 @@ def test_get_site_full_context_schema_includes_aliases_and_sections():
         "bdt_limit",
     ):
         assert TOOL_SCHEMAS["get_site_full_context"]["inputSchema"]["properties"][key]["xClampMaximum"] is True
+    assert output["alarm_stats"] == {"type": "object", "additionalProperties": True}
 
 
 
@@ -5023,6 +5104,55 @@ def test_query_bdt_full_filters_rule_id_and_shares_raw_json_opt_in(monkeypatch):
     assert json.loads(result_with_raw["review_events"]["rows"][0]["payload_json"]) == {"path": "[local path redacted]"}
 
     assert "local_path" not in result_with_raw["review_events"]["rows"][0]
+
+
+def test_query_bdt_full_extracts_sqlalchemy_row_scalar_for_rule_scope(monkeypatch):
+    run = service_mod.PMValidationRun(
+        id=50,
+        bdt_test_id=500,
+        overall_verdict="Accepted",
+        run_at=pd.Timestamp("2026-09-01T09:00:00"),
+        created_at=pd.Timestamp("2026-09-01T09:00:00"),
+    )
+    bdt = service_mod.BDTTest(
+        id=500,
+        site_code="ABC001",
+        test_date=date(2026, 9, 1),
+        discharge_readings_json="[]",
+        string_discharge_readings_json="[]",
+    )
+    rule = service_mod.PMRuleCatalog(id=8, rule_code="R77", name="Voltage")
+    rule_result = service_mod.PMRuleResult(
+        id=80,
+        validation_run_id=50,
+        verdict="Accepted",
+        created_at=pd.Timestamp("2026-09-01T09:30:00"),
+    )
+
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.catalog_store.query_bdt_summary",
+        lambda *args, **kwargs: pd.DataFrame([]),
+    )
+
+    _stub_db_session(
+        monkeypatch,
+        {
+            (service_mod.PMValidationRun.id,): [_ScalarRow(run.id, site_code="ABC001", rule_code="R77")],
+            (service_mod.PMValidationRun, service_mod.BDTTest, service_mod.UploadedFile): [(run, bdt, None)],
+            (service_mod.BDTTest, service_mod.UploadedFile): [(bdt, None)],
+            (service_mod.PMRuleResult, service_mod.PMRuleCatalog, service_mod.PMValidationRun, service_mod.BDTTest): [
+                (rule_result, rule, run, bdt)
+            ],
+            (service_mod.BDTPhoto, service_mod.BDTTest, service_mod.BlobAsset): [],
+            (service_mod.ReviewEvent,): [],
+        },
+    )
+
+    result = LocalDataService().query_bdt_full(site_code="ABC001", rule_id="R77", limit=10)
+
+    assert result["validation_runs"]["total"] == 1
+    assert result["validation_runs"]["rows"][0]["validation_run_id"] == 50
+    assert result["rule_results"]["total"] == 1
 
 
 def test_query_bdt_full_pagination_uses_db_paging_for_db_sections(monkeypatch):
@@ -5546,6 +5676,26 @@ def test_query_network_summary_keeps_contractor_and_subcontractor_filters_indepe
     assert subcontractor_result["rows"][0]["site_id"] == "AAA001"
 
 
+def test_query_network_summary_filters_across_metadata_alias_columns(monkeypatch):
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.catalog_store.read_site_metadata",
+        lambda: pd.DataFrame([
+            {"site_id": "AAA001", "site_name": "Alpha Prime", "orange_area": "East", "sub_contractor": "Acme"},
+            {"site_id": "BBB002", "name": "Alpha Backup", "orangearea": "East", "subcontractor_name": "Acme"},
+            {"site_id": "CCC003", "site_name": "Gamma", "orange_area": "West", "sub_contractor": "Other"},
+        ]),
+    )
+    service = LocalDataService()
+
+    name_result = service.query_network_summary(site_text="Alpha")
+    area_result = service.query_network_summary(area="East")
+    subcontractor_result = service.query_network_summary(subcontractor="Acme")
+
+    assert {row["site_id"] for row in name_result["rows"]} == {"AAA001", "BBB002"}
+    assert {row["site_id"] for row in area_result["rows"]} == {"AAA001", "BBB002"}
+    assert {row["site_id"] for row in subcontractor_result["rows"]} == {"AAA001", "BBB002"}
+
+
 def test_query_network_summary_service_keeps_raw_json_when_requested(monkeypatch):
     import json as _json
 
@@ -5798,6 +5948,8 @@ def test_get_site_full_context_composes_approved_sections(monkeypatch):
     assert "local_path" not in result["alarm_rows"]["rows"][0]
     assert result["bdt_summary"]["rows"][0]["site_code"] == "ABC001"
     assert "local_path" not in result["bdt_summary"]["rows"][0]
+    assert "error" not in result
+    assert "bdt_error" not in result
 
     assert metadata_calls["site_code"] == "ABC001"
     assert metadata_calls["site_id"] == "ABC001"

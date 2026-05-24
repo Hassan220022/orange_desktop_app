@@ -248,6 +248,18 @@ def _first_non_empty(value: Any) -> Any:
     return value
 
 
+def _first_row_value(row: Any) -> Any:
+    if isinstance(row, (tuple, list)):
+        return row[0] if row else None
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        try:
+            return next(iter(mapping.values()))
+        except StopIteration:
+            return None
+    return row
+
+
 def _metadata_value_for_field(row: dict[str, Any], raw_rows: dict[str, Any], field: str) -> Any:
     aliases = _FIELD_ALIASES.get(field, (field,))
     for alias in aliases:
@@ -1250,6 +1262,26 @@ class LocalDataService:
                 "report_type": report_type,
             }
 
+        def _computed_error_payload(error: Any, *, chart: bool = False) -> dict[str, Any]:
+            payload: dict[str, Any] = {
+                "report_type": report_type,
+                "rows": [],
+                "returned": 0,
+                "limit": limit,
+                "offset": offset,
+                "has_more": False,
+                "total": 0,
+                "error": _sanitize_mcp_value(str(error)),
+            }
+            if chart:
+                payload.update({
+                    "points": 0,
+                    "labels": [],
+                    "values": [],
+                    "series": [],
+                })
+            return payload
+
         required_week = export_week or week_label
 
         if report_type == "backup_times":
@@ -1312,7 +1344,10 @@ class LocalDataService:
                 limit=None,
                 offset=0,
             )
-            alarm_df = self._with_alarm_source(lambda: alarm_store.query_alarms(q))
+            try:
+                alarm_df = self._with_alarm_source(lambda: alarm_store.query_alarms(q))
+            except Exception as exc:
+                return _computed_error_payload(exc, chart=True)
             labels, values = self._alarm_graph_series(alarm_df, report_type)
             series = [{"label": str(label), "value": _sanitize_mcp_value(value)} for label, value in zip(labels, values)]
             payload = self._chart_page_payload(series, total=len(series), limit=limit, offset=offset)
@@ -1361,27 +1396,30 @@ class LocalDataService:
                 limit=None,
                 offset=0,
             )
-            source_df = self._with_alarm_source(lambda: alarm_store.query_alarms(q))
-            if report_type == "ht_meet":
-                rows = compute_ht_meet_rows(source_df, week_label=required_week)
-                meet = rows[1]
-                row_payload = _sanitize_mcp_records(meet.to_dict(orient="records"), include_raw_json=include_raw_json)
-            elif report_type == "ht_weekly_summary":
-                _, _, meet_source = _compute_ht_meet_frames(source_df, week_label=required_week)
-                summary = build_temp_alarm_summary(meet_source, week_label=required_week)
-                row_payload = _sanitize_mcp_records(summary.to_dict(orient="records"), include_raw_json=include_raw_json)
-            else:
-                history_source = _filter_source_from_week(source_df, DEFAULT_HT_HISTORY_START_WEEK)
-                _, _, consolidated_source = _compute_ht_meet_frames(
-                    history_source,
-                    week_label=None,
-                )
-                consolidated = build_temp_alarm_summary(
-                    consolidated_source,
-                    week_label=None,
-                    rolling_week_label=required_week,
-                )
-                row_payload = _sanitize_mcp_records(consolidated.to_dict(orient="records"), include_raw_json=include_raw_json)
+            try:
+                source_df = self._with_alarm_source(lambda: alarm_store.query_alarms(q))
+                if report_type == "ht_meet":
+                    rows = compute_ht_meet_rows(source_df, week_label=required_week)
+                    meet = rows[1]
+                    row_payload = _sanitize_mcp_records(meet.to_dict(orient="records"), include_raw_json=include_raw_json)
+                elif report_type == "ht_weekly_summary":
+                    _, _, meet_source = _compute_ht_meet_frames(source_df, week_label=required_week)
+                    summary = build_temp_alarm_summary(meet_source, week_label=required_week)
+                    row_payload = _sanitize_mcp_records(summary.to_dict(orient="records"), include_raw_json=include_raw_json)
+                else:
+                    history_source = _filter_source_from_week(source_df, DEFAULT_HT_HISTORY_START_WEEK)
+                    _, _, consolidated_source = _compute_ht_meet_frames(
+                        history_source,
+                        week_label=None,
+                    )
+                    consolidated = build_temp_alarm_summary(
+                        consolidated_source,
+                        week_label=None,
+                        rolling_week_label=required_week,
+                    )
+                    row_payload = _sanitize_mcp_records(consolidated.to_dict(orient="records"), include_raw_json=include_raw_json)
+            except Exception as exc:
+                return _computed_error_payload(exc)
 
             payload = _paged_payload_from_page(
                 row_payload[offset:offset + limit] if limit > 0 else [],
@@ -2214,10 +2252,7 @@ class LocalDataService:
                     if overall:
                         rule_scope_query = rule_scope_query.filter(PMValidationRun.overall_verdict == overall)
                     for run_id_row in rule_scope_query.all() or []:
-                        if isinstance(run_id_row, tuple):
-                            raw_run_id = run_id_row[0]
-                        else:
-                            raw_run_id = run_id_row
+                        raw_run_id = _first_row_value(run_id_row)
                         try:
                             scoped_validation_run_ids.add(int(raw_run_id))
                         except (TypeError, ValueError):
@@ -2720,7 +2755,7 @@ class LocalDataService:
                 .all()
             )
             for row in rows:
-                candidate = row[0] if isinstance(row, (tuple, list)) else row
+                candidate = _first_row_value(row)
                 normalized = catalog_store._normalize_site_id(candidate)
                 if normalized:
                     ids.add(normalized)
@@ -2947,30 +2982,28 @@ class LocalDataService:
             }
 
         filtered = df.copy()
+
+        def _contains_any_column(frame: pd.DataFrame, columns: tuple[str, ...], text: str) -> pd.Series:
+            mask = pd.Series(False, index=frame.index)
+            for column in columns:
+                if column in frame.columns:
+                    mask |= frame[column].fillna("").astype(str).str.contains(text, case=False, regex=False, na=False)
+            return mask
+
         if site_raw:
             site_text = str(site_raw).upper().strip()
             normalized_site = catalog_store._normalize_site_id(site_raw)
-            mask = pd.Series(False, index=filtered.index)
-            if "site_id" in filtered.columns:
-                site_col = filtered["site_id"].fillna("").astype(str).str.upper()
-                mask |= site_col.str.contains(normalized_site or site_text, case=False, regex=False, na=False)
-            if "site_name" in filtered.columns:
-                mask |= filtered["site_name"].fillna("").astype(str).str.contains(site_text, case=False, regex=False, na=False)
-            if "name" in filtered.columns and not mask.any():
-                mask |= filtered["name"].fillna("").astype(str).str.contains(site_text, case=False, regex=False, na=False)
+            mask = _contains_any_column(filtered, ("site_id",), normalized_site or site_text)
+            mask |= _contains_any_column(filtered, ("site_name", "name"), site_text)
             filtered = filtered[mask]
 
         if area:
             area_text = str(area).strip()
-            if "area" in filtered.columns:
-                filtered = filtered[filtered["area"].fillna("").astype(str).str.contains(area_text, case=False, regex=False, na=False)]
+            filtered = filtered[_contains_any_column(filtered, ("area", "orange_area", "orangearea"), area_text)]
 
         if subcontractor:
             sub_text = str(subcontractor).strip()
-            submask = pd.Series(False, index=filtered.index)
-            if "subcontractor" in filtered.columns:
-                submask |= filtered["subcontractor"].fillna("").astype(str).str.contains(sub_text, case=False, regex=False, na=False)
-            filtered = filtered[submask]
+            filtered = filtered[_contains_any_column(filtered, ("subcontractor", "sub_contractor", "subcontractor_name"), sub_text)]
 
         if contractor:
             contractor_text = str(contractor).strip()
@@ -2981,13 +3014,11 @@ class LocalDataService:
 
         if backup_status:
             backup_text = str(backup_status).strip()
-            if "backup_status" in filtered.columns:
-                filtered = filtered[filtered["backup_status"].fillna("").astype(str).str.contains(backup_text, case=False, regex=False, na=False)]
+            filtered = filtered[_contains_any_column(filtered, ("backup_status", "backupstatus"), backup_text)]
 
         if battery_status:
             battery_text = str(battery_status).strip()
-            if "battery_status" in filtered.columns:
-                filtered = filtered[filtered["battery_status"].fillna("").astype(str).str.contains(battery_text, case=False, regex=False, na=False)]
+            filtered = filtered[_contains_any_column(filtered, ("battery_status", "batterystatus"), battery_text)]
 
         filtered_rows = _df_records(filtered.reset_index(drop=True))
         sanitized = _sanitize_mcp_records(filtered_rows, include_raw_json=include_raw_json)
@@ -3138,7 +3169,7 @@ class LocalDataService:
         if isinstance(bdt_payload, dict) and bdt_payload.get("error") is not None:
             source_errors.append(str(bdt_payload["error"]))
 
-        return {
+        result = {
             "site_id": site_code,
             "site_code": site_code,
             "network_summary": _jsonable(network_summary),
@@ -3150,9 +3181,12 @@ class LocalDataService:
             "rule_results": _jsonable(bdt_payload.get("rule_results", {})),
             "photos": _jsonable(bdt_payload.get("photos", {})),
             "review_events": _jsonable(bdt_payload.get("review_events", {})),
-            "bdt_error": _sanitize_mcp_value(bdt_payload.get("error")) if isinstance(bdt_payload, dict) else None,
-            "error": " | ".join(source_errors) if source_errors else None,
         }
+        if isinstance(bdt_payload, dict) and bdt_payload.get("error") is not None:
+            result["bdt_error"] = _sanitize_mcp_value(bdt_payload.get("error"))
+        if source_errors:
+            result["error"] = " | ".join(source_errors)
+        return result
 
     def get_sites_context_report(self, **kwargs) -> dict[str, Any]:
         def _sheet_alias(name: str) -> str:
@@ -3473,7 +3507,7 @@ class LocalDataService:
         except Exception as exc:
             return {
                 "sheets": [],
-                "sheet": None,
+                "sheet": "",
                 "rows": [],
                 "returned": 0,
                 "limit": limit,
@@ -3501,7 +3535,7 @@ class LocalDataService:
             "offset": offset,
             "has_more": False,
             "total": 0,
-            "sheet": None,
+            "sheet": "",
         }
 
     def get_site_alarm_context(self, **kwargs) -> dict[str, Any]:

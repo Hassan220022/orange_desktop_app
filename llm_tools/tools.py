@@ -560,7 +560,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "site_id": {"type": "string"},
             "site_code": {"type": "string"},
             "network_summary": _output_schema(_PAGING_OUTPUT),
-            "alarm_stats": _output_schema(_OBJECT_OUTPUT),
+            "alarm_stats": _OBJECT_OUTPUT,
             "alarm_rows": _output_schema(_PAGING_OUTPUT),
             "bdt_summary": _output_schema(_PAGING_OUTPUT),
             "validation_runs": _output_schema(_PAGING_OUTPUT),
