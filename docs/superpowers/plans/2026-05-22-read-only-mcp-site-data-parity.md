@@ -196,13 +196,13 @@ def _page_records(
     offset: int,
     total: int | None = None,
 ) -> dict[str, Any]:
-    page = rows[offset:offset + limit] if limit else rows[offset:]
+    page = rows[offset:offset + limit] if limit > 0 else []
     payload: dict[str, Any] = {
         "rows": page,
         "returned": len(page),
         "limit": limit,
         "offset": offset,
-        "has_more": (offset + len(page)) < (total if total is not None else len(rows)),
+        "has_more": limit > 0 and (offset + len(page)) < (total if total is not None else len(rows)),
     }
     if total is not None:
         payload["total"] = total
@@ -1244,6 +1244,14 @@ git diff --stat
 Expected: only intended files changed. Existing unrelated untracked `.superpowers/`, temp session, and old docs files remain uncommitted unless the user explicitly asks to include them.
 
 - [ ] **Step 6: Commit only if user explicitly requests commit**
+
+Before any Python symbol edit from this plan, run the required impact check for the symbol being edited:
+
+```bash
+/opt/homebrew/bin/gitnexus impact -r orange_desktop_app -d upstream <symbol>
+```
+
+Capture the result before editing and warn if GitNexus reports HIGH or CRITICAL risk.
 
 If the user requests a commit, run:
 

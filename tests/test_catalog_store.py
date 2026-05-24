@@ -365,3 +365,36 @@ def test_read_bdt_summary_site_stats_merges_normalized_site_ids():
 
     assert stats["AAA001"]["bdt_summary_count"] == 2
     assert stats["AAA001"]["latest_bdt_at"] == "2026-02-01"
+
+
+def test_read_bdt_summary_site_stats_ignores_invalid_dates_when_picking_latest():
+    df = pd.DataFrame(
+        [
+            {
+                "site_id": "AAA001",
+                "reporting_period": "W01-26",
+                "week": "01",
+                "test_date": "2026-01-15",
+                "test_year": 2026,
+                "content_hash": "valid",
+                "original_headers_json": "{}",
+                "raw_data_json": "{}",
+            },
+            {
+                "site_id": "AAA001",
+                "reporting_period": "W02-26",
+                "week": "02",
+                "test_date": "not-a-date",
+                "test_year": 2026,
+                "content_hash": "invalid",
+                "original_headers_json": "{}",
+                "raw_data_json": "{}",
+            },
+        ]
+    )
+    merge_bdt_summary(df, ["W01-26", "W02-26"])
+
+    stats = read_bdt_summary_site_stats()
+
+    assert stats["AAA001"]["bdt_summary_count"] == 2
+    assert stats["AAA001"]["latest_bdt_at"] == "2026-01-15"

@@ -107,7 +107,7 @@ _LOCAL_PATH_SPACE_WORD = r"[^\s\"'\n\r\t\f\v,;:)\]}\\/]+"
 _LOCAL_PATH_PROSE_LEADERS = r"with|for|during|before|after|while|and|or|but|then|when|from|to|in|on|at|ratio|backup"
 _LOCAL_PATH_SPACE_LEADER = rf"(?!(?i:{_LOCAL_PATH_PROSE_LEADERS})\b){_LOCAL_PATH_SPACE_WORD}"
 _LOCAL_PATH_SPACE_CONTINUATION = (
-    rf"(?: {_LOCAL_PATH_SPACE_LEADER}(?: {_LOCAL_PATH_SPACE_WORD})*[\\/]{_LOCAL_PATH_TOKEN})*"
+    rf"(?:[ \t]+{_LOCAL_PATH_SPACE_LEADER}(?:[ \t]+{_LOCAL_PATH_SPACE_WORD})*[\\/]{_LOCAL_PATH_TOKEN})*"
 )
 _LOCAL_PATH_VALUE_PATTERN = re.compile(
     rf"(?<![\w:])(?:"
@@ -1303,7 +1303,7 @@ class LocalDataService:
                 total = int((payload.get("row_count") if isinstance(payload, dict) else 0) or 0)
             if total <= 0:
                 total = len(rows)
-            return {
+            result = {
                 "report_type": "backup_times",
                 "rows": rows,
                 "returned": len(rows),
@@ -1317,8 +1317,10 @@ class LocalDataService:
                 "site_ids": payload.get("site_ids", []) if isinstance(payload, dict) else [],
                 "min_minutes": payload.get("min_minutes") if isinstance(payload, dict) else None,
                 "threshold_minutes": payload.get("threshold_minutes") if isinstance(payload, dict) else None,
-                "error": payload.get("error") if isinstance(payload, dict) else None,
             }
+            if isinstance(payload, dict) and payload.get("error"):
+                result["error"] = _sanitize_mcp_value(str(payload.get("error")))
+            return result
 
         alarm_chart_types = {
             "alarm_category_counts",
@@ -1358,11 +1360,14 @@ class LocalDataService:
             return payload
 
         if report_type in bdt_chart_types:
-            rows = self._query_all_bdt_rows(
-                site_code=normalize_site_key(site_code) if site_code else "",
-                date_from=date_from,
-                date_to=date_to,
-            )
+            try:
+                rows = self._query_all_bdt_rows(
+                    site_code=normalize_site_key(site_code) if site_code else "",
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+            except Exception as exc:
+                return _computed_error_payload(exc, chart=True)
             labels, values = self._bdt_graph_series(rows, report_type)
             series = [{"label": str(label), "value": _sanitize_mcp_value(value)} for label, value in zip(labels, values)]
             payload = self._chart_page_payload(series, total=len(series), limit=limit, offset=offset)

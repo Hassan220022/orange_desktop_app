@@ -517,6 +517,8 @@ def test_sanitize_mcp_record_redacts_embedded_path_without_trailing_text_loss():
         "lowercase_space_project": "failed reading /Users/me/my project/data during import",
         "lowercase_numeric_space_project": "failed reading /Users/me/my project/1 during import",
         "multi_word_space_project": "failed reading /Users/me/My Project Sub/data during import",
+        "multi_space_project": "failed reading C:/Users/me/My  Project/source.xlsx during import",
+        "tab_space_project": "failed reading C:/Users/me/My\tProject/source.xlsx during import",
         "windows_project": "failed reading C:/Users/me/project during import",
         "windows_space_project": "failed reading C:/Users/me/My Project/data during import",
         "windows_lowercase_space_project": "failed reading C:/Users/me/my project/data during import",
@@ -540,6 +542,8 @@ def test_sanitize_mcp_record_redacts_embedded_path_without_trailing_text_loss():
     assert sanitized["lowercase_space_project"] == "failed reading [local path redacted] during import"
     assert sanitized["lowercase_numeric_space_project"] == "failed reading [local path redacted] during import"
     assert sanitized["multi_word_space_project"] == "failed reading [local path redacted] during import"
+    assert sanitized["multi_space_project"] == "failed reading [local path redacted] during import"
+    assert sanitized["tab_space_project"] == "failed reading [local path redacted] during import"
     assert sanitized["windows_project"] == "failed reading [local path redacted] during import"
     assert sanitized["windows_space_project"] == "failed reading [local path redacted] during import"
     assert sanitized["windows_lowercase_space_project"] == "failed reading [local path redacted] during import"
@@ -574,6 +578,8 @@ def test_model_safe_tool_result_redacts_embedded_path_without_trailing_text_loss
         "lowercase_space_project": "failed reading /Users/me/my project/data during import",
         "lowercase_numeric_space_project": "failed reading /Users/me/my project/1 during import",
         "multi_word_space_project": "failed reading /Users/me/My Project Sub/data during import",
+        "multi_space_project": "failed reading C:/Users/me/My  Project/source.xlsx during import",
+        "tab_space_project": "failed reading C:/Users/me/My\tProject/source.xlsx during import",
         "windows_project": "failed reading C:/Users/me/project during import",
         "windows_space_project": "failed reading C:/Users/me/My Project/data during import",
         "windows_lowercase_space_project": "failed reading C:/Users/me/my project/data during import",
@@ -597,6 +603,8 @@ def test_model_safe_tool_result_redacts_embedded_path_without_trailing_text_loss
     assert safe_payload["lowercase_space_project"] == "failed reading [local path redacted] during import"
     assert safe_payload["lowercase_numeric_space_project"] == "failed reading [local path redacted] during import"
     assert safe_payload["multi_word_space_project"] == "failed reading [local path redacted] during import"
+    assert safe_payload["multi_space_project"] == "failed reading [local path redacted] during import"
+    assert safe_payload["tab_space_project"] == "failed reading [local path redacted] during import"
     assert safe_payload["windows_project"] == "failed reading [local path redacted] during import"
     assert safe_payload["windows_space_project"] == "failed reading [local path redacted] during import"
     assert safe_payload["windows_lowercase_space_project"] == "failed reading [local path redacted] during import"
@@ -1534,7 +1542,6 @@ def test_dispatch_tool_routes_computed_report_backup_times():
         "site_ids": ["AAA001"],
         "min_minutes": 5,
         "threshold_minutes": 5,
-        "error": None,
     }
 
 

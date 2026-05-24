@@ -9,6 +9,11 @@ from typing import Any
 
 import pandas as pd
 
+try:
+    from alarm_app.db.repos import catalog_repo
+except ImportError:
+    from db.repos import catalog_repo
+
 _log = logging.getLogger(__name__)
 
 STATE_DIR = Path.home() / ".alarm_viewer"
@@ -358,37 +363,24 @@ def read_bdt_summary() -> pd.DataFrame:
 
 def read_bdt_summary_site_ids() -> set[str]:
     """Return distinct site IDs from BDT summary catalog."""
-    if not CATALOG_DB_FILE.exists():
-        return set()
-    con = _connect(read_only=True)
-    try:
-        if not _table_exists(con, BDT_SUMMARY_TABLE):
-            return set()
-        rows = con.execute(f"SELECT DISTINCT site_id FROM {BDT_SUMMARY_TABLE}").fetchall()
-    finally:
-        con.close()
     return {
         _normalize_site_id(site_id)
-        for site_id, in rows
+        for site_id in catalog_repo.fetch_bdt_summary_site_ids(
+            CATALOG_DB_FILE,
+            BDT_SUMMARY_TABLE,
+        )
         if _normalize_site_id(site_id)
     }
 
 
 def read_bdt_summary_site_stats() -> dict[str, dict[str, Any]]:
     """Return per-site BDT Summary counts and latest test dates."""
-    if not CATALOG_DB_FILE.exists():
-        return {}
-    con = _connect(read_only=True)
-    try:
-        if not _table_exists(con, BDT_SUMMARY_TABLE):
-            return {}
-        rows = con.execute(
-            f"SELECT site_id, COUNT(*) AS bdt_summary_count, MAX(test_date) AS latest_bdt_at FROM {BDT_SUMMARY_TABLE} GROUP BY site_id"
-        ).fetchall()
-    finally:
-        con.close()
     stats: dict[str, dict[str, Any]] = {}
-    for site_id, count, latest_bdt_at in rows:
+    rows = catalog_repo.fetch_bdt_summary_site_dates(
+        CATALOG_DB_FILE,
+        BDT_SUMMARY_TABLE,
+    )
+    for site_id, test_date in rows:
         normalized = _normalize_site_id(site_id)
         if not normalized:
             continue
@@ -399,14 +391,15 @@ def read_bdt_summary_site_stats() -> dict[str, dict[str, Any]]:
                 "latest_bdt_at": None,
             },
         )
-        existing["bdt_summary_count"] += int(count or 0)
-        if latest_bdt_at is not None:
-            latest = pd.to_datetime(latest_bdt_at, errors="coerce")
-            if pd.isna(latest):
-                continue
-            existing_latest = existing["latest_bdt_at"]
-            if existing_latest is None or pd.to_datetime(existing_latest, errors="coerce") < latest:
-                existing["latest_bdt_at"] = latest_bdt_at
+        existing["bdt_summary_count"] += 1
+        if test_date is None:
+            continue
+        latest = pd.to_datetime(test_date, errors="coerce")
+        if pd.isna(latest):
+            continue
+        existing_latest = pd.to_datetime(existing["latest_bdt_at"], errors="coerce")
+        if pd.isna(existing_latest) or existing_latest < latest:
+            existing["latest_bdt_at"] = str(test_date)
     return stats
 
 
