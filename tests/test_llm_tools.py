@@ -2058,6 +2058,40 @@ def test_dispatch_tool_computed_report_accepted_pm_report_unknown_source_file_us
     assert result["has_more"] is False
 
 
+def test_dispatch_tool_computed_report_accepted_pm_report_returns_structured_error_for_parse_failure(monkeypatch, tmp_path):
+    source = tmp_path / "accepted_pm.csv"
+    source.write_text("bad", encoding="utf-8")
+    service = LocalDataService(upload_allowlist={
+        "pm1": {
+            "path": str(source),
+            "name": source.name,
+            "size": source.stat().st_size,
+            "suffix": ".csv",
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+        }
+    })
+    monkeypatch.setattr(service, "_alarm_reference_df", lambda: pd.DataFrame())
+
+    def _raise_parse_error(*args, **kwargs):
+        raise RuntimeError(f"failed reading {tmp_path}/accepted_pm.csv")
+
+    monkeypatch.setattr(service_mod, "read_pm_accept_sheet", _raise_parse_error)
+
+    result = dispatch_tool(
+        service,
+        "get_computed_report",
+        {"report_type": "accepted_pm_report", "source_file_id": "pm1"},
+    )
+
+    assert result["report_type"] == "accepted_pm_report"
+    assert result["source_file_id"] == "pm1"
+    assert result["rows"] == []
+    assert result["returned"] == 0
+    assert result["has_more"] is False
+    assert result["error"] == "failed reading [local path redacted]"
+    assert str(tmp_path) not in json.dumps(result)
+
+
 def test_dispatch_tool_computed_report_app_known_upload_enforces_size_cap(monkeypatch, tmp_path):
     source = tmp_path / "accepted_pm.csv"
     source.write_text("Site Code,Actual Done Date\nAAA001,2026-04-01\n", encoding="utf-8")
@@ -5689,6 +5723,7 @@ def test_query_network_summary_filters_across_metadata_alias_columns(monkeypatch
         lambda: pd.DataFrame([
             {"site_id": "AAA001", "site_name": "Alpha Prime", "orange_area": "East", "sub_contractor": "Acme"},
             {"site_id": "BBB002", "name": "Alpha Backup", "orangearea": "East", "subcontractor_name": "Acme"},
+            {"site_id": "DDD004", "sitename": "Alpha Alias", "orangearea": "West", "subcontractor_name": "Other"},
             {"site_id": "CCC003", "site_name": "Gamma", "orange_area": "West", "sub_contractor": "Other"},
         ]),
     )
@@ -5698,7 +5733,7 @@ def test_query_network_summary_filters_across_metadata_alias_columns(monkeypatch
     area_result = service.query_network_summary(area="East")
     subcontractor_result = service.query_network_summary(subcontractor="Acme")
 
-    assert {row["site_id"] for row in name_result["rows"]} == {"AAA001", "BBB002"}
+    assert {row["site_id"] for row in name_result["rows"]} == {"AAA001", "BBB002", "DDD004"}
     assert {row["site_id"] for row in area_result["rows"]} == {"AAA001", "BBB002"}
     assert {row["site_id"] for row in subcontractor_result["rows"]} == {"AAA001", "BBB002"}
 

@@ -1518,23 +1518,28 @@ class LocalDataService:
                     "report_type": report_type,
                 }
 
-            reference_df = self._alarm_reference_df()
-            pm_df, sheet_name, site_col, date_col, status_col = read_pm_accept_sheet(
-                str(source_path),
-                reference_df,
-            )
-            site_keys = collect_site_sheet_keys(pm_df, site_col)
-            alarm_df = self._alarm_rows_for_pm_sheet(pm_df, site_col, date_col)
-            bdt_results = self._load_validation_results(site_keys=site_keys)
-            all_report_df = build_pm_accept_report(
-                pm_df,
-                site_col,
-                date_col,
-                bdt_results,
-                alarm_df,
-                health_pct=80.0 if kwargs.get("health_pct") is None else float(kwargs.get("health_pct")),
-                status_column=status_col,
-            )
+            try:
+                reference_df = self._alarm_reference_df()
+                pm_df, sheet_name, site_col, date_col, status_col = read_pm_accept_sheet(
+                    str(source_path),
+                    reference_df,
+                )
+                site_keys = collect_site_sheet_keys(pm_df, site_col)
+                alarm_df = self._alarm_rows_for_pm_sheet(pm_df, site_col, date_col)
+                bdt_results = self._load_validation_results(site_keys=site_keys)
+                all_report_df = build_pm_accept_report(
+                    pm_df,
+                    site_col,
+                    date_col,
+                    bdt_results,
+                    alarm_df,
+                    health_pct=80.0 if kwargs.get("health_pct") is None else float(kwargs.get("health_pct")),
+                    status_column=status_col,
+                )
+            except Exception as exc:
+                payload = _computed_error_payload(exc)
+                payload["source_file_id"] = resolved_source_file_id
+                return payload
             all_rows = _sanitize_mcp_records(all_report_df.to_dict(orient="records"), include_raw_json=include_raw_json)
             rows = all_rows[offset:offset + limit] if limit > 0 else []
             payload = _paged_payload_from_page(
@@ -2999,7 +3004,7 @@ class LocalDataService:
             site_text = str(site_raw).upper().strip()
             normalized_site = catalog_store._normalize_site_id(site_raw)
             mask = _contains_any_column(filtered, ("site_id",), normalized_site or site_text)
-            mask |= _contains_any_column(filtered, ("site_name", "name"), site_text)
+            mask |= _contains_any_column(filtered, ("site_name", "sitename", "name"), site_text)
             filtered = filtered[mask]
 
         if area:
