@@ -5,9 +5,8 @@ import argparse
 import re
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
-
 
 SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 TAG_RE = re.compile(r"^v(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$")
