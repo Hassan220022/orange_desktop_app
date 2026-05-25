@@ -95,7 +95,7 @@ _FIELD_ALIASES = {
     "site_name": ("site_name", "sitename", "name"),
     "area": ("area", "orange_area", "orangearea"),
     "contractor": ("contractor",),
-    "subcontractor": ("subcontractor", "sub_contractor", "subcontractor_name", "contractor"),
+    "subcontractor": ("subcontractor", "sub_contractor", "subcontractor_name"),
     "office": ("office", "fm_office", "orange_office", "office_name"),
     "vip": ("vip", "is_vip", "vip_status"),
     "backup_status": ("backup_status", "backupstatus"),

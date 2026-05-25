@@ -4317,6 +4317,33 @@ def test_list_sites_service_uses_metadata_aliases_from_raw_data_json(monkeypatch
     assert result["rows"][0]["subcontractor"] == "Huawei"
 
 
+def test_list_sites_keeps_contractor_and_subcontractor_filters_independent(monkeypatch):
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.catalog_store.read_site_metadata",
+        lambda: pd.DataFrame([
+            {"site_id": "AAA001", "raw_data_json": json.dumps({"contractor": "Acme"})},
+            {"site_id": "BBB002", "raw_data_json": json.dumps({"subcontractor": "Acme"})},
+        ]),
+    )
+    monkeypatch.setattr(LocalDataService, "_alarm_site_ids", lambda self: (set(), []))
+    monkeypatch.setattr(LocalDataService, "_alarm_site_stats", lambda self: ({}, []))
+    monkeypatch.setattr(LocalDataService, "_bdt_summary_site_ids", lambda self: (set(), []))
+    monkeypatch.setattr(LocalDataService, "_bdt_summary_site_stats", lambda self: ({}, []))
+    monkeypatch.setattr(LocalDataService, "_bdt_validation_site_ids", lambda self: (set(), []))
+    monkeypatch.setattr(LocalDataService, "_bdt_validation_site_stats", lambda self: ({}, []))
+
+    service = LocalDataService()
+
+    contractor_result = service.list_sites(contractor="Acme")
+    subcontractor_result = service.list_sites(subcontractor="Acme")
+
+    assert contractor_result["total"] == 1
+    assert contractor_result["rows"][0]["site_id"] == "AAA001"
+    assert "subcontractor" not in contractor_result["rows"][0]
+    assert subcontractor_result["total"] == 1
+    assert subcontractor_result["rows"][0]["site_id"] == "BBB002"
+
+
 def test_list_sites_includes_vip_and_office_from_metadata_aliases(monkeypatch):
     raw = {"is_vip": "VIP", "fm_office": "Maadi", "site_name": "Alpha"}
     monkeypatch.setattr(
