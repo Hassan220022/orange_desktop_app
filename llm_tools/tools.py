@@ -31,7 +31,7 @@ _OBJECT_ROWS = {"type": "array", "items": _OBJECT_OUTPUT}
 _STRING_LIST = {"type": "array", "items": {"type": "string"}}
 _NUMBER_LIST = {"type": "array", "items": {"type": "number"}}
 _PAGING_PROPERTIES = {
-    "limit": {"type": "integer", "minimum": 0, "maximum": 1000, "xClampMaximum": True},
+    "limit": {"type": "integer", "minimum": 0, "maximum": 500, "xClampMaximum": True},
     "offset": {"type": "integer", "minimum": 0},
 }
 _PAGING_OUTPUT = {
@@ -223,6 +223,61 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "export_path": {"type": "string"},
             "error": {"type": "string"},
         }),
+    },
+    "describe_federated_site_data": {
+        "description": "Describe the curated fields, sources, filters, operators, and examples for federated site data queries.",
+        "inputSchema": _schema({}),
+        "outputSchema": _output_schema(),
+    },
+    "describe_admin_sql_views": {
+        "description": "Describe approved read-only SQL views available to trusted admin SQL queries.",
+        "inputSchema": _schema({}),
+        "outputSchema": _output_schema(),
+    },
+    "query_admin_readonly_sql": {
+        "description": "Run trusted read-only SQL against approved MCP views only. Results are capped at 500 rows and sanitized.",
+        "inputSchema": _schema({
+            "sql": {"type": "string", "description": "SELECT/WITH query against approved views from describe_admin_sql_views."},
+            **_PAGING_PROPERTIES,
+        }, required=["sql"]),
+        "outputSchema": _output_schema(_PAGING_OUTPUT),
+    },
+    "query_federated_site_data": {
+        "description": "Query selected fields from federated site data with whitelisted filters, joined by Site ID.",
+        "inputSchema": _schema({
+            "select": _STRING_LIST,
+            "sources": _STRING_LIST,
+            "site_filters": _OBJECT_OUTPUT,
+            "section_filters": _OBJECT_OUTPUT,
+            "section_match_mode": {"type": "string", "enum": ["filter_nested_only", "require_matching_sites"]},
+            "include_sections": _STRING_LIST,
+            **_PAGING_PROPERTIES,
+        }),
+        "outputSchema": _output_schema(_PAGING_OUTPUT),
+    },
+    "get_all_sites_full_context": {
+        "description": "Return a page of sites with operational base fields and limited nested per-site context sections.",
+        "inputSchema": _schema({
+            "site_filters": _OBJECT_OUTPUT,
+            "section_filters": _OBJECT_OUTPUT,
+            "section_match_mode": {"type": "string", "enum": ["filter_nested_only", "require_matching_sites"]},
+            "metadata_limit": {"type": "integer", "minimum": 0, "maximum": 500, "xClampMaximum": True},
+            "alarm_limit": {"type": "integer", "minimum": 0, "maximum": 500, "xClampMaximum": True},
+            "bdt_limit": {"type": "integer", "minimum": 0, "maximum": 500, "xClampMaximum": True},
+            "date_from": {"type": "string"},
+            "date_to": {"type": "string"},
+            "category": {"type": "string"},
+            "vendor": {"type": "string"},
+            "network_type": {"type": "string"},
+            "reporting_period": {"type": "string"},
+            "period": {"type": "string"},
+            "week": {"type": "string"},
+            "overall": {"type": "string"},
+            "rule_id": {"type": "string"},
+            "rule_verdict": {"type": "string"},
+            **_PAGING_PROPERTIES,
+        }),
+        "outputSchema": _output_schema(_PAGING_OUTPUT),
     },
     "generate_graph": {
         "description": (
@@ -537,11 +592,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "inputSchema": _schema({
             "site_code": {"type": "string", "description": "Normalized or raw site code."},
             "site_id": {"type": "string", "description": "Alias for site_code."},
-            "metadata_limit": {"type": "integer", "minimum": 0, "maximum": 1000, "xClampMaximum": True},
+            "metadata_limit": {"type": "integer", "minimum": 0, "maximum": 500, "xClampMaximum": True},
             "metadata_offset": {"type": "integer", "minimum": 0},
-            "alarm_limit": {"type": "integer", "minimum": 0, "maximum": 1000, "xClampMaximum": True},
+            "alarm_limit": {"type": "integer", "minimum": 0, "maximum": 500, "xClampMaximum": True},
             "alarm_offset": {"type": "integer", "minimum": 0},
-            "bdt_limit": {"type": "integer", "minimum": 0, "maximum": 1000, "xClampMaximum": True},
+            "bdt_limit": {"type": "integer", "minimum": 0, "maximum": 500, "xClampMaximum": True},
             "bdt_offset": {"type": "integer", "minimum": 0},
             "date_from": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},
             "date_to": {"type": "string", "description": "Inclusive date, YYYY-MM-DD."},

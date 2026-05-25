@@ -1,0 +1,3 @@
+# MCP federated site query and admin SQL views
+
+We will expose MCP cross-source site access through two complementary read-only paths: a normal Federated Site Query / All-Sites Full Context Report that joins app data sources by canonical Site ID in application logic, and an expert Admin Read-Only SQL Query that can join approved stable read-only views. We are not exposing raw physical tables or unrestricted database schema because MCP responses must remain bounded, sanitized, and safe, but trusted users still need SQL-style flexibility across SQLite/app data and DuckDB-backed stores. All broad MCP responses and SQL results are capped at 500 rows per request, with raw local paths redacted.

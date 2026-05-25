@@ -81,9 +81,32 @@ Source-file-dependent MCP reports, such as accepted PM report logic, may use ver
 MCP responses should ignore/redact raw local filesystem paths and expose stable IDs, original names, hashes, sizes, MIME types, dimensions, source kind, and parsed timestamps instead.
 Site-related operational person/comment fields, such as engineer names, reviewer names, and BDT/Network Summary comments, remain part of MCP Site Data Parity when they are present in site metadata, BDT rows, validation records, review events, or report content. Site-related review events are operational review history and may be exposed through MCP with file paths redacted.
 Raw JSON payload columns should be parsed into normal MCP fields by default. Raw JSON strings may be exposed only when explicitly requested for auditing/debugging.
-Broad MCP tools default to 500 rows per call and honor caller-requested page sizes with a hard cap of 1000 rows per call. Larger datasets remain reachable through repeated paginated calls.
+Broad MCP tools default to 500 rows per call and enforce a hard cap of 500 rows per request. Larger datasets remain reachable through repeated paginated calls.
 Paginated MCP responses always include returned row count, limit, offset, and whether more rows are available; total row count is included when cheap to compute.
 _Avoid_: One giant MCP response, bulk image transport, write-capable plugin access
+
+**All-Sites Full Context Report**:
+A paginated AI/MCP report keyed by **Site ID** that can return a page of sites with nested per-site context, such as **Site Metadata**, alarm summary, recent alarm rows, **BDT Summary Catalog** rows, BDT validation runs, rule results, photo metadata, and review events. Each nested context section has its own page-size limit so the report remains reachable in repeated calls instead of becoming one giant response.
+The report's default site universe is all known sites: the union of Site Metadata, alarm rows, BDT Summary Catalog rows, and BDT validation data. Callers may narrow that universe with source-presence filters such as metadata-only, alarm-only, BDT-only, or specific source flags.
+Each site row should expose an operational base row with common fields such as site name, Orange area, office, VIP marker, contractor, subcontractor, backup status, battery status, source flags, counts, and latest known dates, while full source-faithful metadata remains available in nested Network Summary rows.
+By default, each site row should include a small recent nested context: a few Network Summary rows, the latest alarm rows, latest BDT Summary rows, latest BDT validation runs, latest rule results, photo metadata only, and latest review events. Callers may override nested section limits, but site-page and nested-section limits must follow the global 500-row MCP request cap so the response stays safe for MCP clients.
+_Avoid_: Arbitrary SQL joins, one-call full database dump, replacing **Site ID** with rectifier-level identity
+
+**Federated Site Query**:
+A safe AI/MCP query over multiple app data sources, joined by canonical **Site ID** in application logic rather than by arbitrary model-written SQL. It lets callers choose from whitelisted fields, whitelisted source groups, and whitelisted filter operators across Site Metadata, alarms, BDT Summary Catalog, and BDT validation data. It may read from both the app database and DuckDB-backed stores, but it should not expose raw SQL execution, raw database schema, arbitrary table joins, or unrestricted database internals to the model.
+The All-Sites Full Context Report should be a preset use case over the same federated query foundation, so common full-context requests and custom field/filter requests share the same source reads, Site ID stitching, pagination, sanitization, and source-error handling.
+Its curated field catalog includes common site-level metadata and source flags/counts, plus selectable nested operational sections such as Network Summary rows, alarm rows, BDT Summary rows, BDT validation runs, rule results, photo metadata, and review events.
+Federated Site Query filters are two-level: site filters decide which **Site ID** rows appear, while section filters decide which nested operational rows appear inside each site. A caller may also require that specific nested sections have matches before a site is included.
+When nested section filters are present, the default behavior is to filter nested rows only; callers must explicitly choose a matching-sites mode when they want sites without matching nested rows excluded.
+AI/MCP clients should learn the Federated Site Query's available fields, source groups, filters, operators, nested sections, and examples from a curated data-model description, not from raw database schema or table names.
+Federated Site Query results must be capped at 500 rows per request, including site rows and any nested section rows.
+_Avoid_: Raw SELECT/JOIN text from the model, schema-dump tool, cross-database free-form SQL
+
+**Admin Read-Only SQL Query**:
+An expert AI/MCP capability for trusted users to run read-only SQL-style queries against approved application data sources when the curated Federated Site Query is not expressive enough. It is distinct from the normal Federated Site Query path and must preserve MCP safety expectations: no app-data mutation, no arbitrary local file access, no raw local filesystem path exposure, and no response larger than the global MCP row cap.
+Admin Read-Only SQL Query should expose approved, stable, read-only views rather than raw physical tables. Those views may represent data from both the app database and DuckDB-backed stores, but the query surface should remain source-faithful and bounded.
+Admin Read-Only SQL Query may join approved read-only views together in one query, including views backed by different app data stores, as long as the query remains read-only, bounded, and sanitized.
+_Avoid_: Write-capable SQL, file-system access through SQL, uncapped result sets, replacing normal site questions with SQL-first behavior
 
 **Weekly Summary**:
 A report sheet for one export week only. Each row summarizes one site for that week.

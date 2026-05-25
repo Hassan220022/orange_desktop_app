@@ -234,11 +234,11 @@ def test_limit_clamps_to_safe_maximum():
     assert _limit("bad", default=17) == 17
 
 
-def test_mcp_page_limit_defaults_to_500_and_caps_at_1000():
+def test_mcp_page_limit_defaults_to_500_and_caps_at_500():
     assert _mcp_limit(None) == 500
     assert _mcp_limit("bad") == 500
     assert _mcp_limit(25) == 25
-    assert _mcp_limit(5000) == 1000
+    assert _mcp_limit(5000) == 500
 
 
 def test_mcp_offset_defaults_to_zero_for_invalid_input():
@@ -933,7 +933,7 @@ def test_query_alarm_events_schema_uses_read_only_paging_contract():
     tools = {tool["name"]: tool for tool in tool_definitions_for_mcp()}
     schema = tools["query_alarm_events"]["inputSchema"]["properties"]
 
-    assert schema["limit"]["maximum"] == 1000
+    assert schema["limit"]["maximum"] == 500
     assert schema["offset"]["minimum"] == 0
     assert "site_code" in schema
     assert "site_id" in schema
@@ -960,7 +960,7 @@ def test_query_alarm_events_defaults_and_limits_to_mcp_contract(monkeypatch):
 
     captured.pop("default_q", None)
     service.query_alarm_events(limit=9999)
-    assert captured["default_q"].limit == 1000
+    assert captured["default_q"].limit == 500
 
 
 def test_query_backup_times_schema_exposes_threshold_and_row_limit():
@@ -3630,7 +3630,7 @@ def test_list_sites_tool_schema_includes_filters_and_paging():
     ):
         assert key in props, key
 
-    assert props["limit"]["maximum"] == 1000
+    assert props["limit"]["maximum"] == 500
     assert props["has_metadata"]["type"] == "boolean"
     assert schema["additionalProperties"] is False
 
@@ -3671,7 +3671,7 @@ def test_get_sites_context_report_tool_schema_includes_sheet_manifest_and_filter
     ):
         assert key in props, key
 
-    assert props["limit"]["maximum"] == 1000
+    assert props["limit"]["maximum"] == 500
     assert schema["additionalProperties"] is False
 
 
@@ -3685,7 +3685,7 @@ def test_dispatch_list_sites_clamps_oversized_limit(monkeypatch):
 
     result = dispatch_tool(service, "list_sites", {"limit": 5000})
 
-    assert result["limit"] == 1000
+    assert result["limit"] == 500
     assert result["offset"] == 0
 
 
@@ -3829,11 +3829,11 @@ def test_get_sites_context_report_sheet_calls_expected_section(monkeypatch):
 
     assert result["sheet"] == "Alarms"
     assert result["offset"] == 3
-    assert result["limit"] == 1000
+    assert result["limit"] == 500
     assert result["returned"] == 2
     assert result["total"] == 9
     assert result["has_more"] is True
-    assert calls["query_alarm_events"]["limit"] == 1000
+    assert calls["query_alarm_events"]["limit"] == 500
     assert calls["query_alarm_events"]["offset"] == 3
     assert calls["query_alarm_events"]["category"] == "Power"
     assert calls["query_alarm_events"]["vendor"] == "HUAWEI"
@@ -4317,6 +4317,32 @@ def test_list_sites_service_uses_metadata_aliases_from_raw_data_json(monkeypatch
     assert result["rows"][0]["subcontractor"] == "Huawei"
 
 
+def test_list_sites_includes_vip_and_office_from_metadata_aliases(monkeypatch):
+    raw = {"is_vip": "VIP", "fm_office": "Maadi", "site_name": "Alpha"}
+    monkeypatch.setattr(
+        "alarm_app.llm_tools.service.catalog_store.read_site_metadata",
+        lambda: pd.DataFrame([
+            {
+                "site_id": "0900DE",
+                "raw_data_json": json.dumps(raw),
+                "site_name": "Alpha",
+            }
+        ]),
+    )
+    monkeypatch.setattr(LocalDataService, "_alarm_site_ids", lambda self: (set(), []))
+    monkeypatch.setattr(LocalDataService, "_alarm_site_stats", lambda self: ({}, []))
+    monkeypatch.setattr(LocalDataService, "_bdt_summary_site_ids", lambda self: (set(), []))
+    monkeypatch.setattr(LocalDataService, "_bdt_summary_site_stats", lambda self: ({}, []))
+    monkeypatch.setattr(LocalDataService, "_bdt_validation_site_ids", lambda self: (set(), []))
+    monkeypatch.setattr(LocalDataService, "_bdt_validation_site_stats", lambda self: ({}, []))
+
+    result = LocalDataService().list_sites(site_id="0900DE")
+
+    row = result["rows"][0]
+    assert row["vip"] == "VIP"
+    assert row["office"] == "Maadi"
+
+
 def test_list_sites_service_reports_source_errors_with_redaction(monkeypatch, tmp_path):
     def _read_site_metadata() -> pd.DataFrame:
         raise RuntimeError(f"failed to read {tmp_path}/catalog.db: file not found")
@@ -4380,18 +4406,23 @@ def test_list_sites_bdt_summary_site_ids_fallback_reports_errors(monkeypatch, tm
     assert str(tmp_path) not in result["source_errors"]["bdt_summary"][0]
 
 
-def test_dispatch_query_network_summary_clamps_oversized_limit(monkeypatch):
-    def _query_network_summary(**kwargs):
-        kwargs["offset"] = kwargs.get("offset", 0)
-        return kwargs
+def test_dispatch_clamps_broad_mcp_limits_to_500(monkeypatch):
+    from llm_tools.service import LocalDataService
+    from llm_tools.tools import dispatch_tool
 
     service = LocalDataService()
+    seen = {}
+
+    def _query_network_summary(**kwargs):
+        seen.update(kwargs)
+        return {"rows": [], "returned": 0, "limit": kwargs["limit"], "offset": 0, "has_more": False, "total": 0}
+
     monkeypatch.setattr(service, "query_network_summary", _query_network_summary)
 
     result = dispatch_tool(service, "query_network_summary", {"limit": 5000})
 
-    assert result["limit"] == 1000
-    assert result["offset"] == 0
+    assert seen["limit"] == 500
+    assert result["limit"] == 500
 
 
 def test_search_site_metadata_service_filters_catalog(monkeypatch):
@@ -5642,7 +5673,7 @@ def test_query_bdt_summary_service_honors_zero_limit(monkeypatch):
     assert result == {"rows": [], "total": 2}
 
 
-def test_query_network_summary_schema_includes_network_filters_and_paging():
+def test_mcp_paging_schema_caps_at_500():
     schema = TOOL_SCHEMAS["query_network_summary"]["inputSchema"]
     props = schema["properties"]
 
@@ -5653,7 +5684,8 @@ def test_query_network_summary_schema_includes_network_filters_and_paging():
     assert "subcontractor" in props
     assert "contractor" in props
     assert "include_raw_json" in props
-    assert props["limit"]["maximum"] == 1000
+    assert props["limit"]["maximum"] == 500
+    assert props["limit"]["xClampMaximum"] is True
 
 
 def test_query_network_summary_service_returns_paged_sanitized_rows(monkeypatch):
@@ -6210,9 +6242,9 @@ def test_dispatch_get_site_full_context_clamps_limits_to_maximum(monkeypatch):
     })
 
     assert result == {"ok": True, "args": captured}
-    assert captured["metadata_limit"] == 1000
-    assert captured["alarm_limit"] == 1000
-    assert captured["bdt_limit"] == 1000
+    assert captured["metadata_limit"] == 500
+    assert captured["alarm_limit"] == 500
+    assert captured["bdt_limit"] == 500
 
 
 def test_query_bdt_summary_service_handles_empty_catalog(monkeypatch):
@@ -6253,3 +6285,1847 @@ def test_query_bdt_summary_service_handles_catalog_error(monkeypatch):
     assert result["error"] == "no such table in [local path redacted]"
     assert result["rows"] == []
     assert result["total"] == 0
+
+
+def test_describe_federated_site_data_lists_fields_sources_and_examples():
+    from alarm_app.llm_tools.service import LocalDataService
+
+    result = LocalDataService().describe_federated_site_data()
+
+    assert result["join_key"] == "site_id"
+    assert "site_metadata" in result["sources"]
+    assert "alarms" in result["sources"]
+    assert "bdt_summary" in result["sources"]
+    assert "bdt_validation" in result["sources"]
+    assert "vip" in result["fields"]
+    assert "network_summary_rows" in result["nested_sections"]
+    assert "contains" in result["operators"]
+    assert result["row_cap"] == 500
+
+
+def test_describe_federated_site_data_tool_schema_is_available():
+    from alarm_app.llm_tools.tools import TOOL_SCHEMAS
+
+    assert "describe_federated_site_data" in TOOL_SCHEMAS
+    assert TOOL_SCHEMAS["describe_federated_site_data"]["inputSchema"]["additionalProperties"] is False
+
+
+def test_describe_federated_site_data_returns_fresh_mutable_copies():
+    from alarm_app.llm_tools.service import LocalDataService
+
+    first = LocalDataService().describe_federated_site_data()
+    first["fields"].append("_mutated")
+    first["sources"]["new_source"] = "injected"
+
+    second = LocalDataService().describe_federated_site_data()
+
+    assert "_mutated" not in second["fields"]
+    assert "new_source" not in second["sources"]
+
+
+def test_describe_admin_sql_views_lists_approved_views_only():
+    from alarm_app.llm_tools.service import LocalDataService
+
+    result = LocalDataService().describe_admin_sql_views()
+
+    assert result["row_cap"] == 500
+    assert "site_metadata_view" in result["views"]
+    assert "alarm_events_view" in result["views"]
+    assert "bdt_validation_runs_view" in result["views"]
+    assert "uploaded_files" not in result["views"]
+    assert "SELECT" in result["allowed_sql"]
+
+
+def test_describe_admin_sql_views_returns_fresh_mutable_copies():
+    from alarm_app.llm_tools.service import LocalDataService
+
+    first = LocalDataService().describe_admin_sql_views()
+    first["views"]["site_metadata_view"].append("_mutated")
+    first["views"]["extra_view"] = ["x"]
+
+    second = LocalDataService().describe_admin_sql_views()
+
+    assert "_mutated" not in second["views"]["site_metadata_view"]
+    assert "extra_view" not in second["views"]
+
+
+def test_query_admin_readonly_sql_can_join_approved_views(monkeypatch):
+    import pandas as pd
+
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "_admin_sql_view_frames",
+        lambda: {
+            "site_metadata_view": pd.DataFrame([
+                {"site_id": "S1", "site_name": "Alpha", "vip": "VIP"},
+                {"site_id": "S2", "site_name": "Beta", "vip": "_"},
+            ]),
+            "alarm_summary_view": pd.DataFrame([
+                {"site_id": "S1", "alarm_count": 4},
+            ]),
+        },
+    )
+
+    result = service.query_admin_readonly_sql(
+        sql="""
+        SELECT s.site_id, s.site_name, s.vip, a.alarm_count
+        FROM site_metadata_view s
+        LEFT JOIN alarm_summary_view a ON a.site_id = s.site_id
+        WHERE s.vip NOT IN ('_', '')
+        ORDER BY s.site_id
+        """
+    )
+
+    assert result["rows"] == [{"site_id": "S1", "site_name": "Alpha", "vip": "VIP", "alarm_count": 4}]
+    assert result["returned"] == 1
+
+
+def test_query_admin_readonly_sql_allows_with_cte_over_approved_views(monkeypatch):
+    import pandas as pd
+
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "_admin_sql_view_frames",
+        lambda: {
+            "site_metadata_view": pd.DataFrame(
+                [
+                    {"site_id": "S1", "site_name": "Alpha", "vip": "VIP"},
+                    {"site_id": "S2", "site_name": "Beta", "vip": "_"},
+                ]
+            ),
+            "alarm_summary_view": pd.DataFrame([]),
+        },
+    )
+
+    result = service.query_admin_readonly_sql(
+        sql="""
+        WITH x AS (
+            SELECT site_id, site_name, vip
+            FROM site_metadata_view
+        )
+        SELECT x.site_id, x.site_name
+        FROM x
+        WHERE x.vip = 'VIP'
+        """
+    )
+
+    assert result["rows"] == [{"site_id": "S1", "site_name": "Alpha"}]
+    assert result["returned"] == 1
+
+
+def test_query_admin_readonly_sql_allows_multi_cte_over_approved_views(monkeypatch):
+    import pandas as pd
+
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "_admin_sql_view_frames",
+        lambda: {
+            "site_metadata_view": pd.DataFrame(
+                [
+                    {"site_id": "S1", "site_name": "Alpha", "vip": "VIP"},
+                    {"site_id": "S2", "site_name": "Beta", "vip": "_"},
+                ]
+            ),
+            "alarm_summary_view": pd.DataFrame([]),
+            "alarm_events_view": pd.DataFrame([]),
+            "site_index_view": pd.DataFrame([]),
+            "bdt_summary_view": pd.DataFrame([]),
+            "bdt_validation_runs_view": pd.DataFrame([]),
+            "bdt_rule_results_view": pd.DataFrame([]),
+            "photo_metadata_view": pd.DataFrame([]),
+            "review_events_view": pd.DataFrame([]),
+        },
+    )
+
+    result = service.query_admin_readonly_sql(
+        sql='''
+        WITH x AS (
+            SELECT site_id FROM site_metadata_view
+        ), y AS (
+            SELECT site_id FROM x
+        )
+        SELECT y.site_id FROM y
+        '''
+    )
+
+    assert "error" not in result
+    assert result["rows"] == [{"site_id": "S1"}, {"site_id": "S2"}]
+    assert result["returned"] == 2
+
+
+def test_query_admin_readonly_sql_rejects_with_cte_over_raw_table(monkeypatch):
+    import pandas as pd
+
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "_admin_sql_view_frames",
+        lambda: {"site_metadata_view": pd.DataFrame([{"site_id": "S1"}])},
+    )
+
+    assert "error" in service.query_admin_readonly_sql(
+        sql="""
+        WITH x AS (
+            SELECT * FROM uploaded_files
+        )
+        SELECT * FROM x
+        """
+    )
+    assert "error" in service.query_admin_readonly_sql(
+        sql="""
+        WITH x AS (
+            SELECT * FROM site_metadata_view
+        ), y AS (
+            SELECT * FROM unknown_view
+        )
+        SELECT * FROM y
+        """
+    )
+
+
+def test_validate_admin_sql_rejects_quoted_raw_table_and_internal_qualified_identifiers():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    quoted_raw = validate_admin_sql('SELECT * FROM "uploaded_files"')
+    quoted_catalog = validate_admin_sql('SELECT * FROM "pg_catalog"."pg_tables"')
+
+    assert quoted_raw is not None
+    assert quoted_catalog is not None
+
+
+def test_validate_admin_sql_rejects_with_recursive_cte():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    result = validate_admin_sql(
+        """
+        WITH RECURSIVE cte AS (
+            SELECT 1 AS n
+        )
+        SELECT * FROM cte
+        """
+    )
+
+    assert result is not None
+
+
+def test_validate_admin_sql_rejects_cte_alias_shadowing_approved_view():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    result = validate_admin_sql(
+        "WITH site_metadata_view AS (SELECT 1 AS version) SELECT * FROM site_metadata_view"
+    )
+
+    assert result is not None
+    assert "shadowing" in result.lower() or "disallowed" in result.lower()
+
+
+def test_validate_admin_sql_rejects_nested_cte_alias_shadowing_approved_view():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    result = validate_admin_sql(
+        """
+        WITH base AS (
+            SELECT * FROM site_metadata_view
+        )
+        SELECT * FROM (
+            WITH site_metadata_view AS (
+                SELECT * FROM base
+            )
+            SELECT * FROM site_metadata_view
+        ) t
+        """
+    )
+
+    assert result is not None
+
+
+def test_validate_admin_sql_allows_cte_alias_over_approved_view():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    result = validate_admin_sql(
+        "WITH cte AS (SELECT * FROM site_metadata_view) SELECT * FROM cte"
+    )
+
+    assert result is None
+
+
+def test_validate_admin_sql_rejects_tableless_scalar_query():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    result = validate_admin_sql("SELECT 1")
+
+    assert result is not None
+
+
+def test_validate_admin_sql_rejects_disallowed_runtime_functions():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    assert validate_admin_sql("SELECT version()") is not None
+    assert validate_admin_sql("SELECT current_setting('timezone')") is not None
+    assert validate_admin_sql("SELECT current_database()") is not None
+    assert validate_admin_sql("SELECT current_schema()") is not None
+    assert validate_admin_sql("SELECT current_user()") is not None
+    assert validate_admin_sql("SELECT session_user()") is not None
+    assert validate_admin_sql("SELECT txid_current()") is not None
+    assert validate_admin_sql("SELECT random()") is not None
+    assert validate_admin_sql("SELECT uuid()") is not None
+    assert validate_admin_sql("SELECT gen_random_uuid()") is not None
+    assert validate_admin_sql("SELECT format_bytes(1000000)") is not None
+
+
+def test_validate_admin_sql_rejects_disallowed_list_constructors():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    assert validate_admin_sql("SELECT range(1, 5)") is not None
+    assert validate_admin_sql("SELECT generate_series(1, 3)") is not None
+    assert validate_admin_sql("SELECT repeat('x', 3)") is not None
+    assert validate_admin_sql("SELECT rpad('x', 1000000, 'x')") is not None
+
+
+def test_validate_admin_sql_rejects_quoted_runtime_function_calls():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    assert validate_admin_sql('SELECT "version"() AS v FROM site_metadata_view LIMIT 1') is not None
+    assert validate_admin_sql('SELECT "range"(1000000) AS r FROM site_metadata_view LIMIT 1') is not None
+    assert validate_admin_sql('SELECT main."range"(1000000) AS r FROM site_metadata_view LIMIT 1') is not None
+    assert validate_admin_sql("SELECT lpad('x', 1000000, 'x') AS p FROM site_metadata_view LIMIT 1") is not None
+    assert validate_admin_sql("SELECT printf('%1000000s', 'x') AS padded") is not None
+    assert validate_admin_sql("SELECT \"format\"('{:>1000000}', 'x') AS fmt") is not None
+
+
+def test_run_admin_sql_allows_approved_view_aggregate():
+    import pandas as pd
+
+    from alarm_app.llm_tools.federated_site import run_admin_sql
+
+    frames = {
+        "site_metadata_view": pd.DataFrame([{"site_id": "S1"}, {"site_id": "S2"}]),
+    }
+
+    result = run_admin_sql("SELECT COUNT(*) AS total FROM site_metadata_view", frames)
+
+    assert result.get("error") is None
+    assert isinstance(result.get("rows"), list)
+    assert result.get("rows")[0].get("total") == 2
+
+
+def test_validate_admin_sql_allows_approved_view_aggregate():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    assert validate_admin_sql("SELECT COUNT(*) AS total FROM site_metadata_view") is None
+
+
+def test_validate_admin_sql_rejects_comma_joined_sources():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    raw_target = validate_admin_sql("SELECT * FROM site_metadata_view, uploaded_files")
+    qualified_target = validate_admin_sql("SELECT * FROM site_metadata_view, pg_catalog.pg_tables")
+    single_quoted_target = validate_admin_sql("SELECT * FROM site_metadata_view, 'notfound.csv'")
+    sqlite_catalog_target = validate_admin_sql("SELECT * FROM site_metadata_view, sqlite_schema")
+    pg_catalog_target = validate_admin_sql("SELECT * FROM site_metadata_view, pg_views")
+
+    assert raw_target is not None
+    assert qualified_target is not None
+    assert single_quoted_target is not None
+    assert sqlite_catalog_target is not None
+    assert pg_catalog_target is not None
+
+
+def test_query_admin_readonly_sql_allows_cte_column_list_over_approved_view(monkeypatch):
+    import pandas as pd
+
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "_admin_sql_view_frames",
+        lambda: {
+            "site_metadata_view": pd.DataFrame(
+                [
+                    {"site_id": "S1", "site_name": "Alpha", "vip": "VIP"},
+                    {"site_id": "S2", "site_name": "Beta", "vip": "_"},
+                ]
+            ),
+            "alarm_summary_view": pd.DataFrame([]),
+            "alarm_events_view": pd.DataFrame([]),
+            "site_index_view": pd.DataFrame([]),
+            "bdt_summary_view": pd.DataFrame([]),
+            "bdt_validation_runs_view": pd.DataFrame([]),
+            "bdt_rule_results_view": pd.DataFrame([]),
+            "photo_metadata_view": pd.DataFrame([]),
+            "review_events_view": pd.DataFrame([]),
+        },
+    )
+
+    result = service.query_admin_readonly_sql(
+        sql='''
+        WITH x(site_id) AS (
+            SELECT site_id FROM site_metadata_view
+        )
+        SELECT * FROM x
+        '''
+    )
+
+    assert "error" not in result
+    assert result["rows"] == [{"site_id": "S1"}, {"site_id": "S2"}]
+    assert result["returned"] == 2
+
+
+def test_validate_admin_sql_rejects_single_quoted_file_like_table_targets():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    csv_target = validate_admin_sql("SELECT * FROM '/tmp/nonexistent.csv'")
+    parquet_target = validate_admin_sql("SELECT * FROM '/tmp/nonexistent.parquet'")
+    where_literal = validate_admin_sql("SELECT * FROM site_metadata_view WHERE vip = 'VIP'")
+
+    assert csv_target is not None
+    assert parquet_target is not None
+    assert where_literal is None
+
+
+def test_validate_admin_sql_rejects_table_functions_from():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    range_target = validate_admin_sql("SELECT * FROM range(10)")
+    series_target = validate_admin_sql("SELECT * FROM generate_series(1, 3)")
+
+    assert range_target is not None
+    assert series_target is not None
+
+
+def test_validate_admin_sql_rejects_qualified_or_quoted_table_functions_from():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    qualified_range = validate_admin_sql("SELECT * FROM main.range(10)")
+    quoted_range = validate_admin_sql('SELECT * FROM "range"(10)')
+    qualified_quoted_range = validate_admin_sql('SELECT * FROM main."range"(3)')
+
+    assert qualified_range is not None
+    assert quoted_range is not None
+    assert qualified_quoted_range is not None
+
+
+def test_validate_admin_sql_allows_blocked_words_in_string_literals():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    load_literal = validate_admin_sql("SELECT * FROM alarm_events_view WHERE alarm_name = 'LOAD FAILURE'")
+    copy_literal = validate_admin_sql("SELECT * FROM alarm_events_view WHERE alarm_name = 'COPY FAILURE'")
+    update_literal = validate_admin_sql("SELECT * FROM alarm_events_view WHERE alarm_name = 'UPDATE FAILURE'")
+
+    assert load_literal is None
+    assert copy_literal is None
+    assert update_literal is None
+
+
+def test_validate_admin_sql_still_blocks_real_copy_and_read_csv_usage():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    blocked_copy = validate_admin_sql("COPY alarm_events_view TO '/tmp/out.csv'")
+    blocked_read_csv = validate_admin_sql("SELECT * FROM read_csv('x')")
+
+    assert blocked_copy is not None
+    assert blocked_read_csv is not None
+
+
+def test_validate_admin_sql_allows_semicolon_inside_string_literal():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    ok = validate_admin_sql("SELECT * FROM site_metadata_view WHERE site_name='semi;colon'")
+    assert ok is None
+
+
+def test_validate_admin_sql_rejects_multiple_statements():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    bad = validate_admin_sql("SELECT * FROM site_metadata_view; SELECT * FROM alarm_events_view")
+    assert bad is not None
+
+
+def test_run_admin_sql_rejects_non_numeric_limit_and_offset():
+    import pandas as pd
+
+    from alarm_app.llm_tools.federated_site import run_admin_sql
+
+    frames = {
+        "site_metadata_view": pd.DataFrame([{"site_id": "S1"}]),
+    }
+
+    assert run_admin_sql("SELECT * FROM site_metadata_view", frames, limit="x")["error"] is not None
+    assert run_admin_sql("SELECT * FROM site_metadata_view", frames, limit=5, offset="x")["error"] is not None
+
+
+def test_run_admin_sql_paging_reports_offset_in_total():
+    import pandas as pd
+
+    from alarm_app.llm_tools.federated_site import run_admin_sql
+
+    frames = {
+        "site_metadata_view": pd.DataFrame([{"site_id": f"S{i:03d}"} for i in range(10)]),
+        "site_index_view": pd.DataFrame(columns=["site_id"]),
+    }
+
+    page = run_admin_sql("SELECT * FROM site_metadata_view ORDER BY site_id", frames, limit=4, offset=3)
+
+    assert page["returned"] == 4
+    assert page["total"] == 10
+    assert page["has_more"] is True
+    assert page["rows"][0]["site_id"] == "S003"
+
+
+def test_run_admin_sql_has_more_uses_capped_total_count():
+    import pandas as pd
+
+    from alarm_app.llm_tools import federated_site
+    from alarm_app.llm_tools.federated_site import run_admin_sql
+
+    frames = {
+        "site_metadata_view": pd.DataFrame(
+            [{"site_id": f"S{i:05d}"} for i in range(federated_site.ADMIN_SQL_MAX_COUNT_ROWS + 1)]
+        ),
+        "site_index_view": pd.DataFrame(columns=["site_id"]),
+    }
+
+    page = run_admin_sql(
+        "SELECT * FROM site_metadata_view ORDER BY site_id",
+        frames,
+        limit=1,
+        offset=federated_site.ADMIN_SQL_MAX_OFFSET - 1,
+    )
+
+    assert page["total"] == federated_site.ADMIN_SQL_MAX_COUNT_ROWS
+    assert page["has_more"] is False
+
+
+def test_run_admin_sql_zero_limit_skips_count_query():
+    import pandas as pd
+
+    from alarm_app.llm_tools.federated_site import run_admin_sql
+
+    frames = {
+        "site_metadata_view": pd.DataFrame([{"site_id": "S1"}]),
+        "site_index_view": pd.DataFrame(columns=["site_id"]),
+    }
+
+    page = run_admin_sql(
+        "SELECT * FROM site_metadata_view ORDER BY site_id",
+        frames,
+        limit=0,
+    )
+
+    assert page.get("error") is None
+    assert page["rows"] == []
+    assert page["returned"] == 0
+    assert page["total"] == 0
+    assert page["has_more"] is False
+
+
+def test_admin_sql_view_frames_collects_bdt_rows_when_empty_page_has_more_true(monkeypatch):
+    from alarm_app.llm_tools import federated_site
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    calls: list[int] = []
+
+    def _bdt(limit: int = 0, offset: int = 0, **kwargs: Any) -> dict[str, Any]:
+        calls.append(offset)
+
+        if offset == 0:
+            return {
+                "bdt_summary": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": 0, "has_more": True, "total": 2},
+                "validation_runs": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+                "rule_results": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+                "photos": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+                "review_events": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+            }
+        if offset == federated_site.ROW_CAP:
+            return {
+                "bdt_summary": {"rows": [{"site_id": "S1"}], "returned": 1, "limit": federated_site.ROW_CAP, "offset": federated_site.ROW_CAP, "has_more": False, "total": 1},
+                "validation_runs": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+                "rule_results": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+                "photos": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+                "review_events": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+            }
+
+        return {
+            "bdt_summary": {"rows": [], "returned": 0, "limit": 0, "offset": offset, "has_more": False, "total": 0},
+            "validation_runs": {"rows": [], "returned": 0, "limit": 0, "offset": offset, "has_more": False, "total": 0},
+            "rule_results": {"rows": [], "returned": 0, "limit": 0, "offset": offset, "has_more": False, "total": 0},
+            "photos": {"rows": [], "returned": 0, "limit": 0, "offset": offset, "has_more": False, "total": 0},
+            "review_events": {"rows": [], "returned": 0, "limit": 0, "offset": offset, "has_more": False, "total": 0},
+        }
+
+    monkeypatch.setattr(service, "list_sites", lambda **_: {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0})
+    monkeypatch.setattr(
+        service,
+        "query_network_summary",
+        lambda **kwargs: {"rows": [], "returned": 0, "limit": kwargs.get("limit", 0), "offset": kwargs.get("offset", 0), "has_more": False, "total": 0},
+    )
+    monkeypatch.setattr(
+        service,
+        "query_alarm_events",
+        lambda **kwargs: {"rows": [], "returned": 0, "limit": kwargs.get("limit", 0), "offset": kwargs.get("offset", 0), "has_more": False, "total": 0},
+    )
+    monkeypatch.setattr(service, "query_bdt_full", _bdt)
+
+    frames = service._admin_sql_view_frames()
+
+    assert frames["bdt_summary_view"].to_dict(orient="records")[0]["site_id"] == "S1"
+    assert federated_site.ROW_CAP in calls
+
+
+def test_admin_sql_view_frames_handles_non_dict_list_sites_payload(monkeypatch):
+    from alarm_app.llm_tools import federated_site
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+
+    monkeypatch.setattr(service, "list_sites", lambda **_: [])
+    monkeypatch.setattr(
+        service,
+        "query_network_summary",
+        lambda **kwargs: {
+            "rows": [],
+            "returned": 0,
+            "limit": kwargs.get("limit", 0),
+            "offset": kwargs.get("offset", 0),
+            "has_more": False,
+            "total": 0,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "query_alarm_events",
+        lambda **kwargs: {
+            "rows": [],
+            "returned": 0,
+            "limit": kwargs.get("limit", 0),
+            "offset": kwargs.get("offset", 0),
+            "has_more": False,
+            "total": 0,
+        },
+    )
+    monkeypatch.setattr(service, "query_bdt_full", lambda limit=0, offset=0, **kwargs: {
+        "bdt_summary": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+        "validation_runs": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+        "rule_results": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+        "photos": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+        "review_events": {"rows": [], "returned": 0, "limit": 0, "offset": 0, "has_more": False, "total": 0},
+    })
+
+    frames = service._admin_sql_view_frames()
+
+    assert list(frames["site_index_view"].columns) == federated_site.ADMIN_SQL_VIEWS["site_index_view"]
+    assert frames["site_metadata_view"].empty
+
+
+def test_admin_sql_view_frames_project_real_service_row_shapes(monkeypatch):
+    from alarm_app.llm_tools import federated_site
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [{
+                "site_id": "0001AL",
+                "site_code": "0001AL",
+                "site_name": "ABUQIR-NODAL Rec 3",
+                "area": "AGLI",
+                "office": "Alex 1",
+                "vip": "V1 ",
+                "subcontractor": "Nokia",
+                "backup_status": "Good ( 1.5 - 3 Hrs)",
+                "has_metadata": True,
+                "has_alarms": True,
+                "alarm_count": 14,
+                "latest_alarm_at": "2026-04-03T08:10:23",
+                "has_bdt_summary": False,
+                "bdt_summary_count": 0,
+                "has_bdt_validation": False,
+                "bdt_validation_count": 0,
+                "has_bdt": False,
+                "latest_bdt_at": None,
+            }],
+            "returned": 1,
+            "limit": kwargs.get("limit", federated_site.ROW_CAP),
+            "offset": kwargs.get("offset", 0),
+            "has_more": False,
+            "total": 1,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "query_network_summary",
+        lambda **kwargs: {
+            "rows": [{
+                "site_id": "0001AL",
+                "code": "0001AL",
+                "site_name": "ABUQIR-NODAL Rec 3",
+                "orange_area": "AGLI",
+                "office": "Alex 1",
+                "vip": "V1 ",
+                "subcontractor": "Nokia",
+                "backup_status": "Good ( 1.5 - 3 Hrs)",
+                "battery_type": "Power Safe 155",
+            }],
+            "returned": 1,
+            "limit": kwargs.get("limit", federated_site.ROW_CAP),
+            "offset": kwargs.get("offset", 0),
+            "has_more": False,
+            "total": 1,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "query_alarm_events",
+        lambda **kwargs: {
+            "rows": [{
+                "site_id": "3493DE",
+                "alarm_name": "BASE STATION EXTERNAL ALARM NOTIFICATION",
+                "alarm_id": 7103,
+                "occurred_on": "2026-03-31T00:00:04",
+                "cleared_on": "2026-03-31T00:00:45",
+                "duration": "00:00:41",
+                "_duration_secs": 41.0,
+                "alarm_category": "Temp",
+                "vendor": "Nokia",
+                "network_type": "4G",
+                "clearance_status": "Cleared",
+                "site_down_flag": "No",
+            }],
+            "returned": 1,
+            "limit": kwargs.get("limit", federated_site.ROW_CAP),
+            "offset": kwargs.get("offset", 0),
+            "has_more": False,
+            "total": 1,
+        },
+    )
+    monkeypatch.setattr(service, "query_bdt_full", lambda **kwargs: {
+        "bdt_summary": {"rows": [{"site_id": "1880CA", "site_name": "U_S_1880CA_I-QNB-HDYKAHRM", "reporting_period": "Huawei BDT Summary_2026", "week": None, "test_date": "2025-04-06"}], "returned": 1, "limit": kwargs.get("limit", 0), "offset": kwargs.get("offset", 0), "has_more": False, "total": 1},
+        "validation_runs": {"rows": [{"site_code": "0704UP", "validation_run_id": 13055, "bdt_test_id": 3547, "test_date": "2024-05-26T00:00:00", "overall_verdict": "Rejected", "run_at": "2026-05-25T12:23:56"}], "returned": 1, "limit": kwargs.get("limit", 0), "offset": kwargs.get("offset", 0), "has_more": False, "total": 1},
+        "rule_results": {"rows": [{"site_code": "0704UP", "validation_run_id": 13055, "rule_id": "R1", "rule_name": "Photos", "verdict": "Accepted", "test_date": "2024-05-26T00:00:00", "created_at": "2026-05-25T12:23:56"}], "returned": 1, "limit": kwargs.get("limit", 0), "offset": kwargs.get("offset", 0), "has_more": False, "total": 1},
+        "photos": {"rows": [{"site_code": "0167DE", "bdt_test_id": 1, "slot_index": 0, "slot_category": "rectifier", "sha256": "abc", "mime_type": "image/jpeg", "file_size": 96409, "width": 0, "height": 0, "created_at": "2026-04-10T22:55:01"}], "returned": 1, "limit": kwargs.get("limit", 0), "offset": kwargs.get("offset", 0), "has_more": False, "total": 1},
+        "review_events": {"rows": [{"site_code": "0704UP", "event_type": "review", "test_date": "2024-05-26T00:00:00", "reviewer": "mikawi", "filename": "01_S_SG-MUHAFZA-NB1_0704UP_0704UP_BDT.XLSX", "verdict": "Rejected", "reviewed_at": "2026-05-25T15:24:14.184033", "created_at": "2026-05-25T12:24:14"}], "returned": 1, "limit": kwargs.get("limit", 0), "offset": kwargs.get("offset", 0), "has_more": False, "total": 1},
+    })
+
+    frames = service._admin_sql_view_frames()
+
+    for view_name, declared_columns in federated_site.ADMIN_SQL_VIEWS.items():
+        assert list(frames[view_name].columns) == declared_columns
+
+    assert "overall_verdict" not in federated_site.ADMIN_SQL_VIEWS["bdt_summary_view"]
+    assert frames["bdt_summary_view"].iloc[0].to_dict()["site_id"] == "1880CA"
+    assert frames["bdt_summary_view"].iloc[0].to_dict()["test_date"] == "2025-04-06"
+    assert frames["site_metadata_view"].iloc[0].to_dict()["site_code"] == "0001AL"
+    assert frames["site_metadata_view"].iloc[0].to_dict()["area"] == "AGLI"
+    assert frames["site_metadata_view"].iloc[0].to_dict()["battery_status"] == "Power Safe 155"
+    assert frames["alarm_events_view"].iloc[0].to_dict()["duration_secs"] == 41.0
+    assert frames["alarm_events_view"].iloc[0].to_dict()["category"] == "Temp"
+    assert frames["alarm_events_view"].iloc[0].to_dict()["site_down"] == "No"
+    assert frames["bdt_validation_runs_view"].iloc[0].to_dict()["site_id"] == "0704UP"
+    assert frames["bdt_rule_results_view"].iloc[0].to_dict()["site_id"] == "0704UP"
+    assert frames["photo_metadata_view"].iloc[0].to_dict()["site_id"] == "0167DE"
+    assert frames["review_events_view"].iloc[0].to_dict()["site_id"] == "0704UP"
+
+
+def test_query_admin_readonly_sql_validates_before_collecting_real_frames(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+
+    def _should_not_collect() -> dict[str, Any]:
+        raise AssertionError("invalid SQL should be rejected before collecting real source frames")
+
+    monkeypatch.setattr(service, "_admin_sql_view_frames", _should_not_collect)
+
+    result = service.query_admin_readonly_sql(sql="DELETE FROM site_metadata_view")
+
+    assert "error" in result
+    assert result["returned"] == 0
+
+
+def test_run_admin_sql_rejects_nested_list_map_like_cell_values():
+    import pandas as pd
+
+    from alarm_app.llm_tools.federated_site import run_admin_sql
+
+    frames = {
+        "site_metadata_view": pd.DataFrame([{"site_id": "S1", "site_code": "S1"}])
+    }
+
+    page = run_admin_sql(
+        "SELECT range(1000000) AS r FROM site_metadata_view LIMIT 1",
+        frames,
+    )
+
+    assert page["error"] is not None
+    assert page["returned"] == 0
+
+
+def test_run_admin_sql_caps_cell_and_column_size():
+    import pandas as pd
+
+    from alarm_app.llm_tools import federated_site
+    from alarm_app.llm_tools.federated_site import run_admin_sql
+
+    long_value = "x" * (federated_site.ADMIN_SQL_MAX_CELL_STRING_LENGTH + 1)
+    frames = {
+        "site_metadata_view": pd.DataFrame([{"site_id": long_value}]),
+        "site_index_view": pd.DataFrame(columns=["site_id"]),
+    }
+
+    assert run_admin_sql("SELECT * FROM site_metadata_view", frames)["error"] is not None
+
+    wide_frame = pd.DataFrame([{str(i): i for i in range(federated_site.ADMIN_SQL_MAX_COLUMNS + 1)}])
+    wide_result = run_admin_sql(
+        "SELECT * FROM site_metadata_view",
+        {"site_metadata_view": wide_frame, "site_index_view": pd.DataFrame(columns=["site_id"])},
+    )
+    assert wide_result["error"] is not None
+
+
+def test_query_admin_readonly_sql_accepts_approved_subquery_source(monkeypatch):
+    import pandas as pd
+
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "_admin_sql_view_frames",
+        lambda: {
+            "site_metadata_view": pd.DataFrame([{"site_id": "S1", "site_name": "Alpha", "vip": "VIP"}]),
+            "alarm_summary_view": pd.DataFrame([]),
+            "alarm_events_view": pd.DataFrame([]),
+            "site_index_view": pd.DataFrame([]),
+            "bdt_summary_view": pd.DataFrame([]),
+            "bdt_validation_runs_view": pd.DataFrame([]),
+            "bdt_rule_results_view": pd.DataFrame([]),
+            "photo_metadata_view": pd.DataFrame([]),
+            "review_events_view": pd.DataFrame([]),
+        },
+    )
+
+    result = service.query_admin_readonly_sql(
+        sql='''
+        SELECT q.site_id FROM (
+            SELECT site_id FROM site_metadata_view
+        ) q
+        '''
+    )
+
+    assert "error" not in result
+    assert result["rows"] == [{"site_id": "S1"}]
+    assert result["returned"] == 1
+
+
+def test_query_admin_readonly_sql_rejects_quoted_raw_table(monkeypatch):
+    import pandas as pd
+
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "_admin_sql_view_frames",
+        lambda: {
+            "site_metadata_view": pd.DataFrame([]),
+            "alarm_events_view": pd.DataFrame([]),
+            "alarm_summary_view": pd.DataFrame([]),
+            "site_index_view": pd.DataFrame([]),
+            "bdt_summary_view": pd.DataFrame([]),
+            "bdt_validation_runs_view": pd.DataFrame([]),
+            "bdt_rule_results_view": pd.DataFrame([]),
+            "photo_metadata_view": pd.DataFrame([]),
+            "review_events_view": pd.DataFrame([]),
+        },
+    )
+
+    result = service.query_admin_readonly_sql(sql='SELECT * FROM "uploaded_files"')
+    assert "error" in result
+
+
+def test_admin_sql_view_frames_uses_bdt_payload_cache(monkeypatch):
+    from alarm_app.llm_tools import federated_site
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    calls: list[int] = []
+
+    def _list_sites(**kwargs):
+        return {
+            "rows": [],
+            "returned": 0,
+            "limit": federated_site.ROW_CAP,
+            "offset": 0,
+            "has_more": False,
+            "total": 0,
+        }
+
+    def _query_network_summary(**kwargs):
+        return _list_sites()
+
+    def _query_alarm_events(**kwargs):
+        return _list_sites()
+
+    def _query_bdt_full(**kwargs):
+        calls.append(int(kwargs.get("offset", 0)))
+        return {
+            "bdt_summary": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": int(kwargs.get("offset", 0)), "has_more": False, "total": 0},
+            "validation_runs": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": int(kwargs.get("offset", 0)), "has_more": False, "total": 0},
+            "bdt_tests": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": int(kwargs.get("offset", 0)), "has_more": False, "total": 0},
+            "rule_results": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": int(kwargs.get("offset", 0)), "has_more": False, "total": 0},
+            "photos": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": int(kwargs.get("offset", 0)), "has_more": False, "total": 0},
+            "review_events": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": int(kwargs.get("offset", 0)), "has_more": False, "total": 0},
+        }
+
+    monkeypatch.setattr(service, "list_sites", _list_sites)
+    monkeypatch.setattr(service, "query_network_summary", _query_network_summary)
+    monkeypatch.setattr(service, "query_alarm_events", _query_alarm_events)
+    monkeypatch.setattr(service, "query_bdt_full", _query_bdt_full)
+
+    service._admin_sql_view_frames()
+
+    assert calls == [0]
+
+
+def test_query_admin_readonly_sql_includes_source_warnings_on_cap_hit(monkeypatch):
+    from alarm_app.llm_tools import federated_site
+    from alarm_app.llm_tools.service import LocalDataService
+
+    monkeypatch.setattr(federated_site, "FEDERATED_MAX_SOURCE_ROWS", 1)
+    service = LocalDataService()
+
+    def _list_sites(**kwargs):
+        return {
+            "rows": [{"site_id": "S1"}, {"site_id": "S2"}],
+            "returned": 2,
+            "limit": federated_site.ROW_CAP,
+            "offset": 0,
+            "has_more": False,
+            "total": 2,
+        }
+
+    monkeypatch.setattr(service, "list_sites", _list_sites)
+    monkeypatch.setattr(service, "query_network_summary", lambda **kwargs: {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": 0, "has_more": False, "total": 0})
+    monkeypatch.setattr(service, "query_alarm_events", lambda **kwargs: {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": 0, "has_more": False, "total": 0})
+    monkeypatch.setattr(service, "query_bdt_full", lambda **kwargs: {
+        "bdt_summary": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": 0, "has_more": False, "total": 0},
+        "validation_runs": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": 0, "has_more": False, "total": 0},
+        "bdt_tests": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": 0, "has_more": False, "total": 0},
+        "rule_results": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": 0, "has_more": False, "total": 0},
+        "photos": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": 0, "has_more": False, "total": 0},
+        "review_events": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": 0, "has_more": False, "total": 0},
+    })
+
+    result = service.query_admin_readonly_sql(sql="SELECT * FROM site_metadata_view")
+    assert "source_warnings" in result
+    assert any("site_index_view" in item for item in result["source_warnings"])
+
+
+def test_admin_sql_view_frames_keeps_bdt_section_offsets_local(monkeypatch):
+    from alarm_app.llm_tools import federated_site
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    seen: list[int] = []
+
+    def _list_sites(**kwargs):
+        return {"rows": [{"site_id": "S1"}], "returned": 1, "limit": federated_site.ROW_CAP, "offset": 0, "has_more": False, "total": 1}
+
+    def _query_network_summary(**kwargs):
+        return {"rows": [{"site_id": "N1"}], "returned": 1, "limit": federated_site.ROW_CAP, "offset": 0, "has_more": False, "total": 1}
+
+    def _query_alarm_events(**kwargs):
+        return {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": 0, "has_more": False, "total": 0}
+
+    def _query_bdt_full(**kwargs):
+        offset = int(kwargs.get("offset", 0))
+        seen.append(offset)
+        run_has_more = offset == 0
+        run_rows = [{"validation_run_id": 1, "site_id": "S1"}] if offset == 0 else []
+        return {
+            "bdt_summary": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": offset, "has_more": False, "total": 1},
+            "validation_runs": {
+                "rows": run_rows,
+                "returned": 1,
+                "limit": federated_site.ROW_CAP,
+                "offset": offset,
+                "has_more": run_has_more,
+                "total": 2,
+            },
+            "bdt_tests": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": offset, "has_more": False, "total": 0},
+            "rule_results": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": offset, "has_more": False, "total": 0},
+            "photos": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": offset, "has_more": False, "total": 0},
+            "review_events": {"rows": [], "returned": 0, "limit": federated_site.ROW_CAP, "offset": offset, "has_more": False, "total": 0},
+        }
+
+    monkeypatch.setattr(service, "list_sites", _list_sites)
+    monkeypatch.setattr(service, "query_network_summary", _query_network_summary)
+    monkeypatch.setattr(service, "query_alarm_events", _query_alarm_events)
+    monkeypatch.setattr(service, "query_bdt_full", _query_bdt_full)
+
+    frames = service._admin_sql_view_frames()
+
+    assert seen == [0, 1]
+    assert len(frames["bdt_summary_view"]) == 0
+    assert len(frames["bdt_validation_runs_view"]) == 1
+
+
+def test_query_admin_readonly_sql_accepts_quoted_approved_view(monkeypatch):
+    import pandas as pd
+
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "_admin_sql_view_frames",
+        lambda: {
+            "site_metadata_view": pd.DataFrame([{"site_id": "S1", "site_name": "Alpha", "site_code": "S1"}]),
+            "alarm_events_view": pd.DataFrame([]),
+            "alarm_summary_view": pd.DataFrame([]),
+            "site_index_view": pd.DataFrame([]),
+            "bdt_summary_view": pd.DataFrame([]),
+            "bdt_validation_runs_view": pd.DataFrame([]),
+            "bdt_rule_results_view": pd.DataFrame([]),
+            "photo_metadata_view": pd.DataFrame([]),
+            "review_events_view": pd.DataFrame([]),
+        },
+    )
+
+    result = service.query_admin_readonly_sql(sql='SELECT site_id FROM "site_metadata_view" LIMIT 1')
+
+    assert "error" not in result
+    assert result["rows"] == [{"site_id": "S1"}]
+
+
+def test_admin_sql_view_frames_collects_beyond_first_page(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+
+    def _list_sites(**kwargs):
+        offset = int(kwargs.get("offset", 0))
+        if offset == 0:
+            return {
+                "rows": [{"site_id": f"S{i:03d}"} for i in range(500)],
+                "returned": 500,
+                "limit": 500,
+                "offset": 0,
+                "has_more": True,
+                "total": 501,
+            }
+        if offset == 500:
+            return {
+                "rows": [{"site_id": "S500"}],
+                "returned": 1,
+                "limit": 500,
+                "offset": 500,
+                "has_more": False,
+                "total": 501,
+            }
+        return {
+            "rows": [],
+            "returned": 0,
+            "limit": 500,
+            "offset": offset,
+            "has_more": False,
+            "total": 501,
+        }
+
+    def _query_network_summary(**kwargs):
+        return {
+            "rows": [{"site_id": "N1"}],
+            "returned": 1,
+            "limit": 500,
+            "offset": 0,
+            "has_more": False,
+            "total": 1,
+        }
+
+    def _query_alarm_events(**kwargs):
+        return {
+            "rows": [{"alarm_id": "A1"}],
+            "returned": 1,
+            "limit": 500,
+            "offset": 0,
+            "has_more": False,
+            "total": 1,
+        }
+
+    def _query_bdt_full(**kwargs):
+        return {
+            "bdt_summary": {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0},
+            "validation_runs": {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0},
+            "bdt_tests": {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0},
+            "rule_results": {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0},
+            "photos": {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0},
+            "review_events": {"rows": [], "has_more": False, "returned": 0, "limit": 500, "offset": 0, "total": 0},
+        }
+
+    monkeypatch.setattr(service, "list_sites", _list_sites)
+    monkeypatch.setattr(service, "query_network_summary", _query_network_summary)
+    monkeypatch.setattr(service, "query_alarm_events", _query_alarm_events)
+    monkeypatch.setattr(service, "query_bdt_full", _query_bdt_full)
+
+    frames = service._admin_sql_view_frames()
+
+    assert len(frames["site_index_view"]) == 501
+    assert len(frames["site_metadata_view"]) == 1
+    assert len(frames["alarm_events_view"]) == 1
+
+
+def test_admin_sql_view_frames_collects_short_pages_without_offset_skips(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    offsets: list[int] = []
+
+    def _list_sites(**kwargs):
+        offset = int(kwargs.get("offset", 0))
+        offsets.append(offset)
+        if offset == 0:
+            return {
+                "rows": [{"site_id": "S000"}, {"site_id": "S001"}],
+                "returned": 2,
+                "limit": 500,
+                "offset": 0,
+                "has_more": True,
+                "total": 3,
+            }
+
+        if offset == 2:
+            return {
+                "rows": [{"site_id": "S002"}],
+                "returned": 1,
+                "limit": 500,
+                "offset": 2,
+                "has_more": False,
+                "total": 3,
+            }
+
+        return {
+            "rows": [],
+            "returned": 0,
+            "limit": 500,
+            "offset": offset,
+            "has_more": False,
+            "total": 3,
+        }
+
+    def _query_network_summary(**kwargs):
+        return {"rows": [{"site_id": "N1"}], "returned": 1, "limit": 500, "offset": 0, "has_more": False, "total": 1}
+
+    def _query_alarm_events(**kwargs):
+        return {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0}
+
+    def _query_bdt_full(**kwargs):
+        return {
+            "bdt_summary": {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0},
+            "validation_runs": {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0},
+            "bdt_tests": {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0},
+            "rule_results": {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0},
+            "photos": {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0},
+            "review_events": {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0},
+        }
+
+    monkeypatch.setattr(service, "list_sites", _list_sites)
+    monkeypatch.setattr(service, "query_network_summary", _query_network_summary)
+    monkeypatch.setattr(service, "query_alarm_events", _query_alarm_events)
+    monkeypatch.setattr(service, "query_bdt_full", _query_bdt_full)
+
+    frames = service._admin_sql_view_frames()
+
+    assert offsets == [0, 2]
+    assert len(frames["site_index_view"]) == 3
+
+
+def test_query_admin_readonly_sql_blocks_mutation_and_raw_tables(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(service, "_admin_sql_view_frames", lambda: {})
+
+    assert "error" in service.query_admin_readonly_sql(sql="DELETE FROM site_metadata_view")
+    assert "error" in service.query_admin_readonly_sql(sql="PRAGMA table_info(site_metadata_view)")
+    assert "error" in service.query_admin_readonly_sql(sql="SELECT * FROM uploaded_files")
+
+
+def test_query_federated_site_data_selects_and_filters_site_fields(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [
+                {"site_id": "S1", "site_code": "S1", "site_name": "Alpha", "vip": "VIP", "office": "Cairo", "alarm_count": 3},
+                {"site_id": "S2", "site_code": "S2", "site_name": "Beta", "vip": "_", "office": "Giza", "alarm_count": 0},
+            ],
+            "returned": 2,
+            "limit": 500,
+            "offset": 0,
+            "has_more": False,
+            "total": 2,
+        },
+    )
+
+    result = service.query_federated_site_data(
+        select=["site_id", "site_name", "vip", "office"],
+        site_filters={"vip": {"not_in": ["_", "", None]}},
+        limit=500,
+    )
+
+    assert result["rows"] == [{"site_id": "S1", "site_name": "Alpha", "vip": "VIP", "office": "Cairo"}]
+    assert result["total"] == 1
+
+
+def test_query_federated_site_data_rejects_unknown_fields():
+    from alarm_app.llm_tools.service import LocalDataService
+
+    result = LocalDataService().query_federated_site_data(select=["site_id", "password_hash"])
+
+    assert "error" in result
+    assert "unsupported field" in result["error"]
+
+
+def test_query_federated_site_data_tool_schema_includes_include_sections():
+    from alarm_app.llm_tools.tools import TOOL_SCHEMAS
+
+    schema = TOOL_SCHEMAS["query_federated_site_data"]["inputSchema"]
+
+    assert "include_sections" in schema["properties"]
+    assert schema["properties"]["include_sections"]["type"] == "array"
+
+
+def test_query_admin_readonly_sql_tool_schema_is_available():
+    from alarm_app.llm_tools.tools import TOOL_SCHEMAS
+
+    schema = TOOL_SCHEMAS["query_admin_readonly_sql"]["inputSchema"]
+
+    assert "sql" in schema["properties"]
+    assert schema["properties"]["sql"]["type"] == "string"
+    assert "limit" in schema["properties"]
+    assert "offset" in schema["properties"]
+
+
+def test_query_federated_site_data_filters_numeric_fields(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [
+                {"site_id": "S1", "alarm_count": 10},
+                {"site_id": "S2", "alarm_count": 1},
+            ],
+            "returned": 2,
+            "limit": 500,
+            "offset": 0,
+            "has_more": False,
+            "total": 2,
+        },
+    )
+
+    result = service.query_federated_site_data(
+        select=["site_id", "alarm_count"],
+        site_filters={"alarm_count": {"gte": 2}},
+    )
+
+    assert result["rows"] == [{"site_id": "S1", "alarm_count": 10}]
+
+
+def test_query_federated_site_data_filters_eq_with_zero_preserved(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [
+                {"site_id": "S1", "alarm_count": 0},
+                {"site_id": "S2", "alarm_count": 1},
+            ],
+            "returned": 2,
+            "limit": 500,
+            "offset": 0,
+            "has_more": False,
+            "total": 2,
+        },
+    )
+
+    result = service.query_federated_site_data(
+        select=["site_id"],
+        site_filters={"alarm_count": {"eq": 0}},
+    )
+
+    assert result["rows"] == [{"site_id": "S1"}]
+
+
+def test_query_federated_site_data_filters_neq_with_zero_preserved(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [
+                {"site_id": "S1", "alarm_count": 0},
+                {"site_id": "S2", "alarm_count": 1},
+            ],
+            "returned": 2,
+            "limit": 500,
+            "offset": 0,
+            "has_more": False,
+            "total": 2,
+        },
+    )
+
+    result = service.query_federated_site_data(
+        select=["site_id"],
+        site_filters={"alarm_count": {"neq": 0}},
+    )
+
+    assert result["rows"] == [{"site_id": "S2"}]
+
+
+def test_query_federated_site_data_filters_contains_zero_does_not_match_everything(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [
+                {"site_id": "S1", "vip": "VIP"},
+                {"site_id": "S2", "vip": ""},
+            ],
+            "returned": 2,
+            "limit": 500,
+            "offset": 0,
+            "has_more": False,
+            "total": 2,
+        },
+    )
+
+    result = service.query_federated_site_data(
+        select=["site_id"],
+        site_filters={"vip": {"contains": 0}},
+    )
+
+    assert result["rows"] == []
+
+
+def test_query_federated_site_data_fetches_beyond_first_page(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    calls: list[int] = []
+
+    def _list_sites(**kwargs):
+        offset = int(kwargs.get("offset", 0))
+        calls.append(offset)
+        if offset == 0:
+            return {
+                "rows": [{"site_id": f"S{i:03d}", "alarm_count": 0} for i in range(500)],
+                "returned": 500,
+                "limit": 500,
+                "offset": 0,
+                "has_more": True,
+                "total": 501,
+            }
+        if offset == 500:
+            return {
+                "rows": [{"site_id": "S500", "alarm_count": 3}],
+                "returned": 1,
+                "limit": 500,
+                "offset": 500,
+                "has_more": False,
+                "total": 501,
+            }
+        return {"rows": [], "returned": 0, "limit": 500, "offset": offset, "has_more": False, "total": 501}
+
+    service = LocalDataService()
+    monkeypatch.setattr(service, "list_sites", _list_sites)
+
+    result = service.query_federated_site_data(select=["site_id"], site_filters={"alarm_count": {"gte": 1}})
+
+    assert calls == [0, 500]
+    assert result["rows"] == [{"site_id": "S500"}]
+    assert result["total"] == 1
+
+
+def test_query_federated_site_data_preserves_missing_selected_fields(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [{"site_id": "S1"}],
+            "returned": 1,
+            "limit": 500,
+            "offset": 0,
+            "has_more": False,
+            "total": 1,
+        },
+    )
+
+    result = service.query_federated_site_data(select=["site_id", "site_name"])
+
+    assert result["rows"] == [{"site_id": "S1", "site_name": None}]
+
+
+def test_query_federated_site_data_propagates_source_errors(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    calls = []
+
+    def _list_sites(**kwargs):
+        offset = int(kwargs.get("offset", 0))
+        calls.append(offset)
+        if offset == 0:
+            return {
+                "rows": [{"site_id": f"S{i:03d}", "has_alarms": True} for i in range(499)],
+                "returned": 1,
+                "limit": 500,
+                "offset": 0,
+                "has_more": True,
+                "total": 2,
+                "source_errors": {"site_metadata": ["missing catalog file"], "alarms": ["missing alarm db"]},
+            }
+        return {
+            "rows": [{"site_id": "S500", "has_alarms": True}],
+            "returned": 1,
+            "limit": 500,
+            "offset": 500,
+            "has_more": False,
+            "total": 2,
+            "error": "partial failure",
+        }
+
+    service = LocalDataService()
+    monkeypatch.setattr(service, "list_sites", _list_sites)
+
+    result = service.query_federated_site_data(select=["site_id"], sources=["alarms"])
+
+    assert calls == [0, 499]
+    assert len(result["rows"]) == 500
+    assert result["rows"][0] == {"site_id": "S000"}
+    assert result["source_errors"] == ["missing catalog file", "missing alarm db", "partial failure"]
+
+
+def test_query_federated_site_data_sources_filter_sites_by_presence(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [
+                {"site_id": "S1", "has_alarms": True},
+                {"site_id": "S2", "has_alarms": False},
+            ],
+            "returned": 2,
+            "limit": 500,
+            "offset": 0,
+            "has_more": False,
+            "total": 2,
+        },
+    )
+
+    result = service.query_federated_site_data(select=["site_id"], sources=["alarms"])
+
+    assert result["rows"] == [{"site_id": "S1"}]
+
+
+def test_query_federated_site_data_filters_in_not_in_case_insensitive(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [
+                {"site_id": "S1", "vip": "VIP"},
+                {"site_id": "S2", "vip": "standard"},
+            ],
+            "returned": 2,
+            "limit": 500,
+            "offset": 0,
+            "has_more": False,
+            "total": 2,
+        },
+    )
+
+    in_result = service.query_federated_site_data(select=["site_id"], site_filters={"vip": {"in": ["vip"]}})
+    not_in_result = service.query_federated_site_data(select=["site_id"], site_filters={"vip": {"not_in": ["vip"]}})
+
+    assert in_result["rows"] == [{"site_id": "S1"}]
+    assert not_in_result["rows"] == [{"site_id": "S2"}]
+
+
+def test_query_federated_site_data_unknown_source_returns_error():
+    from alarm_app.llm_tools.service import LocalDataService
+
+    result = LocalDataService().query_federated_site_data(sources=["not_a_source"])
+
+    assert "error" in result
+    assert "unsupported source" in result["error"]
+
+
+def test_query_federated_site_data_rejects_unknown_filter_operator(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [{"site_id": "S1"}],
+            "returned": 1,
+            "limit": 500,
+            "offset": 0,
+            "has_more": False,
+            "total": 1,
+        },
+    )
+
+    result = service.query_federated_site_data(site_filters={"site_id": {"bogus": "S1"}})
+
+    assert "error" in result
+    assert "unsupported site filter operator" in result["error"]
+
+
+def test_query_federated_site_data_rejects_non_dict_site_filters():
+    from alarm_app.llm_tools.service import LocalDataService
+
+    result = LocalDataService().query_federated_site_data(site_filters=["site_id=1"])
+
+    assert "error" in result
+    assert "site_filters must be an object" in result["error"]
+
+
+def test_query_federated_site_data_rejects_nested_section_inputs(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [{"site_id": "S1"}],
+            "returned": 1,
+            "limit": 500,
+            "offset": 0,
+            "has_more": False,
+            "total": 1,
+        },
+    )
+
+    section_filter_error = service.query_federated_site_data(
+        section_filters={"alarms": {"category": "Power"}},
+    )
+
+    include_sections_error = service.query_federated_site_data(
+        include_sections=["alarm_rows"],
+    )
+
+    assert "error" in section_filter_error
+    assert "nested section" in section_filter_error["error"].lower()
+    assert "error" in include_sections_error
+    assert "nested section" in include_sections_error["error"].lower()
+
+
+def test_get_all_sites_full_context_batches_one_site_context_per_site(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(
+        service,
+        "query_federated_site_data",
+        lambda **kwargs: {
+            "rows": [{"site_id": "S1", "site_code": "S1", "site_name": "Alpha", "vip": "VIP"}],
+            "returned": 1,
+            "limit": kwargs.get("limit", 500),
+            "offset": kwargs.get("offset", 0),
+            "has_more": False,
+            "total": 1,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "get_site_full_context",
+        lambda **kwargs: {"site_id": kwargs["site_id"], "alarm_rows": {"rows": [{"alarm_name": "Power"}], "returned": 1}},
+    )
+
+    result = service.get_all_sites_full_context(site_filters={"vip": {"not_in": ["_", "", None]}}, limit=10, alarm_limit=5)
+
+    assert result["rows"][0]["site_id"] == "S1"
+    assert result["rows"][0]["context"]["alarm_rows"]["returned"] == 1
+    assert result["returned"] == 1
+
+
+def test_get_all_sites_full_context_respects_base_offset_without_double_paging(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+
+    def _query_federated_site_data(**kwargs):
+        assert kwargs["offset"] == 1
+        assert kwargs["limit"] == 1
+        return {
+            "rows": [{"site_id": "S2", "site_code": "S2", "site_name": "Beta", "vip": "VIP"}],
+            "returned": 1,
+            "limit": 1,
+            "offset": 1,
+            "has_more": False,
+            "total": 2,
+        }
+
+    def _get_site_full_context(**kwargs):
+        return {
+            "site_id": kwargs["site_id"],
+            "alarm_rows": {"rows": [], "returned": 0},
+        }
+
+    monkeypatch.setattr(service, "query_federated_site_data", _query_federated_site_data)
+    monkeypatch.setattr(service, "get_site_full_context", _get_site_full_context)
+
+    result = service.get_all_sites_full_context(limit=1, offset=1)
+
+    assert result["rows"] == [{"site_id": "S2", "site_code": "S2", "site_name": "Beta", "vip": "VIP", "context": {"site_id": "S2", "alarm_rows": {"rows": [], "returned": 0}}}]
+    assert result["returned"] == 1
+    assert result["offset"] == 1
+    assert result["limit"] == 1
+    assert result["total"] == 2
+    assert result["has_more"] is False
+
+
+def test_query_federated_site_data_requires_section_filters_when_section_match_mode_is_set():
+    from alarm_app.llm_tools.service import LocalDataService
+
+    result = LocalDataService().query_federated_site_data(section_match_mode="require_matching_sites")
+
+    assert "error" in result
+    assert "requires section_filters" in result["error"]
+
+
+def test_get_all_sites_full_context_requires_section_filters_when_section_match_mode_is_set():
+    from alarm_app.llm_tools.service import LocalDataService
+
+    result = LocalDataService().get_all_sites_full_context(section_match_mode="require_matching_sites")
+
+    assert "error" in result
+    assert "requires section_filters" in result["error"]
+
+
+def test_query_federated_site_data_rejects_nested_select_fields():
+    from alarm_app.llm_tools.service import LocalDataService
+
+    result = LocalDataService().query_federated_site_data(select=["site_id", "alarm_rows"])
+
+    assert "error" in result
+    assert "use get_all_sites_full_context" in result["error"]
+
+
+def test_query_federated_site_data_rejects_section_match_mode_without_section_filters(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    monkeypatch.setattr(service, "list_sites", lambda **kwargs: {"rows": [], "returned": 0, "limit": 500, "offset": 0, "has_more": False, "total": 0})
+
+    result = service.query_federated_site_data(select=["site_id"], section_match_mode="filter_nested_only")
+
+    assert "error" in result
+    assert "requires section_filters" in result["error"]
+
+
+def test_query_federated_site_data_rejects_invalid_section_match_mode_before_filters_check():
+    from alarm_app.llm_tools.service import LocalDataService
+
+    result = LocalDataService().query_federated_site_data(section_match_mode="nonsense")
+
+    assert result == {"error": "unsupported section_match_mode"}
+
+
+def test_get_all_sites_full_context_rejects_invalid_section_match_mode_before_filters_check():
+    from alarm_app.llm_tools.service import LocalDataService
+
+    result = LocalDataService().get_all_sites_full_context(section_match_mode="nonsense")
+
+    assert result["error"] == "unsupported section_match_mode"
+    assert result["rows"] == []
+    assert result["returned"] == 0
+
+
+def test_query_federated_site_data_source_scan_cap_enforced(monkeypatch):
+    import alarm_app.llm_tools.federated_site as federated_site
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    original_cap = federated_site.FEDERATED_MAX_SOURCE_ROWS
+    monkeypatch.setattr(federated_site, "FEDERATED_MAX_SOURCE_ROWS", 1)
+
+    try:
+        monkeypatch.setattr(
+            service,
+            "list_sites",
+            lambda **kwargs: {
+                "rows": [
+                    {"site_id": "S1"},
+                    {"site_id": "S2"},
+                ],
+                "returned": 2,
+                "limit": 500,
+                "offset": kwargs.get("offset", 0),
+                "has_more": True,
+                "total": 2,
+            },
+        )
+
+        result = service.query_federated_site_data(select=["site_id"])
+
+        assert "error" in result
+        assert "hard cap" in result["error"]
+    finally:
+        monkeypatch.setattr(federated_site, "FEDERATED_MAX_SOURCE_ROWS", original_cap)
+
+
+def test_validate_site_filters_rejects_gte_and_lte_with_null():
+    from alarm_app.llm_tools.federated_site import validate_site_filters
+
+    error = validate_site_filters({"alarm_count": {"gte": None}})
+
+    assert error is not None
+    assert "gte" in error
+    assert "non-null" in error
+
+    error = validate_site_filters({"alarm_count": {"lte": None}})
+
+    assert error is not None
+    assert "lte" in error
+    assert "non-null" in error
+
+
+def test_get_all_sites_full_context_propagates_source_errors_and_has_more(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+
+    monkeypatch.setattr(
+        service,
+        "query_federated_site_data",
+        lambda **kwargs: {
+            "rows": [{"site_id": "S1", "site_code": "S1", "site_name": "Alpha"}],
+            "returned": 1,
+            "limit": 10,
+            "offset": 0,
+            "has_more": True,
+            "total": 2,
+            "source_errors": {"site_metadata": ["partial source read"], "alarms": ["partial alarm read"]},
+        },
+    )
+    monkeypatch.setattr(service, "get_site_full_context", lambda **kwargs: {"site_id": kwargs["site_id"]})
+
+    result = service.get_all_sites_full_context(limit=1)
+
+    assert result["has_more"] is True
+    assert result["rows"][0]["site_id"] == "S1"
+    assert result["source_errors"] == {"site_metadata": ["partial source read"], "alarms": ["partial alarm read"]}
+
+
+def test_get_all_sites_full_context_clamps_nested_section_limits(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+    captured: dict[str, Any] = {}
+
+    def _query_federated_site_data(**kwargs):
+        return {
+            "rows": [{"site_id": "S1", "site_code": "S1", "site_name": "Alpha"}],
+            "returned": 1,
+            "limit": 1,
+            "offset": 0,
+            "has_more": False,
+            "total": 1,
+        }
+
+    def _get_site_full_context(**kwargs):
+        nonlocal captured
+        captured = kwargs
+        return {"site_id": kwargs["site_id"]}
+
+    monkeypatch.setattr(service, "query_federated_site_data", _query_federated_site_data)
+    monkeypatch.setattr(service, "get_site_full_context", _get_site_full_context)
+
+    service.get_all_sites_full_context(limit=1, metadata_limit=900, alarm_limit=999, bdt_limit=700)
+
+    assert captured["metadata_limit"] == 500
+    assert captured["alarm_limit"] == 500
+    assert captured["bdt_limit"] == 500
+
+
+def test_get_all_sites_full_context_redacts_local_paths_in_nested_context(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+
+    monkeypatch.setattr(
+        service,
+        "query_federated_site_data",
+        lambda **kwargs: {
+            "rows": [{"site_id": "S1", "site_code": "S1", "site_name": "Alpha"}],
+            "returned": 1,
+            "limit": 1,
+            "offset": 0,
+            "has_more": False,
+            "total": 1,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "get_site_full_context",
+        lambda **kwargs: {
+            "site_id": kwargs["site_id"],
+            "alarm_rows": {"rows": [{"alarm_name": "Power", "local_path": "/Users/me/secret.csv"}], "returned": 1},
+            "local_path": "/Users/me/site-level.csv",
+        },
+    )
+
+    result = service.get_all_sites_full_context(limit=1)
+    context = result["rows"][0]["context"]
+
+    def _contains_local_path(value: Any) -> bool:
+        if isinstance(value, dict):
+            return any(_contains_local_path(v) for v in value.values())
+        if isinstance(value, list):
+            return any(_contains_local_path(item) for item in value)
+        if isinstance(value, str):
+            return "/Users/" in value
+        return False
+
+    assert _contains_local_path(context) is False

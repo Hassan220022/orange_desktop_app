@@ -49,6 +49,7 @@ try:
     )
     from alarm_app.db.repos import blob_repo
     from alarm_app.db.repos.pm_repo import load_all_validation_results
+    from alarm_app.llm_tools import federated_site
 except ImportError:
     from bdt.export import build_bdt_export_sheets
     from core.backup_time import compute_backup_times
@@ -81,6 +82,7 @@ except ImportError:
     )
     from db.repos import blob_repo
     from db.repos.pm_repo import load_all_validation_results
+    from llm_tools import federated_site
 
 MAX_QUERY_LIMIT = 500
 MAX_BLOB_BYTES = 5 * 1024 * 1024
@@ -88,12 +90,14 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 EXPORT_DIR = Path.home() / ".alarm_viewer" / "exports"
 ALLOWED_UPLOAD_SUFFIXES = {".csv", ".xls", ".xlsx"}
 MCP_DEFAULT_PAGE_LIMIT = 500
-MCP_MAX_PAGE_LIMIT = 1000
+MCP_MAX_PAGE_LIMIT = 500
 _FIELD_ALIASES = {
     "site_name": ("site_name", "sitename", "name"),
     "area": ("area", "orange_area", "orangearea"),
     "contractor": ("contractor",),
     "subcontractor": ("subcontractor", "sub_contractor", "subcontractor_name", "contractor"),
+    "office": ("office", "fm_office", "orange_office", "office_name"),
+    "vip": ("vip", "is_vip", "vip_status"),
     "backup_status": ("backup_status", "backupstatus"),
     "battery_status": ("battery_status", "batterystatus"),
 }
@@ -668,6 +672,234 @@ class LocalDataService:
             "utc_time": utc_now.isoformat(timespec="seconds"),
             "timezone": local_now.tzname() or "local",
         }
+
+    def describe_federated_site_data(self, **kwargs) -> dict[str, Any]:
+        return federated_site.describe_federated_site_data()
+
+    def describe_admin_sql_views(self, **kwargs) -> dict[str, Any]:
+        return federated_site.describe_admin_sql_views()
+
+    def _admin_sql_view_frames(self) -> dict[str, pd.DataFrame]:
+        page_size = federated_site.ROW_CAP
+        safety_cap = federated_site.FEDERATED_MAX_SOURCE_ROWS
+        self._admin_sql_source_warnings: list[str] = []
+
+        def _add_warning(message: str) -> None:
+            clean = str(message).strip()
+            if clean and clean not in self._admin_sql_source_warnings:
+                self._admin_sql_source_warnings.append(clean)
+
+        bdt_payload_cache: dict[int, Any] = {}
+
+        def _fetch_bdt_payload(offset: int) -> dict[str, Any]:
+            if offset not in bdt_payload_cache:
+                bdt_payload_cache[offset] = self.query_bdt_full(limit=page_size, offset=offset)
+            cached = bdt_payload_cache[offset]
+            return cached if isinstance(cached, dict) else {}
+
+        def _collect_paged_rows(
+            fetch_page: Any,
+            *,
+            field_name: str,
+            source_name: str,
+        ) -> list[dict[str, Any]]:
+            rows: list[dict[str, Any]] = []
+            offset = 0
+            scanned = 0
+
+            while True:
+                page_payload = fetch_page(limit=page_size, offset=offset)
+                page_rows = page_payload.get(field_name, []) if isinstance(page_payload, dict) else []
+                if not isinstance(page_rows, list):
+                    break
+
+                for row in page_rows:
+                    if scanned >= safety_cap:
+                        break
+                    if isinstance(row, dict):
+                        rows.append(row)
+                    scanned += 1
+
+                if scanned >= safety_cap:
+                    _add_warning(f"{source_name} source reached admin SQL safety cap")
+                    break
+
+                has_more = bool(page_payload.get("has_more")) if isinstance(page_payload, dict) else False
+                if not has_more:
+                    break
+
+                if not page_rows:
+                    break
+
+                offset += len(page_rows)
+
+            return rows
+
+        def _collect_bdt_rows(fetch_page: Any, *, field_name: str) -> list[dict[str, Any]]:
+            rows: list[dict[str, Any]] = []
+            offset = 0
+            scanned = 0
+
+            while True:
+                payload = fetch_page(offset)
+                if not isinstance(payload, dict):
+                    break
+
+                section_payload = payload.get(field_name, {})
+                section_rows = section_payload.get("rows", []) if isinstance(section_payload, dict) else []
+
+                if not isinstance(section_rows, list):
+                    break
+
+                for row in section_rows:
+                    if scanned >= safety_cap:
+                        break
+                    if isinstance(row, dict):
+                        rows.append(row)
+                    scanned += 1
+
+                if scanned >= safety_cap:
+                    _add_warning(f"{field_name} source reached admin SQL safety cap")
+                    break
+
+                section_has_more = bool(section_payload.get("has_more")) if isinstance(section_payload, dict) else False
+                if not section_rows:
+                    if section_has_more:
+                        if offset >= safety_cap:
+                            _add_warning(f"{field_name} source reached admin SQL safety cap")
+                            break
+                        offset += page_size
+                        continue
+                    break
+
+                if not section_has_more:
+                    break
+
+                offset += len(section_rows)
+
+            return rows
+
+        def _first_present(row: dict[str, Any], *keys: str) -> Any:
+            for key in keys:
+                if key in row and row.get(key) is not None:
+                    return row.get(key)
+            return None
+
+        def _project_view_rows(
+            view_name: str,
+            rows: list[dict[str, Any]],
+            aliases: dict[str, tuple[str, ...]] | None = None,
+        ) -> pd.DataFrame:
+            aliases = aliases or {}
+            declared_columns = list(federated_site.ADMIN_SQL_VIEWS[view_name])
+            projected: list[dict[str, Any]] = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                projected.append({
+                    column: _first_present(row, column, *aliases.get(column, ()))
+                    for column in declared_columns
+                })
+            return pd.DataFrame(projected, columns=declared_columns)
+
+        site_index = _collect_paged_rows(self.list_sites, field_name="rows", source_name="site_index_view")
+        network = _collect_paged_rows(self.query_network_summary, field_name="rows", source_name="site_metadata_view")
+        alarms = _collect_paged_rows(self.query_alarm_events, field_name="rows", source_name="alarm_events_view")
+
+        bdt_summary = _collect_bdt_rows(_fetch_bdt_payload, field_name="bdt_summary")
+        bdt_runs = _collect_bdt_rows(_fetch_bdt_payload, field_name="validation_runs")
+        bdt_rules = _collect_bdt_rows(_fetch_bdt_payload, field_name="rule_results")
+        photos = _collect_bdt_rows(_fetch_bdt_payload, field_name="photos")
+        reviews = _collect_bdt_rows(_fetch_bdt_payload, field_name="review_events")
+        return {
+            "site_index_view": _project_view_rows("site_index_view", site_index),
+            "site_metadata_view": _project_view_rows(
+                "site_metadata_view",
+                network,
+                aliases={
+                    "site_code": ("code", "Code", "site_id"),
+                    "area": ("orange_area", "Orange Area", "area_code", "Area Code"),
+                    "contractor": ("contractor", "Contractor"),
+                    "battery_status": ("battery_status", "Battery Status", "battery_type", "Battery Type"),
+                },
+            ),
+            "alarm_events_view": _project_view_rows(
+                "alarm_events_view",
+                alarms,
+                aliases={
+                    "duration_secs": ("_duration_secs",),
+                    "category": ("category", "alarm_category"),
+                    "severity": ("severity",),
+                    "site_down": ("site_down", "site_down_flag"),
+                },
+            ),
+            "alarm_summary_view": _project_view_rows("alarm_summary_view", [
+                {
+                    "site_id": row.get("site_id"),
+                    "alarm_count": row.get("alarm_count"),
+                    "latest_alarm_at": row.get("latest_alarm_at"),
+                }
+                for row in site_index
+                if isinstance(row, dict)
+            ]),
+            "bdt_summary_view": _project_view_rows("bdt_summary_view", bdt_summary),
+            "bdt_validation_runs_view": _project_view_rows(
+                "bdt_validation_runs_view",
+                bdt_runs,
+                aliases={"site_id": ("site_code",)},
+            ),
+            "bdt_rule_results_view": _project_view_rows(
+                "bdt_rule_results_view",
+                bdt_rules,
+                aliases={"site_id": ("site_code",)},
+            ),
+            "photo_metadata_view": _project_view_rows(
+                "photo_metadata_view",
+                photos,
+                aliases={"site_id": ("site_code",)},
+            ),
+            "review_events_view": _project_view_rows(
+                "review_events_view",
+                reviews,
+                aliases={"site_id": ("site_code",)},
+            ),
+        }
+
+    def query_admin_readonly_sql(self, **kwargs) -> dict[str, Any]:
+        sql = str(kwargs.get("sql") or "")
+        limit = _mcp_limit(kwargs.get("limit"))
+        offset = _mcp_offset(kwargs.get("offset"))
+        validation_error = federated_site.validate_admin_sql(sql)
+        if validation_error is not None:
+            return {
+                "rows": [],
+                "returned": 0,
+                "limit": limit,
+                "offset": offset,
+                "has_more": False,
+                "total": 0,
+                "error": _sanitize_mcp_value(validation_error),
+            }
+        frames = self._admin_sql_view_frames()
+        payload = federated_site.run_admin_sql(
+            sql,
+            frames,
+            limit=limit,
+            offset=offset,
+        )
+        run_warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+        source_warnings = getattr(self, "_admin_sql_source_warnings", [])
+        if source_warnings:
+            payload["source_warnings"] = list(source_warnings)
+            run_warnings = [*run_warnings, *payload["source_warnings"]]
+
+        if run_warnings:
+            payload["warnings"] = run_warnings
+        if isinstance(payload.get("rows"), list):
+            payload["rows"] = _sanitize_mcp_records(payload["rows"])
+        if payload.get("error") is not None:
+            payload["error"] = _sanitize_mcp_value(payload["error"])
+        return _jsonable(payload)
 
     def _with_alarm_source(self, fn):
         previous = alarm_store.ALARM_DB_FILE
@@ -2584,6 +2816,13 @@ class LocalDataService:
             "area",
             "orange_area",
             "orangearea",
+            "office",
+            "fm_office",
+            "orange_office",
+            "office_name",
+            "vip",
+            "is_vip",
+            "vip_status",
             "contractor",
             "subcontractor",
             "sub_contractor",
@@ -2622,7 +2861,7 @@ class LocalDataService:
             )
             existing.setdefault("site_id", normalized)
             existing.setdefault("site_code", normalized)
-            for field in ("site_name", "area", "contractor", "subcontractor", "backup_status", "battery_status"):
+            for field in ("site_name", "area", "office", "vip", "contractor", "subcontractor", "backup_status", "battery_status"):
                 value = _metadata_value_for_field(row, raw_rows, field)
                 if value is not None:
                     existing[field] = value
@@ -2937,7 +3176,7 @@ class LocalDataService:
                     bdt_validation_stats.get(site_id, {}).get("latest_validation_run_at"),
                 )),
             }
-            for field in ("site_name", "area", "contractor", "subcontractor", "backup_status", "battery_status"):
+            for field in ("site_name", "area", "office", "vip", "contractor", "subcontractor", "backup_status", "battery_status"):
                 if field in metadata:
                     row[field] = metadata.get(field)
             rows.append(row)
@@ -2956,6 +3195,315 @@ class LocalDataService:
         if source_errors:
             payload["source_errors"] = source_errors
         return payload
+
+    def query_federated_site_data(self, **kwargs) -> dict[str, Any]:
+        select = kwargs.get("select") or federated_site.SITE_FIELDS
+        if not isinstance(select, list):
+            return {"error": "select must be an array of field names"}
+
+        sources = kwargs.get("sources")
+        section_filters = kwargs.get("section_filters")
+        include_sections = kwargs.get("include_sections")
+        section_match_mode = str(kwargs.get("section_match_mode") or "").strip() or None
+
+        if section_match_mode is not None and section_match_mode not in {"filter_nested_only", "require_matching_sites"}:
+            return {"error": "unsupported section_match_mode"}
+
+        if section_match_mode is not None and not section_filters:
+            return {
+                "error": "section_match_mode requires section_filters; use query_federated_site_data without section matching or get_all_sites_full_context for richer context"
+            }
+
+        if section_filters:
+            return {
+                "error": "nested section filtering is not implemented by query_federated_site_data; use get_all_sites_full_context for nested context"
+            }
+
+        if include_sections:
+            return {
+                "error": "nested section including is not implemented by query_federated_site_data; use get_all_sites_full_context for nested context"
+            }
+
+        if sources is not None:
+            if not isinstance(sources, list):
+                return {"error": "sources must be an array"}
+            invalid_sources = [source for source in sources if source not in federated_site.SOURCE_FIELDS]
+            if invalid_sources:
+                return {"error": f"unsupported source(s): {', '.join(map(str, invalid_sources))}"}
+
+        nested_select = [field for field in select if field in federated_site.NESTED_SECTIONS]
+        if nested_select:
+            return {
+                "error": "select cannot include nested section fields in query_federated_site_data; use get_all_sites_full_context for nested results"
+            }
+
+        unsupported = [
+            field
+            for field in select
+            if field not in federated_site.SITE_FIELDS
+        ]
+        if unsupported:
+            return {"error": f"unsupported field(s): {', '.join(map(str, unsupported))}"}
+
+        site_filters = kwargs.get("site_filters")
+        site_filter_error = federated_site.validate_site_filters(site_filters)
+        if site_filter_error is not None:
+            return {"error": site_filter_error}
+
+        limit = _mcp_limit(kwargs.get("limit"))
+        offset = _mcp_offset(kwargs.get("offset"))
+        rows: list[dict[str, Any]] = []
+        source_errors: list[str] = []
+        seen_errors: set[str] = set()
+
+        def _collect_error(err: Any) -> None:
+            if err is None:
+                return
+            if isinstance(err, (list, tuple)):
+                for item in err:
+                    _collect_error(item)
+                return
+            if isinstance(err, dict):
+                for value in err.values():
+                    _collect_error(value)
+                return
+            text = str(_sanitize_mcp_value(err)).strip()
+            if not text:
+                return
+            if text in seen_errors:
+                return
+            seen_errors.add(text)
+            source_errors.append(text)
+
+        page_offset = 0
+        scanned_rows = 0
+        while True:
+            site_payload = self.list_sites(limit=federated_site.ROW_CAP, offset=page_offset)
+            page_rows = site_payload.get("rows", []) if isinstance(site_payload, dict) else []
+
+            if isinstance(site_payload, dict):
+                _collect_error(site_payload.get("source_errors"))
+                _collect_error(site_payload.get("error"))
+
+            if not isinstance(page_rows, list):
+                break
+            if not page_rows:
+                break
+            scanned_rows += len([row for row in page_rows if isinstance(row, dict)])
+            if scanned_rows > federated_site.FEDERATED_MAX_SOURCE_ROWS:
+                return {
+                    "error": f"federated site scan exceeded hard cap of {federated_site.FEDERATED_MAX_SOURCE_ROWS} source rows",
+                    "rows": [],
+                    "returned": 0,
+                    "limit": limit,
+                    "offset": offset,
+                    "has_more": bool(site_payload.get("has_more")) if isinstance(site_payload, dict) else True,
+                    "total": 0,
+                    **({"source_errors": source_errors} if source_errors else {}),
+                }
+
+            rows.extend(row for row in page_rows if isinstance(row, dict))
+            has_more = bool(site_payload.get("has_more")) if isinstance(site_payload, dict) else False
+            page_size = len(page_rows)
+            if not has_more:
+                break
+            if page_size <= 0:
+                break
+            page_offset += page_size
+
+        rows = federated_site.apply_site_filters(
+            rows,
+            site_filters if isinstance(site_filters, dict) else None,
+        )
+
+        if sources:
+            rows = [
+                row for row in rows
+                if all(bool(row.get(federated_site.SOURCE_FIELDS.get(source))) for source in sources)
+            ]
+
+        total = len(rows)
+        page = rows[offset : offset + limit] if limit > 0 else []
+        projected = [federated_site.project_site_fields(row, select) for row in page]
+        return {
+            "rows": _sanitize_mcp_records(projected),
+            "returned": len(projected),
+            "limit": limit,
+            "offset": offset,
+            "has_more": limit > 0 and offset + len(projected) < total,
+            "total": total,
+            **({"source_errors": source_errors} if source_errors else {}),
+        }
+
+    def get_all_sites_full_context(self, **kwargs) -> dict[str, Any]:
+        limit = _mcp_limit(kwargs.get("limit"), default=50)
+        offset = _mcp_offset(kwargs.get("offset"))
+
+        section_filters = kwargs.get("section_filters")
+        section_match_mode = str(kwargs.get("section_match_mode") or "").strip() or None
+
+        if section_match_mode is not None and section_match_mode not in {"filter_nested_only", "require_matching_sites"}:
+            return {
+                "error": "unsupported section_match_mode",
+                "rows": [],
+                "returned": 0,
+                "limit": limit,
+                "offset": offset,
+                "has_more": False,
+                "total": 0,
+            }
+
+        if section_filters:
+            return {
+                "error": "nested section filtering is not implemented by get_all_sites_full_context; use top-level filters instead",
+                "rows": [],
+                "returned": 0,
+                "limit": limit,
+                "offset": offset,
+                "has_more": False,
+                "total": 0,
+            }
+
+        if section_match_mode is not None and not section_filters:
+            return {
+                "error": "section_match_mode requires section_filters",
+                "rows": [],
+                "returned": 0,
+                "limit": limit,
+                "offset": offset,
+                "has_more": False,
+                "total": 0,
+            }
+
+        site_filters = kwargs.get("site_filters")
+        base_payload = self.query_federated_site_data(
+            select=[
+                "site_id",
+                "site_code",
+                "site_name",
+                "area",
+                "office",
+                "vip",
+                "contractor",
+                "subcontractor",
+                "backup_status",
+                "battery_status",
+                "has_metadata",
+                "has_alarms",
+                "alarm_count",
+                "latest_alarm_at",
+                "has_bdt_summary",
+                "bdt_summary_count",
+                "has_bdt_validation",
+                "bdt_validation_count",
+                "has_bdt",
+                "latest_bdt_at",
+            ],
+            site_filters=site_filters,
+            limit=limit,
+            offset=offset,
+        )
+
+        if not isinstance(base_payload, dict):
+            return {
+                "rows": [],
+                "returned": 0,
+                "limit": limit,
+                "offset": offset,
+                "has_more": False,
+                "total": 0,
+                "error": "query_federated_site_data returned invalid payload",
+            }
+
+        base_error = base_payload.get("error")
+        if base_error is not None:
+            payload: dict[str, Any] = {
+                "rows": [],
+                "returned": 0,
+                "limit": limit,
+                "offset": offset,
+                "has_more": False,
+                "total": 0,
+                "error": _sanitize_mcp_value(base_error),
+            }
+            source_errors = base_payload.get("source_errors")
+            if source_errors:
+                payload["source_errors"] = (
+                    _sanitize_source_errors(source_errors)
+                    if isinstance(source_errors, dict)
+                    else [_sanitize_mcp_value(err) for err in source_errors if _sanitize_mcp_value(err)]
+                    if isinstance(source_errors, list)
+                    else source_errors
+                )
+            return payload
+
+        base_rows_raw = base_payload.get("rows")
+        base_rows = base_rows_raw if isinstance(base_rows_raw, list) else []
+        base_total = base_payload.get("total") if isinstance(base_payload.get("total"), int) else len(base_rows)
+
+        metadata_limit = _mcp_limit(kwargs.get("metadata_limit"), default=3)
+        alarm_limit = _mcp_limit(kwargs.get("alarm_limit"), default=5)
+        bdt_limit = _mcp_limit(kwargs.get("bdt_limit"), default=5)
+        metadata_limit = min(metadata_limit, 500)
+        alarm_limit = min(alarm_limit, 500)
+        bdt_limit = min(bdt_limit, 500)
+
+        date_from = str(kwargs.get("date_from") or "").strip() or None
+        date_to = str(kwargs.get("date_to") or "").strip() or None
+        category = str(kwargs.get("category") or "").strip()
+        vendor = str(kwargs.get("vendor") or "").strip()
+        network_type = str(kwargs.get("network_type") or "").strip()
+        reporting_period = str(kwargs.get("reporting_period") or kwargs.get("period") or "").strip() or None
+        week = str(kwargs.get("week") or "").strip() or None
+        overall = str(kwargs.get("overall") or "").strip()
+        rule_id = str(kwargs.get("rule_id") or "").strip().upper()
+        rule_verdict = str(kwargs.get("rule_verdict") or "").strip()
+
+        enriched: list[dict[str, Any]] = []
+        for base_row in base_rows:
+            if not isinstance(base_row, dict):
+                continue
+            site_id = str(base_row.get("site_id") or "").strip()
+            site_code = str(base_row.get("site_code") or site_id).strip()
+
+            context = self.get_site_full_context(
+                site_id=site_id,
+                site_code=site_code,
+                metadata_limit=metadata_limit,
+                alarm_limit=alarm_limit,
+                bdt_limit=bdt_limit,
+                date_from=date_from,
+                date_to=date_to,
+                category=category,
+                vendor=vendor,
+                network_type=network_type,
+                reporting_period=reporting_period,
+                week=week,
+                overall=overall,
+                rule_id=rule_id,
+                rule_verdict=rule_verdict,
+            )
+            enriched.append({**base_row, "context": _jsonable(context)})
+
+        payload = _sanitize_mcp_records(enriched)
+        paged = {
+            "rows": payload,
+            "returned": len(payload),
+            "limit": limit,
+            "offset": offset,
+            "has_more": bool(base_payload.get("has_more")),
+            "total": base_total,
+        }
+        source_errors = base_payload.get("source_errors")
+        if source_errors:
+            paged["source_errors"] = (
+                _sanitize_source_errors(source_errors)
+                if isinstance(source_errors, dict)
+                else [_sanitize_mcp_value(err) for err in source_errors if _sanitize_mcp_value(err)]
+                if isinstance(source_errors, list)
+                else source_errors
+            )
+        return paged
 
     def query_network_summary(self, **kwargs) -> dict[str, Any]:
         site_raw = str(kwargs.get("site_text") or kwargs.get("site_id") or kwargs.get("site_code") or "").strip()
