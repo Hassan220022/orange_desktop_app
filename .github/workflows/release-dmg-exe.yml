@@ -6,8 +6,6 @@ permissions:
 on:
   push:
     branches: [main]
-    paths:
-      - "VERSION"
 
 concurrency:
   group: release-main
@@ -21,16 +19,37 @@ jobs:
       version: ${{ steps.read.outputs.value }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python and uv
         shell: powershell
         run: .\scripts\ci_setup_windows.ps1
 
+      - name: Fetch tags
+        shell: powershell
+        run: |
+          git fetch --tags --force
+
       - name: Read current app version
         id: read
         shell: powershell
         run: |
-          $version = python scripts/print_version.py
+          $version = (python scripts/next_release_version.py).Trim()
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Computed invalid release version: '$version'"
+          }
+
+          $existingTag = git tag --list "v$version"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          if ($existingTag) {
+            throw "Computed release tag v$version already exists"
+          }
           "value=$version" >> $env:GITHUB_OUTPUT
           "Building release for version $version"
 
@@ -150,6 +169,7 @@ jobs:
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: ${{ steps.meta.outputs.name }}
+          target_commitish: ${{ github.sha }}
           body_path: RELEASE_NOTES.md
           files: |
             release-assets/AlarmViewer-Setup.exe
