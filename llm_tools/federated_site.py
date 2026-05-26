@@ -124,7 +124,7 @@ BLOCKED_SQL_PATTERN = re.compile(
     r"INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|ATTACH|DETACH|PRAGMA|COPY|INSTALL|LOAD|CALL|SET|"
     r"VACUUM|EXPORT|IMPORT|"
     r"read_csv|read_parquet|read_json|read_text|read_blob|"
-    r"sqlite_master|sqlite_schema|sqlite_temp_schema|information_schema|duckdb_|glob|sqlite_scan|pg_[A-Za-z0-9_]*|pg_catalog"
+    r"sqlite_master|sqlite_schema|sqlite_temp_schema|information_schema|duckdb_[A-Za-z0-9_]+|glob|sqlite_scan|pg_[A-Za-z0-9_]*|pg_catalog"
     r")\b"
 )
 

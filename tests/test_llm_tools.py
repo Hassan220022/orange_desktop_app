@@ -6611,6 +6611,15 @@ def test_validate_admin_sql_rejects_disallowed_runtime_functions():
     assert validate_admin_sql("SELECT format_bytes(1000000)") is not None
 
 
+def test_validate_admin_sql_rejects_duckdb_catalog_functions():
+    from alarm_app.llm_tools.federated_site import validate_admin_sql
+
+    assert validate_admin_sql("SELECT duckdb_tables() FROM site_metadata_view LIMIT 1") is not None
+    assert validate_admin_sql("SELECT duckdb_columns() FROM site_metadata_view LIMIT 1") is not None
+    assert validate_admin_sql("SELECT duckdb_settings() FROM site_metadata_view LIMIT 1") is not None
+    assert validate_admin_sql("SELECT * FROM site_metadata_view WHERE site_name = 'duckdb_tables'") is None
+
+
 def test_validate_admin_sql_rejects_disallowed_list_constructors():
     from alarm_app.llm_tools.federated_site import validate_admin_sql
 
