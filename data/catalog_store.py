@@ -9,6 +9,11 @@ from typing import Any
 
 import pandas as pd
 
+try:
+    from alarm_app.db.repos import catalog_repo
+except ImportError:
+    from db.repos import catalog_repo
+
 _log = logging.getLogger(__name__)
 
 STATE_DIR = Path.home() / ".alarm_viewer"
@@ -354,6 +359,48 @@ def read_bdt_summary() -> pd.DataFrame:
         return con.execute(f"SELECT * FROM {BDT_SUMMARY_TABLE}").fetchdf()
     finally:
         con.close()
+
+
+def read_bdt_summary_site_ids() -> set[str]:
+    """Return distinct site IDs from BDT summary catalog."""
+    return {
+        _normalize_site_id(site_id)
+        for site_id in catalog_repo.fetch_bdt_summary_site_ids(
+            CATALOG_DB_FILE,
+            BDT_SUMMARY_TABLE,
+        )
+        if _normalize_site_id(site_id)
+    }
+
+
+def read_bdt_summary_site_stats() -> dict[str, dict[str, Any]]:
+    """Return per-site BDT Summary counts and latest test dates."""
+    stats: dict[str, dict[str, Any]] = {}
+    rows = catalog_repo.fetch_bdt_summary_site_dates(
+        CATALOG_DB_FILE,
+        BDT_SUMMARY_TABLE,
+    )
+    for site_id, test_date in rows:
+        normalized = _normalize_site_id(site_id)
+        if not normalized:
+            continue
+        existing = stats.setdefault(
+            normalized,
+            {
+                "bdt_summary_count": 0,
+                "latest_bdt_at": None,
+            },
+        )
+        existing["bdt_summary_count"] += 1
+        if test_date is None:
+            continue
+        latest = pd.to_datetime(test_date, errors="coerce")
+        if pd.isna(latest):
+            continue
+        existing_latest = pd.to_datetime(existing["latest_bdt_at"], errors="coerce")
+        if pd.isna(existing_latest) or existing_latest < latest:
+            existing["latest_bdt_at"] = str(test_date)
+    return stats
 
 
 def query_bdt_summary(

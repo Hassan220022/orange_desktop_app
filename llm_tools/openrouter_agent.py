@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import urllib.error
 import urllib.request
@@ -18,7 +17,12 @@ except ImportError:
     from runtime.env import load_local_env
 
 from .openrouter_models import FREE_MODELS_ROUTER, normalize_free_model_id
-from .service import LocalDataService
+from .service import (
+    _LOCAL_PATH_REDACTED,
+    LocalDataService,
+    _looks_like_local_path,
+    _sanitize_local_paths_in_text,
+)
 from .tools import dispatch_tool, tool_definitions_for_openrouter
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -56,16 +60,15 @@ def _chat_message(role: str, content: str) -> dict[str, Any]:
     }
 
 
-LOCAL_PATH_REDACTION = "[local path redacted]"
-LOCAL_PATH_PATTERN = re.compile(r"(?<![\w:])(?:/(?:Users|private|var|tmp|Volumes|home)/.*|[A-Za-z]:\\.*)")
-PATH_KEYS = {"path", "local_path", "source_file_path"}
+PATH_KEYS = {"path", "local_path", "source_file_path", "source_path", "original_path", "file_path"}
 
 
 def _redact_model_bound_text(value: str) -> str:
     text = str(value)
-    if os.path.isabs(text.strip()):
-        return LOCAL_PATH_REDACTION
-    return LOCAL_PATH_PATTERN.sub(LOCAL_PATH_REDACTION, text)
+    stripped = text.strip()
+    if os.path.isabs(stripped) or _looks_like_local_path(stripped):
+        return _LOCAL_PATH_REDACTED
+    return _sanitize_local_paths_in_text(text)
 
 
 def _model_safe_tool_result(value: Any) -> Any:
@@ -74,7 +77,7 @@ def _model_safe_tool_result(value: Any) -> Any:
         for key, item in value.items():
             key_text = str(key)
             if key_text in PATH_KEYS or key_text.endswith("_path"):
-                redacted[key_text] = LOCAL_PATH_REDACTION if item else item
+                redacted[key_text] = _LOCAL_PATH_REDACTED if item else item
             else:
                 redacted[key_text] = _model_safe_tool_result(item)
         return redacted

@@ -12,6 +12,7 @@ from alarm_app.data.catalog_store import (
     query_bdt_summary,
     query_site_metadata,
     read_bdt_summary,
+    read_bdt_summary_site_stats,
     replace_site_metadata,
     set_catalog_db_file,
 )
@@ -328,3 +329,72 @@ class TestBDTSummaryDuckDB:
     def test_nonexistent_table_safe(self):
         result = query_bdt_summary(site_id="X")
         assert result.empty
+
+
+def test_read_bdt_summary_site_stats_merges_normalized_site_ids():
+    # Normalize and then aggregate rows that differ only by formatting.
+    import pandas as pd
+
+    df = pd.DataFrame(
+        [
+            {
+                "site_id": "AAA-001",
+                "reporting_period": "W01-26",
+                "week": "01",
+                "test_date": "2026-01-01",
+                "test_year": 2026,
+                "content_hash": "s1",
+                "original_headers_json": "{}",
+                "raw_data_json": "{}",
+            },
+            {
+                "site_id": "AAA001",
+                "reporting_period": "W02-26",
+                "week": "02",
+                "test_date": "2026-02-01",
+                "test_year": 2026,
+                "content_hash": "s2",
+                "original_headers_json": "{}",
+                "raw_data_json": "{}",
+            },
+        ]
+    )
+    merge_bdt_summary(df, ["W01-26", "W02-26"])
+
+    stats = read_bdt_summary_site_stats()
+
+    assert stats["AAA001"]["bdt_summary_count"] == 2
+    assert stats["AAA001"]["latest_bdt_at"] == "2026-02-01"
+
+
+def test_read_bdt_summary_site_stats_ignores_invalid_dates_when_picking_latest():
+    df = pd.DataFrame(
+        [
+            {
+                "site_id": "AAA001",
+                "reporting_period": "W01-26",
+                "week": "01",
+                "test_date": "2026-01-15",
+                "test_year": 2026,
+                "content_hash": "valid",
+                "original_headers_json": "{}",
+                "raw_data_json": "{}",
+            },
+            {
+                "site_id": "AAA001",
+                "reporting_period": "W02-26",
+                "week": "02",
+                "test_date": "not-a-date",
+                "test_year": 2026,
+                "content_hash": "invalid",
+                "original_headers_json": "{}",
+                "raw_data_json": "{}",
+            },
+        ]
+    )
+    merge_bdt_summary(df, ["W01-26", "W02-26"])
+
+    stats = read_bdt_summary_site_stats()
+
+    assert stats["AAA001"]["bdt_summary_count"] == 2
+    assert stats["AAA001"]["latest_bdt_at"] == "2026-01-15"

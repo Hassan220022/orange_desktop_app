@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -16,6 +17,64 @@ except ImportError:
     from db.retry import safe_flush
 
 _log = logging.getLogger(__name__)
+
+
+def _quote_duckdb_identifier(identifier: str) -> str:
+    text = str(identifier or "").strip()
+    if not text or any(not (ch.isalnum() or ch == "_") for ch in text):
+        raise ValueError(f"invalid DuckDB identifier: {identifier!r}")
+    return f'"{text}"'
+
+
+def _duckdb_table_exists(con: Any, table_name: str) -> bool:
+    row = con.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_schema = 'main' AND table_name = ?
+        """,
+        [table_name],
+    ).fetchone()
+    return bool(row and row[0])
+
+
+def _connect_duckdb_catalog(db_path: Path, *, read_only: bool = True) -> Any:
+    import duckdb
+
+    path = Path(db_path)
+    if not read_only:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    return duckdb.connect(str(path), read_only=read_only)
+
+
+def fetch_bdt_summary_site_ids(db_path: Path, table_name: str) -> list[Any]:
+    """Fetch distinct BDT summary site IDs from the DuckDB catalog."""
+    path = Path(db_path)
+    if not path.exists():
+        return []
+    con = _connect_duckdb_catalog(path, read_only=True)
+    try:
+        if not _duckdb_table_exists(con, table_name):
+            return []
+        query = "SELECT DISTINCT site_id FROM " + _quote_duckdb_identifier(table_name)
+        return [row[0] for row in con.execute(query).fetchall()]
+    finally:
+        con.close()
+
+
+def fetch_bdt_summary_site_dates(db_path: Path, table_name: str) -> list[tuple[Any, Any]]:
+    """Fetch BDT summary site/date rows from the DuckDB catalog."""
+    path = Path(db_path)
+    if not path.exists():
+        return []
+    con = _connect_duckdb_catalog(path, read_only=True)
+    try:
+        if not _duckdb_table_exists(con, table_name):
+            return []
+        query = "SELECT site_id, test_date FROM " + _quote_duckdb_identifier(table_name)
+        return con.execute(query).fetchall()
+    finally:
+        con.close()
 
 
 # ---------------------------------------------------------------------------
