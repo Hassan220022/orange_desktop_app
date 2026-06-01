@@ -18,11 +18,6 @@ from typing import TYPE_CHECKING, cast
 import pandas as pd
 from openpyxl import load_workbook
 
-try:
-    from alarm_app.bdt.discovery import is_non_raw_bdt_label
-except ImportError:
-    from bdt.discovery import is_non_raw_bdt_label
-
 if TYPE_CHECKING:
     from alarm_app.bdt._workbook import WorkbookEngine
 
@@ -588,13 +583,12 @@ def _resolve_bdt_sheet_name(sheet_names: list[str],
     has_bdt_sheet = any(
         any(variant in s.lower() for variant in _BDT_SHEET_VARIANTS)
         for s in sheet_names
-        if not is_non_raw_bdt_label(str(s))
+        if "summary" not in str(s).strip().lower()
     )
     has_summary = any("summary" in s for s in normalized_sheets)
-    has_non_raw_register = any(is_non_raw_bdt_label(str(s)) for s in sheet_names)
 
-    if not has_bdt_sheet and (has_summary or has_non_raw_register):
-        logger.debug("Non-raw BDT workbook detected (no raw BDT sheet), excluding from parsing")
+    if not has_bdt_sheet and has_summary:
+        logger.debug("Summary-only workbook detected (no BDT sheet), excluding from parsing")
         return None
 
     # Exact canonical names first.
@@ -638,12 +632,12 @@ def _resolve_bdt_sheet_name(sheet_names: list[str],
 
     for name in sheet_names:
         nm = _norm(name)
-        if "bdt" in nm and "sheet" in nm and not _has_summary(name) and not is_non_raw_bdt_label(str(name)):
+        if "bdt" in nm and "sheet" in nm and not _has_summary(name):
             return name
 
     for name in sheet_names:
         nm = _norm(name)
-        if nm.startswith("bdt") and not _has_summary(name) and not is_non_raw_bdt_label(str(name)):
+        if nm.startswith("bdt") and not _has_summary(name):
             return name
 
     # Last resort for BDT files: many real exports use a generic single/first sheet name.

@@ -982,12 +982,6 @@ class TestResolveBdtSheetName:
     def test_bdt_summary_only_resolves_to_none(self):
         assert _resolve_bdt_sheet_name(["BDT Summary"]) is None
 
-    def test_bdt_acceptance_register_resolves_to_none(self):
-        assert _resolve_bdt_sheet_name(
-            ["BDT Acceptance Sheet", "Sheet1", "Stolen - Not installed - Solar"],
-            filename="BDT Acceptance Sheet_2026.xlsx",
-        ) is None
-
     def test_summary_only_resolves_to_none(self):
         assert _resolve_bdt_sheet_name(["Summary"]) is None
 

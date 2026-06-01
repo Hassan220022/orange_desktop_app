@@ -51,7 +51,6 @@ try:
         COL_WIDTHS,
         DISPLAY_COLUMNS,
     )
-    from alarm_app.bdt.discovery import is_raw_bdt_workbook_filename
     from alarm_app.core.classify import classify_by_alarm_id, compute_site_down_flag
     from alarm_app.core.filters import compute_date_mask, parse_manual_days
     from alarm_app.core.temp_alarm import ht_export_week_from_date
@@ -94,7 +93,6 @@ except ImportError:
         COL_WIDTHS,
         DISPLAY_COLUMNS,
     )
-    from bdt.discovery import is_raw_bdt_workbook_filename
     from core.classify import classify_by_alarm_id, compute_site_down_flag
     from core.filters import compute_date_mask, parse_manual_days
     from core.temp_alarm import ht_export_week_from_date
@@ -1795,7 +1793,13 @@ class AlarmViewer(QMainWindow):
         root_dir = os.path.abspath(directory)
         for root, _dirs, files in os.walk(root_dir):
             for filename in sorted(files):
-                if is_raw_bdt_workbook_filename(filename):
+                lower = filename.lower()
+                if (
+                    lower.endswith(".xlsx")
+                    and "bdt" in lower
+                    and not filename.startswith("~$")
+                    and not filename.startswith("._")
+                ):
                     path = os.path.join(root, filename)
                     try:
                         size_kb = os.path.getsize(path) / 1024.0
