@@ -522,19 +522,23 @@ QTextBrowser#chat_transcript {
 }
 QTextEdit#chat_input {
     font-size: 13px;
-    min-height: 74px;
+    min-height: 58px;
     background: {99};
     border: 1px solid {100};
-    border-radius: 10px;
+    border-radius: 8px;
 }
 QFrame#assistant_toolbar, QFrame#assistant_composer {
     background: {101};
     border: 1px solid {102};
-    border-radius: 10px;
+    border-radius: 8px;
+}
+QFrame#assistant_quick_actions {
+    background: transparent;
+    border: none;
 }
 QLabel#assistant_title {
     color: {103};
-    font-size: 18px;
+    font-size: 17px;
     font-weight: 700;
 }
 QLabel#assistant_status {
@@ -543,7 +547,7 @@ QLabel#assistant_status {
     font-weight: 600;
 }
 QComboBox#chat_model {
-    min-height: 28px;
+    min-height: 30px;
     background: {105};
     border: 1px solid {106};
     border-radius: 8px;
@@ -554,11 +558,11 @@ QPushButton#assistant_chip {
     background: {108};
     color: {109};
     border: 1px solid {110};
-    border-radius: 7px;
-    padding: 6px 12px;
-    min-height: 32px;
+    border-radius: 6px;
+    padding: 5px 10px;
+    min-height: 28px;
     min-width: 0px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
 }
 QPushButton#assistant_chip:hover {
@@ -573,7 +577,7 @@ QPushButton#assistant_send {
     background: {115};
     color: {116};
     border: 1px solid {117};
-    border-radius: 10px;
+    border-radius: 8px;
     min-height: 32px;
     font-size: 13px;
     font-weight: 700;
@@ -584,8 +588,8 @@ QPushButton#assistant_send:hover {
 }
 QScrollArea#assistant_history_scroll {
     background: {120};
-    border: 1px solid {121};
-    border-radius: 10px;
+    border: none;
+    border-radius: 0px;
 }
 QWidget#assistant_history_host {
     background: {122};
@@ -597,22 +601,22 @@ QWidget#chat_row {
 QFrame#chat_bubble_user {
     background: {123};
     border: 1px solid {124};
-    border-radius: 10px;
+    border-radius: 8px;
 }
 QFrame#chat_bubble_assistant {
     background: {125};
     border: 1px solid {126};
-    border-radius: 10px;
+    border-radius: 8px;
 }
 QFrame#chat_bubble_system {
     background: {127};
     border: 1px solid {128};
-    border-radius: 10px;
+    border-radius: 8px;
 }
 QFrame#chat_bubble_error {
     background: {129};
     border: 1px solid {130};
-    border-radius: 10px;
+    border-radius: 8px;
 }
 QLabel#chat_meta_user {
     color: {131};
@@ -1826,19 +1830,23 @@ QTextBrowser#chat_transcript {
 }
 QTextEdit#chat_input {
     font-size: 13px;
-    min-height: 74px;
+    min-height: 58px;
     background: {99};
     border: 1px solid {100};
-    border-radius: 10px;
+    border-radius: 8px;
 }
 QFrame#assistant_toolbar, QFrame#assistant_composer {
     background: {101};
     border: 1px solid {102};
-    border-radius: 10px;
+    border-radius: 8px;
+}
+QFrame#assistant_quick_actions {
+    background: transparent;
+    border: none;
 }
 QLabel#assistant_title {
     color: {103};
-    font-size: 18px;
+    font-size: 17px;
     font-weight: 700;
 }
 QLabel#assistant_status {
@@ -1847,7 +1855,7 @@ QLabel#assistant_status {
     font-weight: 600;
 }
 QComboBox#chat_model {
-    min-height: 28px;
+    min-height: 30px;
     background: {105};
     border: 1px solid {106};
     border-radius: 8px;
@@ -1858,11 +1866,11 @@ QPushButton#assistant_chip {
     background: {108};
     color: {109};
     border: 1px solid {110};
-    border-radius: 7px;
-    padding: 6px 12px;
-    min-height: 32px;
+    border-radius: 6px;
+    padding: 5px 10px;
+    min-height: 28px;
     min-width: 0px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
 }
 QPushButton#assistant_chip:hover {
@@ -1877,7 +1885,7 @@ QPushButton#assistant_send {
     background: {115};
     color: {116};
     border: 1px solid {117};
-    border-radius: 10px;
+    border-radius: 8px;
     min-height: 32px;
     font-size: 13px;
     font-weight: 700;
@@ -1888,8 +1896,8 @@ QPushButton#assistant_send:hover {
 }
 QScrollArea#assistant_history_scroll {
     background: {120};
-    border: 1px solid {121};
-    border-radius: 10px;
+    border: none;
+    border-radius: 0px;
 }
 QWidget#assistant_history_host {
     background: {122};
@@ -1901,22 +1909,22 @@ QWidget#chat_row {
 QFrame#chat_bubble_user {
     background: {123};
     border: 1px solid {124};
-    border-radius: 10px;
+    border-radius: 8px;
 }
 QFrame#chat_bubble_assistant {
     background: {125};
     border: 1px solid {126};
-    border-radius: 10px;
+    border-radius: 8px;
 }
 QFrame#chat_bubble_system {
     background: {127};
     border: 1px solid {128};
-    border-radius: 10px;
+    border-radius: 8px;
 }
 QFrame#chat_bubble_error {
     background: {129};
     border: 1px solid {130};
-    border-radius: 10px;
+    border-radius: 8px;
 }
 QLabel#chat_meta_user {
     color: {131};

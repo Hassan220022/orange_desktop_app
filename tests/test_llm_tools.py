@@ -17,6 +17,7 @@ from alarm_app.llm_tools.openrouter_agent import (
     OpenRouterAgent,
     OpenRouterToolSupportError,
     _chat_message,
+    default_llm_response_log_path,
     _model_safe_tool_result,
 )
 from alarm_app.llm_tools.openrouter_models import (
@@ -3066,6 +3067,70 @@ def test_openrouter_agent_executes_tool_call_then_returns_final_answer():
     agent._complete = lambda messages, tools, model=None: responses.pop(0)
 
     assert agent.ask("what data exists?") == "SQLite exists."
+
+
+def test_openrouter_agent_writes_sanitized_eval_response_log(tmp_path):
+    export_path = tmp_path / "exports" / "report.xlsx"
+    service = SimpleNamespace(
+        export_report=lambda **kwargs: {
+            "path": str(export_path),
+            "rows": [{"local_path": "/Users/me/private-photo.png", "site_code": "AAA001"}],
+        }
+    )
+    log_path = tmp_path / "llm-responses.jsonl"
+    agent = OpenRouterAgent(api_key="test", service=service, response_log_path=log_path)
+    responses = [
+        {
+            "tool_calls": [
+                {
+                    "id": "call_export",
+                    "function": {
+                        "name": "export_report",
+                        "arguments": json.dumps({"report_type": "bdt_results", "format": "xlsx"}),
+                    },
+                }
+            ],
+            "content": None,
+        },
+        {"content": f"Export ready at {export_path}"},
+    ]
+    agent._complete = lambda messages, tools, model=None: responses.pop(0)
+    events: list[dict[str, Any]] = []
+
+    assert agent.ask("export /Users/me/input.xlsx", on_tool_event=events.append) == f"Export ready at {export_path}"
+
+    record = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert record["event"] == "llm_response"
+    assert record["schema_version"] == 1
+    assert record["requested_model"] == agent.model
+    assert record["response_model"] == agent.model
+    assert record["fallback_used"] is False
+    assert record["prompt"] == "export [local path redacted]"
+    assert record["response"] == "Export ready at [local path redacted]"
+    assert record["tool_events"][-1]["result"]["path"] == "[local path redacted]"
+    assert record["tool_events"][-1]["result"]["rows"][0]["local_path"] == "[local path redacted]"
+    assert str(export_path) not in json.dumps(record)
+    assert "/Users/me" not in json.dumps(record)
+    assert events[-1]["result"]["path"] == str(export_path)
+
+
+def test_default_llm_response_log_path_uses_app_log_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr("alarm_app.logging_config.LOG_DIR", tmp_path / "logs")
+
+    assert default_llm_response_log_path() == tmp_path / "logs" / "llm_responses.jsonl"
+
+
+def test_openrouter_agent_uses_env_response_log_path(monkeypatch, tmp_path):
+    log_path = tmp_path / "hook-llm.jsonl"
+    monkeypatch.setenv(openrouter_agent_mod.LLM_RESPONSE_LOG_PATH_ENV, str(log_path))
+    agent = OpenRouterAgent(api_key="test", service=SimpleNamespace())
+    agent._complete = lambda messages, tools, model=None: {"content": "hookable answer"}
+
+    assert agent.ask("hello hooks") == "hookable answer"
+
+    record = json.loads(log_path.read_text(encoding="utf-8").strip())
+    assert record["event"] == "llm_response"
+    assert record["response"] == "hookable answer"
 
 
 def test_openrouter_agent_redacts_local_paths_from_model_bound_tool_results(tmp_path):

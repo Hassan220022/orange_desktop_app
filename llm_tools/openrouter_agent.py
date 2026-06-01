@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import logging
 import os
 import sys
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
+from uuid import uuid4
 
 try:
     from alarm_app.runtime.env import load_local_env
@@ -32,6 +36,9 @@ from .tools import dispatch_tool, tool_definitions_for_openrouter
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = DEFAULT_CHAT_MODEL
 TOOL_CAPABLE_FALLBACK_MODEL = DEEPSEEK_V4_PRO_MODEL
+LLM_RESPONSE_LOG_FILENAME = "llm_responses.jsonl"
+LLM_RESPONSE_LOG_PATH_ENV = "ALARM_APP_LLM_RESPONSE_LOG_PATH"
+_log = logging.getLogger(__name__)
 SYSTEM_PROMPT = """You are the Alarm Viewer local data assistant.
 Use tools to answer questions about local alarms, BDT validations, photos, and exports.
 The tools are read-only except export_report, which may create files only in the controlled exports directory.
@@ -65,6 +72,41 @@ def _chat_message(role: str, content: str) -> dict[str, Any]:
 
 
 PATH_KEYS = {"path", "local_path", "source_file_path", "source_path", "original_path", "file_path"}
+
+
+def default_llm_response_log_path() -> Path:
+    try:
+        from alarm_app.logging_config import LOG_DIR
+    except ImportError:
+        from logging_config import LOG_DIR  # type: ignore[no-redef]
+    return Path(LOG_DIR) / LLM_RESPONSE_LOG_FILENAME
+
+
+def _resolve_llm_response_log_path(path: str | os.PathLike[str] | None) -> Path | None:
+    if path is not None:
+        return Path(path).expanduser()
+    env_path = os.environ.get(LLM_RESPONSE_LOG_PATH_ENV, "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+    return None
+
+
+def _safe_log_text(value: object) -> str:
+    return _redact_model_bound_text(str(value or ""))
+
+
+def _text_sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _append_llm_response_log(path: Path, record: dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            json.dump(record, handle, ensure_ascii=False, default=str)
+            handle.write("\n")
+    except OSError as exc:
+        _log.warning("Failed to write LLM response eval log at %s: %s", path, exc)
 
 
 def _redact_model_bound_text(value: str) -> str:
@@ -104,10 +146,12 @@ class OpenRouterAgent:
         model: str = DEFAULT_MODEL,
         service: LocalDataService | None = None,
         upload_allowlist: dict[str, Any] | None = None,
+        response_log_path: str | os.PathLike[str] | None = None,
     ):
         self.api_key = api_key
         self.model = normalize_chat_model_id(model)
         self.service = service or LocalDataService(upload_allowlist=upload_allowlist)
+        self.response_log_path = _resolve_llm_response_log_path(response_log_path)
 
     def ask(
         self,
@@ -133,6 +177,13 @@ class OpenRouterAgent:
 
         active_model = self.model
         retried_tool_model = False
+        run_id = uuid4().hex
+        tool_events: list[dict[str, Any]] = []
+
+        def _emit_tool_event(event: dict[str, Any]) -> None:
+            tool_events.append(_model_safe_tool_result(event))
+            if on_tool_event is not None:
+                on_tool_event(event)
 
         for _ in range(max_tool_rounds):
             try:
@@ -150,7 +201,22 @@ class OpenRouterAgent:
             messages.append(message)
             tool_calls = message.get("tool_calls") or []
             if not tool_calls:
-                return str(message.get("content") or "")
+                answer = str(message.get("content") or "")
+                self._write_response_log(
+                    run_id=run_id,
+                    prompt=prompt,
+                    response=answer,
+                    requested_model=self.model,
+                    response_model=active_model,
+                    fallback_used=retried_tool_model,
+                    history_turns=len(history or []),
+                    summary_present=bool(summary.strip()),
+                    system_context_present=bool(system_context.strip()),
+                    max_tool_rounds=max_tool_rounds,
+                    tool_events=tool_events,
+                    finish_reason="final_answer",
+                )
+                return answer
             for call in tool_calls:
                 function = call.get("function") or {}
                 name = str(function.get("name") or "")
@@ -166,32 +232,86 @@ class OpenRouterAgent:
                 if not args_error and not isinstance(args, dict):
                     args = {}
                     args_error = "arguments must be an object"
-                if on_tool_event is not None:
-                    on_tool_event({
-                        "status": "running",
-                        "tool_call_id": call.get("id"),
-                        "name": name,
-                        "args": args,
-                    })
+                _emit_tool_event({
+                    "status": "running",
+                    "tool_call_id": call.get("id"),
+                    "name": name,
+                    "args": args,
+                })
                 if args_error:
                     result = {"error": f"invalid arguments for {name}: {args_error}"}
                 else:
                     result = dispatch_tool(self.service, name, args)
-                if on_tool_event is not None:
-                    on_tool_event({
-                        "status": "error" if isinstance(result, dict) and "error" in result else "complete",
-                        "tool_call_id": call.get("id"),
-                        "name": name,
-                        "args": args,
-                        "result": result,
-                    })
+                _emit_tool_event({
+                    "status": "error" if isinstance(result, dict) and "error" in result else "complete",
+                    "tool_call_id": call.get("id"),
+                    "name": name,
+                    "args": args,
+                    "result": result,
+                })
                 messages.append({
                     "role": "tool",
                     "tool_call_id": call.get("id"),
                     "name": name,
                     "content": json.dumps(_model_safe_tool_result(result), default=str, ensure_ascii=False),
                 })
-        return "The agent reached the tool-call limit before producing a final answer."
+        answer = "The agent reached the tool-call limit before producing a final answer."
+        self._write_response_log(
+            run_id=run_id,
+            prompt=prompt,
+            response=answer,
+            requested_model=self.model,
+            response_model=active_model,
+            fallback_used=retried_tool_model,
+            history_turns=len(history or []),
+            summary_present=bool(summary.strip()),
+            system_context_present=bool(system_context.strip()),
+            max_tool_rounds=max_tool_rounds,
+            tool_events=tool_events,
+            finish_reason="tool_limit",
+        )
+        return answer
+
+    def _write_response_log(
+        self,
+        *,
+        run_id: str,
+        prompt: str,
+        response: str,
+        requested_model: str,
+        response_model: str,
+        fallback_used: bool,
+        history_turns: int,
+        summary_present: bool,
+        system_context_present: bool,
+        max_tool_rounds: int,
+        tool_events: list[dict[str, Any]],
+        finish_reason: str,
+    ) -> None:
+        if self.response_log_path is None:
+            return
+        safe_prompt = _safe_log_text(prompt)
+        safe_response = _safe_log_text(response)
+        record = {
+            "event": "llm_response",
+            "schema_version": 1,
+            "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "run_id": run_id,
+            "requested_model": requested_model,
+            "response_model": response_model,
+            "fallback_used": fallback_used,
+            "finish_reason": finish_reason,
+            "prompt": safe_prompt,
+            "prompt_sha256": _text_sha256(safe_prompt),
+            "response": safe_response,
+            "response_sha256": _text_sha256(safe_response),
+            "history_turns": history_turns,
+            "summary_present": summary_present,
+            "system_context_present": system_context_present,
+            "max_tool_rounds": max_tool_rounds,
+            "tool_events": tool_events,
+        }
+        _append_llm_response_log(self.response_log_path, record)
 
     def summarize_history(
         self,

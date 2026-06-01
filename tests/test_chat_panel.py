@@ -1,6 +1,10 @@
+import os
 from types import SimpleNamespace
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 import alarm_app.ui.panels.chat_panel as chat_panel_mod
+from PyQt5.QtWidgets import QApplication, QLabel, QTableWidget
 from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
 from alarm_app.ui.panels.chat_panel import (
     ChatPanel,
@@ -14,6 +18,14 @@ from alarm_app.ui.panels.chat_panel import (
     _set_combo_text,
 )
 
+_qt_app = None
+
+
+def _ensure_qapp():
+    global _qt_app
+    _qt_app = QApplication.instance() or QApplication([])
+    return _qt_app
+
 
 def _qss_block(style: str, selector: str) -> str:
     start = style.index(selector)
@@ -26,7 +38,16 @@ def test_assistant_chip_button_metrics_match_themes():
     dark_block = _qss_block(STYLE_DARK, "QPushButton#assistant_chip")
     light_block = _qss_block(STYLE_LIGHT, "QPushButton#assistant_chip")
 
-    for prop in ("padding: 6px 12px", "min-height: 32px", "font-size: 12px", "border-radius: 7px"):
+    for prop in ("padding: 5px 10px", "min-height: 28px", "font-size: 11px", "border-radius: 6px"):
+        assert prop in dark_block
+        assert prop in light_block
+
+
+def test_assistant_quick_actions_are_transparent_in_both_themes():
+    dark_block = _qss_block(STYLE_DARK, "QFrame#assistant_quick_actions")
+    light_block = _qss_block(STYLE_LIGHT, "QFrame#assistant_quick_actions")
+
+    for prop in ("background: transparent", "border: none"):
         assert prop in dark_block
         assert prop in light_block
 
@@ -69,6 +90,30 @@ def test_parse_markdown_blocks_recognizes_code_fences():
     assert blocks == [("code", "{\"total\": 10}")]
 
 
+def test_chat_request_thread_passes_default_llm_response_log_path(monkeypatch, tmp_path):
+    log_path = tmp_path / "llm_responses.jsonl"
+    captured = {}
+
+    class _Agent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def ask(self, *args, **kwargs):
+            return "answer"
+
+    monkeypatch.setattr(chat_panel_mod, "OpenRouterAgent", _Agent)
+    monkeypatch.setattr(chat_panel_mod, "default_llm_response_log_path", lambda: log_path)
+
+    thread = chat_panel_mod.ChatRequestThread(
+        prompt="hello",
+        model="model-id",
+        api_key="key",
+    )
+    thread.run()
+
+    assert captured["response_log_path"] == log_path
+
+
 def test_normalize_message_text_pretty_prints_json():
     raw = '{"total":10,"power":3}'
     normalized = _normalize_message_text(raw)
@@ -106,6 +151,50 @@ def test_format_tool_value_is_human_readable():
     assert ChatPanel._format_tool_value(2324839) == "2,324,839"
     assert ChatPanel._format_tool_value(12.345) == "12.35"
     assert ChatPanel._format_tool_value(None) == "--"
+    assert ChatPanel._format_tool_value({"rows": [{"site": "4468CA"}], "total": 1}) == "1 row"
+    assert ChatPanel._format_tool_value([{"site": "4468CA"}]) == "1 item"
+
+
+def test_full_context_tool_result_uses_structured_sections_not_raw_json():
+    _ensure_qapp()
+    panel = ChatPanel.__new__(ChatPanel)
+    result = {
+        "site_id": "4468CA",
+        "site_code": "4468CA",
+        "network_summary": {
+            "rows": [{"site_id": "4468CA", "site_name": "DERABOSEFEEN", "backup_status": "Bad"}],
+            "returned": 1,
+            "total": 1,
+        },
+        "alarm_stats": {"total": 15, "power": 11, "down": 1, "door": 3},
+        "alarm_rows": {
+            "rows": [{"site_id": "4468CA", "alarm_name": "Main Power Cut off", "occurred_on": "2026-03-31"}],
+            "returned": 1,
+            "total": 1,
+        },
+        "bdt_summary": {
+            "rows": [{"site_code": "4468CA", "backup_status": "Bad"}],
+            "returned": 1,
+            "total": 1,
+        },
+        "validation_runs": {
+            "rows": [{"validation_run_id": 13061, "bdt_test_id": 3552, "site_code": "4468CA"}],
+            "returned": 1,
+            "total": 1,
+        },
+        "photos": {"rows": [], "returned": 0, "total": 0},
+        "review_events": {"rows": [], "returned": 0, "total": 0},
+    }
+
+    widget = ChatPanel._tool_result_widget(panel, "get_site_full_context", result)
+
+    labels = [label.text() for label in widget.findChildren(QLabel)]
+    assert "Network Summary" in labels
+    assert "Alarm Preview" in labels
+    assert "BDT Summary" in labels
+    assert "Validation Runs" in labels
+    assert not any('"rows"' in text for text in labels)
+    assert len(widget.findChildren(QTableWidget)) >= 3
 
 
 def test_photo_group_summary_counts_categories():

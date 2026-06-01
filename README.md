@@ -562,6 +562,12 @@ The chat agent defaults to `deepseek/deepseek-v4-flash`, pins
 current free OpenRouter models that advertise required features such as tool
 calling.
 
+Desktop chat responses are written as JSONL eval records at
+`~/.alarm_viewer/logs/llm_responses.jsonl`. Each record includes the prompt,
+response, selected/fallback model, finish reason, and sanitized tool events.
+Local filesystem paths are redacted before writing. Direct agent/CLI runs can
+opt in to the same log format by setting `ALARM_APP_LLM_RESPONSE_LOG_PATH`.
+
 ## Contributing
 
 1. Fork the repository

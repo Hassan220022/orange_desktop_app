@@ -41,7 +41,12 @@ from PyQt5.QtWidgets import (
 
 try:
     from alarm_app.constants import DISPLAY_COLUMNS
-    from alarm_app.llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message
+    from alarm_app.llm_tools.openrouter_agent import (
+        DEFAULT_MODEL,
+        OpenRouterAgent,
+        _chat_message,
+        default_llm_response_log_path,
+    )
     from alarm_app.llm_tools.openrouter_models import (
         FALLBACK_MODEL_OPTIONS,
         OpenRouterModelOption,
@@ -52,7 +57,7 @@ try:
     from alarm_app.ui.flow_layout import FlowLayout
 except ImportError:
     from constants import DISPLAY_COLUMNS
-    from llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message
+    from llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message, default_llm_response_log_path
     from llm_tools.openrouter_models import (
         FALLBACK_MODEL_OPTIONS,
         OpenRouterModelOption,
@@ -622,6 +627,7 @@ class ChatRequestThread(QThread):
                 api_key=api_key,
                 model=self.model,
                 upload_allowlist=self.upload_allowlist,
+                response_log_path=default_llm_response_log_path(),
             ).ask(
                 self.prompt,
                 history=self.history,
@@ -774,14 +780,14 @@ class ChatPanel(QWidget):
     def _build(self):
         self.setObjectName("assistant_panel")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(6)
 
         head = QFrame()
         head.setObjectName("assistant_toolbar")
         head_lay = QVBoxLayout(head)
-        head_lay.setContentsMargins(10, 9, 10, 9)
-        head_lay.setSpacing(6)
+        head_lay.setContentsMargins(10, 8, 10, 8)
+        head_lay.setSpacing(7)
 
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
@@ -789,13 +795,15 @@ class ChatPanel(QWidget):
 
         title = QLabel("Copilot")
         title.setObjectName("assistant_title")
-        title_row.addWidget(title, 1)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
 
         self.lbl_status = QLabel(self._api_status_text())
         self.lbl_status.setObjectName("assistant_status")
         self.lbl_status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.lbl_status.setMinimumWidth(0)
-        self.lbl_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.lbl_status.setMaximumWidth(180)
+        self.lbl_status.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         title_row.addWidget(self.lbl_status)
         head_lay.addLayout(title_row)
 
@@ -819,34 +827,37 @@ class ChatPanel(QWidget):
         model_row.addWidget(self.edit_model, 1)
         head_lay.addLayout(model_row)
 
-        tools_grid = QGridLayout()
-        tools_grid.setContentsMargins(0, 0, 0, 0)
-        tools_grid.setHorizontalSpacing(6)
-        tools_grid.setVerticalSpacing(6)
+        quick_actions = QFrame()
+        quick_actions.setObjectName("assistant_quick_actions")
+        actions_flow = FlowLayout(quick_actions, hspacing=6, vspacing=6)
+        actions_flow.setContentsMargins(0, 0, 0, 0)
 
-        self.btn_sources = _make_assistant_button("Data Sources", minimum_width=118)
+        self.btn_sources = _make_assistant_button("Sources")
+        self.btn_sources.setToolTip("List local data sources")
         self.btn_sources.clicked.connect(self.ask_data_sources)
-        tools_grid.addWidget(self.btn_sources, 0, 0)
+        actions_flow.addWidget(self.btn_sources)
 
-        self.btn_alarm_stats = _make_assistant_button("Alarm Stats", minimum_width=118)
+        self.btn_alarm_stats = _make_assistant_button("Stats")
+        self.btn_alarm_stats.setToolTip("Show alarm statistics")
         self.btn_alarm_stats.clicked.connect(self.ask_alarm_stats)
-        tools_grid.addWidget(self.btn_alarm_stats, 0, 1)
+        actions_flow.addWidget(self.btn_alarm_stats)
 
-        self.btn_upload = _make_assistant_button("Upload List", minimum_width=118)
+        self.btn_upload = _make_assistant_button("Upload")
+        self.btn_upload.setToolTip("Upload a VIP, site, or accepted PM list")
         self.btn_upload.clicked.connect(self.upload_list)
-        tools_grid.addWidget(self.btn_upload, 1, 0)
+        actions_flow.addWidget(self.btn_upload)
 
-        self.btn_clear = _make_assistant_button("New Chat", minimum_width=118)
+        self.btn_clear = _make_assistant_button("New")
+        self.btn_clear.setToolTip("Start a new chat")
         self.btn_clear.clicked.connect(self.clear_chat)
-        tools_grid.addWidget(self.btn_clear, 1, 1)
+        actions_flow.addWidget(self.btn_clear)
 
-        self.btn_history = _make_assistant_button("Chat History", minimum_width=118)
+        self.btn_history = _make_assistant_button("History")
+        self.btn_history.setToolTip("Open chat history")
         self.btn_history.clicked.connect(self.show_chat_history)
-        tools_grid.addWidget(self.btn_history, 2, 0, 1, 2)
+        actions_flow.addWidget(self.btn_history)
 
-        tools_grid.setColumnStretch(0, 1)
-        tools_grid.setColumnStretch(1, 1)
-        head_lay.addLayout(tools_grid)
+        head_lay.addWidget(quick_actions)
 
         layout.addWidget(head)
 
@@ -857,8 +868,8 @@ class ChatPanel(QWidget):
         self._history_host = QWidget()
         self._history_host.setObjectName("assistant_history_host")
         self._history_layout = QVBoxLayout(self._history_host)
-        self._history_layout.setContentsMargins(10, 10, 10, 10)
-        self._history_layout.setSpacing(8)
+        self._history_layout.setContentsMargins(8, 8, 8, 8)
+        self._history_layout.setSpacing(7)
         self._history_layout.addStretch(1)
         self._history_scroll.setWidget(self._history_host)
         layout.addWidget(self._history_scroll, 1)
@@ -866,19 +877,19 @@ class ChatPanel(QWidget):
         composer = QFrame()
         composer.setObjectName("assistant_composer")
         composer_lay = QVBoxLayout(composer)
-        composer_lay.setContentsMargins(10, 10, 10, 10)
+        composer_lay.setContentsMargins(8, 8, 8, 8)
         composer_lay.setSpacing(6)
 
         self.input = QTextEdit()
         self.input.setObjectName("chat_input")
         self.input.setPlaceholderText(
-            "Ask about local alarms, BDT, photos, or exports…"
+            "Ask about alarms, BDT, photos, or exports..."
         )
         self.input.setAcceptRichText(False)
-        self.input.setMinimumHeight(40)
-        self.input.setMaximumHeight(160)
+        self.input.setMinimumHeight(54)
+        self.input.setMaximumHeight(132)
         self.input.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.input.document().setDocumentMargin(8)
+        self.input.document().setDocumentMargin(10)
         self.input.installEventFilter(self)
         self.input.textChanged.connect(self._refresh_send_state)
         self.input.textChanged.connect(self._adjust_input_height)
@@ -890,16 +901,17 @@ class ChatPanel(QWidget):
 
         self.btn_send = QPushButton("Send")
         self.btn_send.setObjectName("assistant_send")
-        self.btn_send.setMinimumHeight(36)
+        self.btn_send.setMinimumHeight(32)
+        self.btn_send.setMinimumWidth(72)
         self.btn_send.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.btn_send.clicked.connect(self.send_current_message)
-        actions.addWidget(self.btn_send)
 
         self.lbl_char_count = QLabel("0 / 4000")
         self.lbl_char_count.setObjectName("assistant_status")
-        self.lbl_char_count.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        actions.addStretch(1)
+        self.lbl_char_count.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         actions.addWidget(self.lbl_char_count)
+        actions.addStretch(1)
+        actions.addWidget(self.btn_send)
         composer_lay.addLayout(actions)
 
         layout.addWidget(composer)
@@ -921,15 +933,16 @@ class ChatPanel(QWidget):
         content_height = 0
         for btn in getattr(self, "_adaptive_buttons", []):
             fm = btn.fontMetrics()
-            content_width = max(content_width, fm.horizontalAdvance(btn.text()) + 42)
-            content_height = max(content_height, int(fm.height() * 2.2))
-        content_height = max(content_height, 30)
+            content_width = max(content_width, fm.horizontalAdvance(btn.text()) + 28)
+            content_height = max(content_height, int(fm.height() * 1.9))
+        content_height = max(content_height, 28)
         for btn in getattr(self, "_adaptive_buttons", []):
             if btn is self.btn_send:
                 continue
             btn.setMinimumHeight(content_height)
-        two_column_tools = (content_width * 2) + 48
-        self._recommended_min_width = max(280, min(two_column_tools, 420))
+            btn.setMinimumWidth(min(max(content_width, 64), 118))
+        three_chip_tools = (content_width * 3) + 42
+        self._recommended_min_width = max(300, min(three_chip_tools, 420))
 
     def changeEvent(self, event):
         super().changeEvent(event)
@@ -1479,6 +1492,7 @@ class ChatPanel(QWidget):
             "get_bdt_detail": "BDT Detail",
             "get_photo_metadata": "Photo Metadata",
             "get_site_dossier": "Site Dossier",
+            "get_site_full_context": "Site Full Context",
             "generate_graph": "Generated Graph",
             "read_photo_blob": "Photo Blob",
             "export_report": "Export Report",
@@ -1509,6 +1523,8 @@ class ChatPanel(QWidget):
                 return self._rows_table_widget(rows, source_name=name)
         if name == "get_site_dossier":
             return self._site_dossier_widget(result)
+        if name == "get_site_full_context":
+            return self._site_full_context_widget(result)
         if name == "generate_graph":
             return self._graph_widget(result)
         if name == "export_report":
@@ -1789,6 +1805,75 @@ class ChatPanel(QWidget):
             lay.addWidget(self._rows_table_widget(bdt_rows, max_rows=8, source_name="query_bdt_results"))
         return frame
 
+    def _site_full_context_widget(self, result: dict) -> QWidget:
+        frame = QFrame()
+        frame.setObjectName("tool_detail")
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(7)
+
+        alarm_stats = result.get("alarm_stats") if isinstance(result.get("alarm_stats"), dict) else {}
+        lay.addWidget(self._kv_widget({
+            "site_id": result.get("site_id"),
+            "site_code": result.get("site_code"),
+            "alarm_total": alarm_stats.get("total"),
+            "network_rows": self._paged_total(result.get("network_summary")),
+            "bdt_summary_rows": self._paged_total(result.get("bdt_summary")),
+            "validation_runs": self._paged_total(result.get("validation_runs")),
+            "photos": self._paged_total(result.get("photos")),
+            "reviews": self._paged_total(result.get("review_events")),
+        }))
+
+        network_rows = self._paged_rows(result.get("network_summary"))
+        if network_rows:
+            lay.addWidget(self._make_rich_label("Network Summary", object_name="tool_section"))
+            lay.addWidget(self._rows_table_widget(network_rows, max_rows=3))
+
+        if alarm_stats:
+            lay.addWidget(self._make_rich_label("Alarm Stats", object_name="tool_section"))
+            lay.addWidget(self._stats_widget(alarm_stats))
+
+        alarm_rows = self._paged_rows(result.get("alarm_rows"))
+        if alarm_rows:
+            lay.addWidget(self._make_rich_label("Alarm Preview", object_name="tool_section"))
+            lay.addWidget(self._rows_table_widget(alarm_rows, max_rows=8, source_name="query_alarms"))
+
+        bdt_summary_rows = self._paged_rows(result.get("bdt_summary"))
+        if bdt_summary_rows:
+            lay.addWidget(self._make_rich_label("BDT Summary", object_name="tool_section"))
+            lay.addWidget(self._rows_table_widget(bdt_summary_rows, max_rows=5))
+
+        validation_rows = self._paged_rows(result.get("validation_runs"))
+        if validation_rows:
+            lay.addWidget(self._make_rich_label("Validation Runs", object_name="tool_section"))
+            lay.addWidget(self._rows_table_widget(validation_rows, max_rows=5, source_name="query_bdt_results"))
+
+        return frame
+
+    @staticmethod
+    def _paged_rows(value: object) -> list[dict]:
+        if isinstance(value, dict):
+            rows = value.get("rows")
+        else:
+            rows = value
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
+    @staticmethod
+    def _paged_total(value: object) -> object:
+        if isinstance(value, dict):
+            for key in ("total", "returned"):
+                total = value.get(key)
+                if total not in (None, ""):
+                    return total
+            rows = value.get("rows")
+            if isinstance(rows, list):
+                return len(rows)
+        if isinstance(value, list):
+            return len(value)
+        return None
+
     def _graph_widget(self, result: dict) -> QWidget:
         frame = QFrame()
         frame.setObjectName("tool_detail")
@@ -2053,7 +2138,22 @@ class ChatPanel(QWidget):
         if isinstance(value, int):
             return f"{value:,}"
         if isinstance(value, (dict, list)):
-            return json.dumps(value, ensure_ascii=False)
+            if isinstance(value, dict):
+                rows = value.get("rows")
+                if isinstance(rows, list):
+                    count = value.get("total")
+                    if count in (None, ""):
+                        count = value.get("returned")
+                    if count in (None, ""):
+                        count = len(rows)
+                    noun = "row" if count == 1 else "rows"
+                    return f"{count:,} {noun}" if isinstance(count, int) else f"{count} {noun}"
+                count = len(value)
+                noun = "field" if count == 1 else "fields"
+                return f"{count:,} {noun}"
+            count = len(value)
+            noun = "item" if count == 1 else "items"
+            return f"{count:,} {noun}"
         return str(value)
 
     def _set_busy(self, busy: bool):
@@ -2095,8 +2195,7 @@ class ChatPanel(QWidget):
             self.input.setFixedHeight(target)
 
     def _api_status_text(self) -> str:
-        key_state = "API key ready" if self._viewer.openrouter_api_key() else "API key missing"
-        return f"{key_state} · Model: {self._model}"
+        return "API key ready" if self._viewer.openrouter_api_key() else "API key missing"
 
     def refresh_settings(self):
         self.lbl_status.setText(self._api_status_text())
@@ -2197,9 +2296,10 @@ class ChatPanel(QWidget):
         # using the unwrapped single-line sizeHint.
         max_w = self._message_bubble_width(self.width(), role_key)
         bubble.setMaximumWidth(max_w)
-        # Floor sized to comfortably fit the meta header + action button
-        # ("Copy" chip ≈ 80 px + padding) without horizontal clipping.
-        bubble.setMinimumWidth(180)
+        # Keep assistant output readable for dossier-style answers while user
+        # prompts can stay compact like modern chat apps.
+        min_w = 180 if role_key == "you" else min(max_w, 300)
+        bubble.setMinimumWidth(min_w)
         bubble_sp = QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         bubble_sp.setHeightForWidth(True)
         bubble.setSizePolicy(bubble_sp)
