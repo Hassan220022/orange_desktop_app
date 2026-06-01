@@ -682,6 +682,37 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "error_sheet": {"type": "string"},
         }),
     },
+    "query_battery_backup_insights": {
+        "description": (
+            "Read-only operational battery/backup insights by linking Network Summary metadata with BDT summary, "
+            "BDT tests, validation runs, rules, and photo evidence."
+        ),
+        "inputSchema": _schema({
+            "site_text": {"type": "string", "description": "Site id/text filter."},
+            "site_code": {"type": "string", "description": "Alias for site_text."},
+            "site_id": {"type": "string", "description": "Alias for site_text."},
+            "area": {"type": "string"},
+            "contractor": {"type": "string"},
+            "subcontractor": {"type": "string"},
+            "backup_status": {"type": "string"},
+            "battery_status": {"type": "string"},
+            "has_bdt": {"type": "boolean"},
+            "has_bdt_summary": {"type": "boolean"},
+            "has_bdt_validation": {"type": "boolean"},
+            "date_from": {"type": "string", "description": "Inclusive BDT test date, YYYY-MM-DD."},
+            "date_to": {"type": "string", "description": "Inclusive BDT test date, YYYY-MM-DD."},
+            "reporting_period": {"type": "string", "description": "BDT reporting period."},
+            "period": {"type": "string", "description": "Alias for reporting_period."},
+            "week": {"type": "string"},
+            "overall": {"type": "string", "description": "Filter BDT validation runs by overall verdict."},
+            "min_backup_minutes": {"type": "number", "description": "Minimum measured BDT discharge minutes considered dependable."},
+            "backup_minutes_tolerance": {"type": "number", "description": "Allowed absolute minute difference between Network Summary and BDT measured backup."},
+            **_PAGING_PROPERTIES,
+        }),
+        "outputSchema": _output_schema(_PAGING_OUTPUT | {
+            "source_errors": _OBJECT_OUTPUT,
+        }),
+    },
 }
 
 _WRITE_TOOL_NAMES = {"export_report", "generate_graph", "get_site_dossier"}

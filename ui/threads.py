@@ -450,6 +450,10 @@ class BDTValidationThread(QThread):
             from alarm_app.bdt.validator import validate_bdt
         except ImportError:
             from bdt.validator import validate_bdt
+        try:
+            from alarm_app.core.battery_backup_insights import attach_battery_backup_insight
+        except ImportError:
+            from core.battery_backup_insights import attach_battery_backup_insight
 
         try:
             total = len(self._files)
@@ -503,6 +507,17 @@ class BDTValidationThread(QThread):
                         continue
 
                     result, bdt_data = payload
+                    try:
+                        attach_battery_backup_insight(result, bdt_data)
+                    except Exception as exc:
+                        result.battery_backup_insight = {
+                            "insight_status": "Insight Unavailable",
+                            "severity": "medium",
+                            "insight_flags": ["insight_unavailable"],
+                            "reasons": [str(exc)],
+                            "differences": [],
+                            "critical_markers": [],
+                        }
                     results.append(result)
                     persist_items.append({
                         "bdt_data": bdt_data,
@@ -529,6 +544,33 @@ class BDTValidationThread(QThread):
                         getattr(r1_rule, "verdict", "") if r1_rule else "",
                         overall if overall not in ("Accepted", "") else "",
                     )
+                    insight = getattr(result, "battery_backup_insight", {}) or {}
+                    if isinstance(insight, dict):
+                        network_snapshot = insight.get("network_summary") if isinstance(insight.get("network_summary"), dict) else {}
+                        bdt_snapshot = insight.get("bdt") if isinstance(insight.get("bdt"), dict) else {}
+                        freshness = insight.get("snapshot_freshness") if isinstance(insight.get("snapshot_freshness"), dict) else {}
+                        _log.info(
+                            "BDT battery snapshot: site=%s insight_status=%s severity=%s "
+                            "network_freshness=%s network_date=%s network_battery_type=%s "
+                            "network_backup_status=%s network_backup_minutes=%s network_strings=%s "
+                            "bdt_test_date=%s bdt_battery_brand=%s bdt_strings=%s bdt_batteries=%s "
+                            "bdt_measured_backup_minutes=%s bdt_end_voltage=%s",
+                            getattr(bdt_data, "site_code", "") or "",
+                            insight.get("insight_status", ""),
+                            insight.get("severity", ""),
+                            freshness.get("status", ""),
+                            freshness.get("network_summary_date", ""),
+                            network_snapshot.get("battery_type", ""),
+                            network_snapshot.get("backup_status", ""),
+                            network_snapshot.get("backup_minutes", ""),
+                            network_snapshot.get("no_of_strings", ""),
+                            bdt_snapshot.get("latest_test_date", ""),
+                            bdt_snapshot.get("battery_brand", ""),
+                            bdt_snapshot.get("num_strings", ""),
+                            bdt_snapshot.get("num_batteries", ""),
+                            bdt_snapshot.get("measured_discharge_minutes", ""),
+                            bdt_snapshot.get("end_voltage", ""),
+                        )
 
                     if bdt_data.site_code:
                         key = bdt_data.site_code.strip().upper()

@@ -791,7 +791,10 @@ class BdtDetailPanel(QWidget):
                         self._bdt_history_table.setItem(i, 1, item_prev)
                         self._bdt_history_table.setItem(i, 2, item_curr)
 
-                    if comp.has_critical_change:
+                    if getattr(comp, "upgrade_detected", False):
+                        self._bdt_history_label.setText(
+                            f"<span style='color:#89b4fa;'>{comp.change_status} vs {prev.test_date}</span>")
+                    elif comp.has_critical_change:
                         self._bdt_history_label.setText(
                             f"<span style='color:#f38ba8;'>Equipment change detected vs {prev.test_date}</span>")
                     else:

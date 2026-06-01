@@ -19,8 +19,20 @@ import pandas as pd
 
 try:
     from alarm_app.constants import APP_VERSION, BDT_RULES
+    from alarm_app.core.battery_topology import (
+        battery_topology_from_bdt,
+        build_battery_topology,
+        format_voltage,
+        is_lead_acid_to_lithium_upgrade,
+    )
 except ImportError:
     from constants import APP_VERSION, BDT_RULES
+    from core.battery_topology import (
+        battery_topology_from_bdt,
+        build_battery_topology,
+        format_voltage,
+        is_lead_acid_to_lithium_upgrade,
+    )
 
 HISTORY_DIR = Path.home() / ".alarm_viewer" / "bdt_history"
 PM_RUNS_DIR = HISTORY_DIR / "_pm_runs"
@@ -67,6 +79,8 @@ class BDTComparison:
     current_date: str
     differences: list[str]      # Human-readable change descriptions
     has_critical_change: bool   # True if battery type/count/rectifier changed
+    upgrade_detected: bool = False
+    change_status: str = "No Critical Changes"
 
 
 def _iso_date_str(value) -> str:
@@ -412,21 +426,47 @@ def compare_tests(current_bdt, previous: BDTTestRecord) -> BDTComparison:
                     if isinstance(current_bdt.test_date, (date, datetime))
                     else str(current_bdt.test_date or ""))
 
-    # Critical fields: changes here indicate equipment swap
-    _crit = [
-        ("Battery Brand",
-         str(current_bdt.battery_brand or "").strip().lower(),
-         str(previous.battery_brand or "").strip().lower()),
-        ("Number of Batteries",
-         str(getattr(current_bdt, "num_batteries", None) or ""),
-         str(previous.num_batteries or "")),
+    current_topology = battery_topology_from_bdt(current_bdt)
+    previous_topology = build_battery_topology(
+        brand=previous.battery_brand,
+        battery_ah=previous.battery_ah,
+        battery_voltage=previous.battery_voltage,
+        num_strings=previous.num_strings,
+        num_batteries=previous.num_batteries,
+    )
+    upgrade_detected = is_lead_acid_to_lithium_upgrade(previous_topology, current_topology)
+
+    if upgrade_detected:
+        critical = True
+        differences.append(
+            "Lead-acid to lithium upgrade: "
+            f"{previous.battery_brand or 'previous battery'} -> "
+            f"{getattr(current_bdt, 'battery_brand', '') or 'current battery'} "
+            f"(previous string voltage {format_voltage(previous_topology.string_voltage)}V, "
+            f"current string voltage {format_voltage(current_topology.string_voltage)}V)"
+        )
+
+    # Critical fields: changes here indicate equipment swap. Battery topology
+    # fields are summarized once for lead-acid-to-lithium upgrades instead of
+    # producing noisy raw 12V/48V, 16/3, 4/3 mismatches.
+    _crit = []
+    if not upgrade_detected:
+        _crit.extend([
+            ("Battery Brand",
+             str(current_bdt.battery_brand or "").strip().lower(),
+             str(previous.battery_brand or "").strip().lower()),
+            ("Number of Batteries",
+             str(getattr(current_bdt, "num_batteries", None) or ""),
+             str(previous.num_batteries or "")),
+        ])
+    _crit.extend([
         ("Number of Modules",
          str(getattr(current_bdt, "num_modules", None) or ""),
          str(previous.num_modules or "")),
         ("Rectifier Brand",
          str(getattr(current_bdt, "rectifier_brand", "") or "").strip().lower(),
          str(previous.rectifier_brand or "").strip().lower()),
-    ]
+    ])
 
     for label, curr, prev in _crit:
         if curr and prev and curr != prev:
@@ -434,7 +474,7 @@ def compare_tests(current_bdt, previous: BDTTestRecord) -> BDTComparison:
             critical = True
 
     # Non-critical fields: spec changes
-    _spec = [
+    _spec = [] if upgrade_detected else [
         ("Battery AH", current_bdt.battery_ah, previous.battery_ah),
         ("Battery Voltage", current_bdt.battery_voltage, previous.battery_voltage),
         ("Number of Strings", current_bdt.num_strings, previous.num_strings),
@@ -449,6 +489,12 @@ def compare_tests(current_bdt, previous: BDTTestRecord) -> BDTComparison:
         current_date=current_date,
         differences=differences,
         has_critical_change=critical,
+        upgrade_detected=upgrade_detected,
+        change_status=(
+            "Battery Technology Upgrade Detected"
+            if upgrade_detected
+            else ("Equipment Change Detected" if critical else "No Critical Changes")
+        ),
     )
 
 

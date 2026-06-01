@@ -174,6 +174,22 @@ def test_bdt_row_map_includes_battery_status_field():
     assert row_map["Battery Status"] == "No Battery"
 
 
+def test_bdt_row_map_includes_battery_backup_insight_fields():
+    result = _result("AAA001", "2026-04-19", "Accepted", "a.xlsx")
+    result.battery_backup_insight = {
+        "insight_status": "Battery Exists - BDT Passed",
+        "severity": "low",
+    }
+    panel = _panel_for([result])
+
+    row_map = BdtValidationPanel._row_map_for_result(panel, result)
+
+    assert "Insight Status" in BDT_RESULT_HEADERS
+    assert "Insight Severity" in BDT_RESULT_HEADERS
+    assert row_map["Insight Status"] == "Battery Exists - BDT Passed"
+    assert row_map["Insight Severity"] == "low"
+
+
 def test_copy_bdt_cell_copies_value_and_updates_status(monkeypatch):
     copied = {}
     panel = _panel_for([])
@@ -348,8 +364,12 @@ def test_show_rules_reference_dialog_passes_all_rules(monkeypatch):
     assert calls["tolerances"] is not None
 
     docs = list(iter_rule_docs())
-    assert len(docs) == 12
+    assert len(docs) == 13
     keys = [k for k, _title, _html in docs]
     assert "R1" in keys
     assert "R11" in keys
+    assert "insights" in keys
     assert "settings" in keys
+    insights_html = next(html for key, _title, html in docs if key == "insights")
+    assert "Network Summary / BDT Mismatch" in insights_html
+    assert "Critical Site With Weak Backup" in insights_html

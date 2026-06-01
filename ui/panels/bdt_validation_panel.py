@@ -145,7 +145,7 @@ class BdtValidationPanel(QWidget):
         self.btn_parameters.clicked.connect(self._show_parameters_dialog)
         params_row.addWidget(self.btn_parameters)
 
-        self.btn_rule_guide = QPushButton("Explain Rules")
+        self.btn_rule_guide = QPushButton("Rules & Insights")
         self.btn_rule_guide.setObjectName("btn_dir")
         self._mark_compact(self.btn_rule_guide)
         self.btn_rule_guide.clicked.connect(self._show_rules_reference_dialog)
@@ -638,6 +638,11 @@ class BdtValidationPanel(QWidget):
             "Revise":        QColor("#fab387"),
             "No data":       QColor("#45475a"),
         }
+        insight_colors = {
+            "high": QColor("#f38ba8"),
+            "medium": QColor("#fab387"),
+            "low": QColor("#a6e3a1"),
+        }
 
         for r, res in enumerate(page_results):
             row_map = self._row_map_for_result(res)
@@ -648,6 +653,9 @@ class BdtValidationPanel(QWidget):
                 item.setTextAlignment(Qt.AlignCenter)
                 if col_name == "Verdict" or col_name.startswith("R"):
                     item.setForeground(colors.get(val, QColor("#cdd6f4")))
+                elif col_name in {"Insight Status", "Insight Severity"}:
+                    severity = str(row_map.get("Insight Severity", "") or "").lower()
+                    item.setForeground(insight_colors.get(severity, QColor("#cdd6f4")))
                 self.bdt_table.setItem(r, c, item)
         if blocker is not None:
             del blocker
@@ -681,11 +689,16 @@ class BdtValidationPanel(QWidget):
         cached = self._bdt_row_map_cache.get(cache_key)
         if cached is not None:
             return cached
+        insight = getattr(res, "battery_backup_insight", None) or {}
+        if not isinstance(insight, dict):
+            insight = {}
         row_map = {
             "File": getattr(res, "filename", "") or "--",
             "Site Code": getattr(res, "site_code", "") or "--",
             "Test Date": getattr(res, "test_date", "") or "--",
             "Verdict": getattr(res, "overall", "") or "--",
+            "Insight Status": insight.get("insight_status") or "--",
+            "Insight Severity": insight.get("severity") or "--",
             "Battery Status": bdt_battery_status(getattr(res, "bdt_data", None)),
             "End Rectifier Voltage (V)": self._format_end_rectifier_voltage(
                 getattr(res, "bdt_data", None)),

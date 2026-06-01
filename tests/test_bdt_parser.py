@@ -16,6 +16,7 @@ from alarm_app.bdt.parser import (
     _extract_photo_slots,
     _extract_photo_slots_structural,
     _parse_battery_info,
+    _parse_summary_sheet,
     _parse_test_date,
     _resolve_bdt_sheet_name,
     _safe_float,
@@ -913,6 +914,47 @@ class TestBDTDataDefaults:
         assert slot.category == "other"
 
 
+class TestSummarySheetParsing:
+    def test_matches_multisheet_summary_row_by_site_and_date(self):
+        class _FakeEngine:
+            def sheet_rows(self, sheet_name):
+                return {
+                    "BDT": [["not", "summary"], ["3868DE", "wrong"]],
+                    "Power Alarm": [
+                        ["Site", "Date", "Alarm Name"],
+                        ["3868DE", "2026-01-05", "Power"],
+                    ],
+                    "BDT 2025-2026": [
+                        ["Short Code", "Test Date", "PLD Value", "Rectifier Brand"],
+                        ["1111AA", "2026-01-04", "40", "Wrong"],
+                        ["3868DE", "5-Jan-26", "44", "Delta 3"],
+                    ],
+                }[sheet_name]
+
+        result = _parse_summary_sheet(
+            "/fake/file.xlsx",
+            ["BDT", "Power Alarm", "BDT 2025-2026"],
+            engine=_FakeEngine(),
+            match_site="3868DE",
+            match_date=datetime.datetime(2026, 1, 5),
+            exclude_sheet="BDT",
+        )
+
+        assert result["Short Code"] == "3868DE"
+        assert result["PLD Value"] == "44"
+        assert result["Rectifier Brand"] == "Delta 3"
+
+        iso_result = _parse_summary_sheet(
+            "/fake/file.xlsx",
+            ["BDT", "Power Alarm", "BDT 2025-2026"],
+            engine=_FakeEngine(),
+            match_site="1111AA",
+            match_date=datetime.datetime(2026, 1, 4),
+            exclude_sheet="BDT",
+        )
+        assert iso_result["Short Code"] == "1111AA"
+
+
 class TestResolveBdtSheetName:
     def test_exact_match(self):
         assert _resolve_bdt_sheet_name(["BDT sheet", "Other"]) == "BDT sheet"
@@ -1167,6 +1209,14 @@ class TestNewBDTFields:
             "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
         )
         assert result.pld_value == "44"
+
+    def test_pld_photo_label_is_not_extracted_as_value(self):
+        rows = self._make_rows()
+        rows[27][8] = "PLVD set point"
+        result = self._run_with_calamine(
+            "/fake/test.xlsx", sheet_names=["BDT sheet"], rows=rows,
+        )
+        assert result.pld_value == ""
 
     def test_missing_fields_default_to_none(self):
         """When cells are empty, fields stay at their defaults."""

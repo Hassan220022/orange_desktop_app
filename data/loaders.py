@@ -100,8 +100,12 @@ _SUMMARY_CANONICAL_KEYS = (
     "Test Date",
 )
 _SUMMARY_KEY_ALIASES = {
-    "Short Code": ("Short Code", "Site Code"),
-    "PLVD Value": ("PLVD Value", "PLD Value"),
+    "Short Code": ("Short Code", "Site Code", "Site ID"),
+    "PLVD Value": (
+        "PLVD Value",
+        "PLD Value",
+        "PLVD Value (LLVD For Huawei) adjusted after finishing the test",
+    ),
     "Rectifier Brand": ("Rectifier Brand",),
     "# of Modules": ("# of Modules", "Number of Modules", "No of Modules"),
     "Battery Brand": ("Battery Brand",),
@@ -126,6 +130,7 @@ _SUMMARY_ALIAS_TO_CANONICAL = {
     for canonical, aliases in _SUMMARY_KEY_ALIASES.items()
     for alias in aliases
 }
+_SUMMARY_NAME_HINTS = ("summary", "weekly", "battery update", "acceptance")
 
 
 def _summary_text(value) -> str:
@@ -175,9 +180,27 @@ def _summary_site_key(value) -> str:
     return "".join(ch for ch in _summary_text(value).upper() if ch.isalnum())
 
 
+def _looks_like_summary_workbook_name(name: str) -> bool:
+    normalized = str(name or "").strip().lower().replace("_", " ")
+    return any(hint in normalized for hint in _SUMMARY_NAME_HINTS)
+
+
 def _summary_candidate_files(bdt_files: list[str]) -> list[str]:
     bdt_paths = {os.path.normcase(os.path.abspath(p)) for p in bdt_files}
-    scan_dirs = {os.path.dirname(os.path.abspath(p)) for p in bdt_files}
+    scan_dirs: set[str] = set()
+    for path in bdt_files:
+        directory = os.path.dirname(os.path.abspath(path))
+        scan_dirs.add(directory)
+        if _looks_like_summary_workbook_name(os.path.basename(path)):
+            continue
+        # Auto-discovered BDT files often live in BDT/<year>/ while weekly
+        # summary workbooks sit one or two levels above that folder.
+        for _ in range(2):
+            parent = os.path.dirname(directory)
+            if not parent or parent == directory:
+                break
+            scan_dirs.add(parent)
+            directory = parent
     candidates: set[str] = set()
 
     for directory in scan_dirs:
@@ -192,9 +215,10 @@ def _summary_candidate_files(bdt_files: list[str]) -> list[str]:
             if ext not in _SUMMARY_FILE_EXTS:
                 continue
             full = os.path.abspath(os.path.join(directory, name))
-            if os.path.normcase(full) in bdt_paths:
+            summary_like = _looks_like_summary_workbook_name(name)
+            if os.path.normcase(full) in bdt_paths and not summary_like:
                 continue
-            if "bdt" in name.lower():
+            if "bdt" in name.lower() and not summary_like:
                 continue
             candidates.add(full)
 

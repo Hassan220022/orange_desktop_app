@@ -1,4 +1,4 @@
-"""OpenRouter model catalog helpers for free tool-capable chat models."""
+"""OpenRouter model catalog helpers for tool-capable chat models."""
 
 from __future__ import annotations
 
@@ -10,6 +10,9 @@ from typing import Any
 
 OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 FREE_MODELS_ROUTER = "openrouter/free"
+DEEPSEEK_V4_FLASH_MODEL = "deepseek/deepseek-v4-flash"
+DEEPSEEK_V4_PRO_MODEL = "deepseek/deepseek-v4-pro"
+DEFAULT_CHAT_MODEL = DEEPSEEK_V4_FLASH_MODEL
 
 
 @dataclass(frozen=True)
@@ -25,9 +28,15 @@ class OpenRouterModelOption:
         return f"{self.name} — {self.id}"
 
 
-FALLBACK_FREE_MODELS: tuple[OpenRouterModelOption, ...] = (
+PINNED_MODEL_OPTIONS: tuple[OpenRouterModelOption, ...] = (
+    OpenRouterModelOption(DEEPSEEK_V4_FLASH_MODEL, "DeepSeek: DeepSeek V4 Flash", 1_048_576),
+    OpenRouterModelOption(DEEPSEEK_V4_PRO_MODEL, "DeepSeek: DeepSeek V4 Pro", 1_048_576),
     OpenRouterModelOption(FREE_MODELS_ROUTER, "Free Models Router"),
 )
+PINNED_MODEL_IDS = {option.id for option in PINNED_MODEL_OPTIONS}
+FALLBACK_MODEL_OPTIONS = PINNED_MODEL_OPTIONS
+# Backwards-compatible name for older imports.
+FALLBACK_FREE_MODELS = FALLBACK_MODEL_OPTIONS
 
 
 def is_free_model_id(model_id: str) -> bool:
@@ -35,13 +44,22 @@ def is_free_model_id(model_id: str) -> bool:
     return model == FREE_MODELS_ROUTER or model.endswith(":free")
 
 
-def normalize_free_model_id(model_id: str | None) -> str:
+def is_supported_model_id(model_id: str) -> bool:
     model = str(model_id or "").strip()
-    return model if is_free_model_id(model) else FREE_MODELS_ROUTER
+    return model in PINNED_MODEL_IDS or is_free_model_id(model)
+
+
+def normalize_chat_model_id(model_id: str | None) -> str:
+    model = str(model_id or "").strip()
+    return model if is_supported_model_id(model) else DEFAULT_CHAT_MODEL
+
+
+def normalize_free_model_id(model_id: str | None) -> str:
+    return normalize_chat_model_id(model_id)
 
 
 def fetch_free_tool_models(*, timeout: int = 20) -> list[OpenRouterModelOption]:
-    """Fetch current zero-price OpenRouter models that advertise tool support."""
+    """Fetch pinned defaults plus current zero-price models that advertise tool support."""
     req = urllib.request.Request(
         OPENROUTER_MODELS_URL,
         headers={
@@ -55,13 +73,13 @@ def fetch_free_tool_models(*, timeout: int = 20) -> list[OpenRouterModelOption]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-        return list(FALLBACK_FREE_MODELS)
+        return list(FALLBACK_MODEL_OPTIONS)
 
     rows = payload.get("data") if isinstance(payload, dict) else []
     if not isinstance(rows, list):
-        return list(FALLBACK_FREE_MODELS)
+        return list(FALLBACK_MODEL_OPTIONS)
 
-    options = {FREE_MODELS_ROUTER: FALLBACK_FREE_MODELS[0]}
+    options = {option.id: option for option in FALLBACK_MODEL_OPTIONS}
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -79,7 +97,10 @@ def fetch_free_tool_models(*, timeout: int = 20) -> list[OpenRouterModelOption]:
         )
     return sorted(
         options.values(),
-        key=lambda option: (0 if option.id == FREE_MODELS_ROUTER else 1, option.name.lower()),
+        key=lambda option: (
+            next((idx for idx, pinned in enumerate(PINNED_MODEL_OPTIONS) if pinned.id == option.id), len(PINNED_MODEL_OPTIONS)),
+            option.name.lower(),
+        ),
     )
 
 

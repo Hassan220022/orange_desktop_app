@@ -16,7 +16,11 @@ try:
 except ImportError:
     from runtime.env import load_local_env
 
-from .openrouter_models import FREE_MODELS_ROUTER, normalize_free_model_id
+from .openrouter_models import (
+    DEFAULT_CHAT_MODEL,
+    DEEPSEEK_V4_PRO_MODEL,
+    normalize_chat_model_id,
+)
 from .service import (
     _LOCAL_PATH_REDACTED,
     LocalDataService,
@@ -26,8 +30,8 @@ from .service import (
 from .tools import dispatch_tool, tool_definitions_for_openrouter
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-DEFAULT_MODEL = FREE_MODELS_ROUTER
-TOOL_CAPABLE_FALLBACK_MODEL = FREE_MODELS_ROUTER
+DEFAULT_MODEL = DEFAULT_CHAT_MODEL
+TOOL_CAPABLE_FALLBACK_MODEL = DEEPSEEK_V4_PRO_MODEL
 SYSTEM_PROMPT = """You are the Alarm Viewer local data assistant.
 Use tools to answer questions about local alarms, BDT validations, photos, and exports.
 The tools are read-only except export_report, which may create files only in the controlled exports directory.
@@ -102,7 +106,7 @@ class OpenRouterAgent:
         upload_allowlist: dict[str, Any] | None = None,
     ):
         self.api_key = api_key
-        self.model = normalize_free_model_id(model)
+        self.model = normalize_chat_model_id(model)
         self.service = service or LocalDataService(upload_allowlist=upload_allowlist)
 
     def ask(

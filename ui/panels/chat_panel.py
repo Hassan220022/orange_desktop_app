@@ -43,10 +43,10 @@ try:
     from alarm_app.constants import DISPLAY_COLUMNS
     from alarm_app.llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message
     from alarm_app.llm_tools.openrouter_models import (
-        FALLBACK_FREE_MODELS,
+        FALLBACK_MODEL_OPTIONS,
         OpenRouterModelOption,
         fetch_free_tool_models,
-        normalize_free_model_id,
+        normalize_chat_model_id,
     )
     from alarm_app.llm_tools.service import ALLOWED_UPLOAD_SUFFIXES, MAX_UPLOAD_BYTES, _file_sha256
     from alarm_app.ui.flow_layout import FlowLayout
@@ -54,10 +54,10 @@ except ImportError:
     from constants import DISPLAY_COLUMNS
     from llm_tools.openrouter_agent import DEFAULT_MODEL, OpenRouterAgent, _chat_message
     from llm_tools.openrouter_models import (
-        FALLBACK_FREE_MODELS,
+        FALLBACK_MODEL_OPTIONS,
         OpenRouterModelOption,
         fetch_free_tool_models,
-        normalize_free_model_id,
+        normalize_chat_model_id,
     )
     from llm_tools.service import ALLOWED_UPLOAD_SUFFIXES, MAX_UPLOAD_BYTES, _file_sha256
     from ui.flow_layout import FlowLayout
@@ -814,7 +814,7 @@ class ChatPanel(QWidget):
         self.edit_model.setToolTip("Select the OpenRouter model for chat responses")
         self.edit_model.setMaxVisibleItems(12)
         self.edit_model.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._populate_model_options(list(FALLBACK_FREE_MODELS))
+        self._populate_model_options(list(FALLBACK_MODEL_OPTIONS))
         self.edit_model.currentIndexChanged.connect(self._sync_model)
         model_row.addWidget(self.edit_model, 1)
         head_lay.addLayout(model_row)
@@ -954,11 +954,11 @@ class ChatPanel(QWidget):
         return super().eventFilter(obj, event)
 
     def _sync_model(self):
-        model = normalize_free_model_id(self.edit_model.currentData() or self.edit_model.currentText())
+        model = normalize_chat_model_id(self.edit_model.currentData() or self.edit_model.currentText())
         self.set_model(model)
 
     def set_model(self, model: str):
-        model = normalize_free_model_id(model)
+        model = normalize_chat_model_id(model)
         if model != self._model:
             self._prepare_model_switch(model)
         self._model = model

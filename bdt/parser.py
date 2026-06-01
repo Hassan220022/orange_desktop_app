@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
@@ -126,6 +127,20 @@ def _safe_str(val) -> str:
         return ""
     s = str(val).strip()
     if s.lower() in {"nan", "none", "null", "unknown", "n/a", "na", "-", "--"}:
+        return ""
+    return s
+
+
+def _pld_measurement_text(val) -> str:
+    """Return a PLVD/LVD numeric setting, not the surrounding photo label."""
+    s = _safe_str(val)
+    if not s:
+        return ""
+    match = re.match(r"^\s*([-+]?\d+(?:\.\d+)?)\s*(?:v|vdc)?\s*$", s, re.IGNORECASE)
+    if match:
+        return match.group(1)
+    lowered = s.lower()
+    if "set point" in lowered or "plvd" in lowered or "lvd" in lowered:
         return ""
     return s
 
@@ -674,22 +689,102 @@ def _parse_test_date(cell_val, filename: str) -> datetime | None:
     return None
 
 
-def _parse_summary_sheet(file_path: str,
-                          sheet_names: list[str],
-                          engine: WorkbookEngine | None = None) -> dict[str, str]:
-    """Read row 2 of the Summary sheet into a header->value dict.
+_SUMMARY_SITE_HEADER_KEYS = frozenset(("shortcode", "sitecode", "siteid", "site"))
+_SUMMARY_DATE_HEADER_KEYS = frozenset(("testdate", "date", "dischargedate"))
+_SUMMARY_DETAIL_HEADER_KEYS = frozenset((
+    "plvdvalue",
+    "pldvalue",
+    "rectifierbrand",
+    "numberofmodules",
+    "noofmodules",
+    "batterybrand",
+    "batteryvolt",
+    "batteryvoltage",
+    "noofstring",
+    "noofstrings",
+    "numberofstrings",
+    "noofbatteries",
+    "numberofbatteries",
+    "startvolt",
+    "startvoltage",
+    "startamp",
+    "endvolt",
+    "endvoltage",
+    "endamp",
+    "dischargetimemins",
+    "dischargetimemin",
+))
 
-    If *engine* is provided (a pre-opened WorkbookEngine) reuse it instead
-    of opening the file again.
-    """
-    target = None
-    for name in sheet_names:
-        if str(name).strip().lower() == "summary":
-            target = name
-            break
-    if target is None:
+
+def _summary_header_key(value) -> str:
+    return "".join(ch for ch in _safe_str(value).lower() if ch.isalnum())
+
+
+def _summary_site_key(value) -> str:
+    return "".join(ch for ch in _safe_str(value).upper() if ch.isalnum())
+
+
+def _summary_date_key(value) -> str:
+    if value is None:
+        return ""
+    try:
+        ts = pd.to_datetime(value, errors="coerce", format="%Y-%m-%d")
+        if pd.isna(ts):
+            ts = pd.to_datetime(value, errors="coerce", dayfirst=True)
+        if pd.isna(ts):
+            ts = pd.to_datetime(value, errors="coerce")
+        if pd.isna(ts):
+            return ""
+        return pd.Timestamp(ts).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def _summary_row_dict(headers, values) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for i, hdr in enumerate(headers):
+        hdr_str = _safe_str(hdr)
+        if not hdr_str:
+            continue
+        val = values[i] if i < len(values) else None
+        result[hdr_str] = _safe_str(val) if val is not None else ""
+    return result
+
+
+def _summary_value_by_header(row: dict[str, str], header_keys: frozenset[str]) -> str:
+    for key, value in row.items():
+        if _summary_header_key(key) in header_keys:
+            return value
+    return ""
+
+
+def _matched_summary_row(
+    rows: list[list],
+    *,
+    match_site: str = "",
+    match_date: datetime | None = None,
+) -> dict[str, str]:
+    if len(rows) < 2 or (not match_site and match_date is None):
         return {}
+    headers = rows[0]
+    wanted_site = _summary_site_key(match_site)
+    wanted_date = _summary_date_key(match_date)
+    for values in rows[1:]:
+        row = _summary_row_dict(headers, values)
+        row_site = _summary_site_key(_summary_value_by_header(row, _SUMMARY_SITE_HEADER_KEYS))
+        if wanted_site and row_site != wanted_site:
+            continue
+        row_date = _summary_date_key(_summary_value_by_header(row, _SUMMARY_DATE_HEADER_KEYS))
+        if wanted_date and row_date != wanted_date:
+            continue
+        if not _summary_value_by_header(row, _SUMMARY_DETAIL_HEADER_KEYS):
+            continue
+        if row:
+            return row
+    return {}
 
+
+def _read_summary_sheet_rows(file_path: str, target: str, engine: WorkbookEngine | None) -> list[list] | None:
     rows = None
     if engine is not None:
         try:
@@ -710,27 +805,59 @@ def _parse_summary_sheet(file_path: str,
             owb = load_workbook(file_path, data_only=True)
             ws = owb[target]
             rows = []
-            for row_cells in ws.iter_rows(min_row=1, max_row=min(ws.max_row, 2),
-                                          max_col=ws.max_column):
+            for row_cells in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=ws.max_column):
                 rows.append([c.value for c in row_cells])
             owb.close()
         except Exception:
-            return {}
+            return None
 
-    if not rows or len(rows) < 2:
-        return {}
+    return rows
 
-    headers = rows[0]
-    values = rows[1]
-    result: dict[str, str] = {}
-    for i, hdr in enumerate(headers):
-        hdr_str = _safe_str(hdr)
-        if not hdr_str:
+
+def _parse_summary_sheet(
+    file_path: str,
+    sheet_names: list[str],
+    engine: WorkbookEngine | None = None,
+    *,
+    match_site: str = "",
+    match_date: datetime | None = None,
+    exclude_sheet: str | None = None,
+) -> dict[str, str]:
+    """Return Summary data for a BDT file.
+
+    Prefer a matching row from summary-table sheets, then fall back to the
+    legacy exact ``Summary`` row-2 format.
+    """
+    exact_summary = None
+    for name in sheet_names:
+        if str(name).strip().lower() == "summary":
+            exact_summary = name
+            break
+
+    excluded = str(exclude_sheet or "").strip().lower()
+    candidates: list[str] = []
+    if exact_summary is not None:
+        candidates.append(exact_summary)
+    if match_site or match_date is not None:
+        for name in sheet_names:
+            normalized = str(name).strip().lower()
+            if normalized == excluded:
+                continue
+            if name == exact_summary:
+                continue
+            candidates.append(name)
+
+    fallback: dict[str, str] = {}
+    for target in candidates:
+        rows = _read_summary_sheet_rows(file_path, target, engine)
+        if not rows or len(rows) < 2:
             continue
-        val = values[i] if i < len(values) else None
-        result[hdr_str] = _safe_str(val) if val is not None else ""
-    return result
-
+        matched = _matched_summary_row(rows, match_site=match_site, match_date=match_date)
+        if matched:
+            return matched
+        if target == exact_summary and not fallback:
+            fallback = _summary_row_dict(rows[0], rows[1])
+    return fallback
 
 def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
     """Parse a single BDT Excel file and return structured data.
@@ -1067,7 +1194,7 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
     _batt_raw = _safe_float(cell(r_batt2, c_batt2))
     if _batt_raw is not None and _batt_raw > 0:
         data.num_batteries = int(_batt_raw)
-    data.pld_value = _safe_str(cell(r_pld, c_pld))
+    data.pld_value = _pld_measurement_text(cell(r_pld, c_pld))
     data.power_source = _safe_str(cell(r_psrc, c_psrc))
 
     # Keyword-fallback scanning
@@ -1109,15 +1236,21 @@ def parse_bdt_file(file_path: str, *, skip_photos: bool = False) -> BDTData:
             _r, _c = _find_text_in_row_window(cell, max_col, 20, 35,
                                                needles=("lvd", "disconnect"))
         if _r is not None:
-            data.pld_value = (_safe_str(cell(_r, c_pld))
-                              or _safe_str(cell(_r, _c + 1))
-                              or _safe_str(cell(_r, _c)))
+            data.pld_value = (_pld_measurement_text(cell(_r, c_pld))
+                              or _pld_measurement_text(cell(_r, _c + 1)))
 
     # Summary sheet — reuse the already-opened engine.  After this we no
     # longer need the engine: photo extraction uses its own OOXML/ZIP
     # path.  Close eagerly so an unexpected exception in the photo
     # extraction or trailing logic can't keep the workbook alive.
-    data.summary_data = _parse_summary_sheet(file_path, all_sheet_names, engine=engine)
+    data.summary_data = _parse_summary_sheet(
+        file_path,
+        all_sheet_names,
+        engine=engine,
+        match_site=data.site_code,
+        match_date=data.test_date,
+        exclude_sheet=bdt_sheet_name,
+    )
     engine.close()
 
     # Photo slots

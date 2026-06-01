@@ -1454,7 +1454,7 @@ class BdtValidationIntroDialog(QDialog):
 
 
 class BdtRulesReferenceDialog(QDialog):
-    """Plain-language reference for every BDT validation rule.
+    """Plain-language reference for every BDT validation rule and insight.
 
     Layout: rule list on the left, scrollable HTML body on the right.
     Use Ctrl+F inside the body to search the full reference. All numeric
@@ -1465,7 +1465,7 @@ class BdtRulesReferenceDialog(QDialog):
 
     def __init__(self, *, tolerances, health_pct: int, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("BDT Validation Rules")
+        self.setWindowTitle("BDT Rules & Insights")
         self.setMinimumWidth(880)
         self.setMinimumHeight(680)
         self._theme_mode = _resolved_parent_theme_mode(parent)
@@ -1492,9 +1492,10 @@ class BdtRulesReferenceDialog(QDialog):
         lay.setSpacing(12)
 
         intro = QLabel(
-            "Each BDT file goes through a series of checks. Use the list on "
-            "the left to jump to a rule, or press Ctrl+F inside the panel on "
-            "the right to search the full reference."
+            "Each BDT file goes through validation checks and battery backup "
+            "insights. Use the list on the left to jump to a section, or "
+            "press Ctrl+F inside the panel on the right to search the full "
+            "reference."
         )
         intro.setWordWrap(True)
         intro.setStyleSheet(self._label_style("intro"))

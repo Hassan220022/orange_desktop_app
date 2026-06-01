@@ -152,6 +152,37 @@ class TestCompareTests:
         assert comp.has_critical_change is False
         assert any("Battery Voltage" in d for d in comp.differences)
 
+    def test_lead_acid_to_lithium_upgrade_is_classified_not_raw_mismatch_noise(self):
+        bdt = _FakeBDT(
+            test_date=datetime(2026, 4, 1),
+            battery_brand="Lithium-Huawei",
+            battery_ah=100,
+            battery_voltage=48,
+            num_strings=3,
+            num_batteries=3,
+            num_modules=4,
+            rectifier_brand="Huawei",
+        )
+        prev = self._make_previous(
+            test_date="2024-05-26",
+            battery_brand="SBS",
+            battery_ah=170,
+            battery_voltage=12,
+            num_strings=4,
+            num_batteries=16,
+            num_modules=6,
+            rectifier_brand="Delta 2",
+        )
+
+        comp = compare_tests(bdt, prev)
+
+        assert comp.has_critical_change is True
+        assert comp.upgrade_detected is True
+        assert comp.change_status == "Battery Technology Upgrade Detected"
+        assert any("Lead-acid to lithium upgrade" in d for d in comp.differences)
+        assert any("previous string voltage 48V" in d for d in comp.differences)
+        assert not any(d.startswith("Battery Voltage: 12") for d in comp.differences)
+
 
 class TestValidationRunPersistence:
     @staticmethod

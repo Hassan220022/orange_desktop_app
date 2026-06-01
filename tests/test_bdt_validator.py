@@ -227,7 +227,7 @@ class TestValidateBDTOverall:
         assert any(r.verdict == "N/A" for r in result.rules)
         assert result.overall == "Revise"
 
-    def test_no_battery_skips_battery_dependent_rules_only(self):
+    def test_no_battery_skips_battery_dependent_rules_and_declines_bdt(self):
         slots = [
             _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
             for i in range(16)
@@ -242,7 +242,7 @@ class TestValidateBDTOverall:
         assert verdicts["R10"] == "Accepted"
         assert verdicts["R11"] == "N/A"
         assert all(verdicts[r] == "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
-        assert result.overall == "Accepted"
+        assert result.overall == "Rejected"
 
     def test_faulty_battery_skips_battery_dependent_rules_only(self):
         slots = [
@@ -262,6 +262,7 @@ class TestValidateBDTOverall:
         assert all(verdicts[r] == "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
         assert verdicts["R1"] == "Accepted"
         assert verdicts["R10"] == "Accepted"
+        assert result.overall == "Rejected"
 
     def test_summary_zero_batteries_skips_battery_dependent_rules(self):
         slots = [
@@ -279,6 +280,7 @@ class TestValidateBDTOverall:
 
         verdicts = {r.rule_id: r.verdict for r in result.rules}
         assert all(verdicts[r] == "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
+        assert result.overall == "Rejected"
 
     def test_battery_status_labels_battery_state(self):
         assert bdt_battery_status(_make_bdt()) == "Has Battery"
@@ -979,6 +981,23 @@ class TestTheoreticalBackupMinutes:
         assert result is not None
         assert abs(result - expected) < 0.01
 
+    def test_lead_acid_uses_normalized_string_voltage_from_block_count(self):
+        bdt = _make_bdt(
+            battery_brand="SBS",
+            battery_ah=170.0,
+            battery_voltage=12.0,
+            num_batteries=16,
+            num_strings=4,
+            start_voltage=48.0,
+            start_ampere=40.0,
+        )
+
+        result = _theoretical_backup_minutes(bdt, health_pct=0.80)
+
+        expected = (170 * 48 * 4 * 0.80) / (48 * 40) * 60
+        assert result is not None
+        assert abs(result - expected) < 0.01
+
     def test_missing_load_returns_none(self):
         bdt = _make_bdt(start_voltage=None, start_ampere=40.0)
         assert _theoretical_backup_minutes(bdt, health_pct=0.95) is None
@@ -1177,6 +1196,49 @@ class TestR11SummaryChecklist:
             test_date=None,
             summary_data={
                 "PLVD Value (LLVD For Huawei) adjusted after finishing the test ": "47.5",
+            },
+        )
+        r = _rule_11_summary_checklist(bdt)
+        assert r.verdict == "Accepted"
+
+    def test_site_id_summary_header_matches_short_code(self):
+        bdt = _make_bdt(
+            site_code="0704UP",
+            pld_value="",
+            rectifier_brand="",
+            battery_brand="",
+            battery_voltage=None,
+            num_strings=None,
+            start_voltage=None,
+            start_ampere=None,
+            end_voltage=None,
+            end_ampere=None,
+            discharge_minutes=0.0,
+            ibat_before_test=None,
+            test_date=None,
+            summary_data={"Site ID": "0704UP"},
+        )
+        r = _rule_11_summary_checklist(bdt)
+        assert r.verdict == "Accepted"
+
+    def test_missing_bdt_pld_value_does_not_force_revise(self):
+        bdt = _make_bdt(
+            site_code="0704UP",
+            pld_value="",
+            rectifier_brand="",
+            battery_brand="",
+            battery_voltage=None,
+            num_strings=None,
+            start_voltage=None,
+            start_ampere=None,
+            end_voltage=None,
+            end_ampere=None,
+            discharge_minutes=0.0,
+            ibat_before_test=None,
+            test_date=None,
+            summary_data={
+                "Site ID": "0704UP",
+                "PLVD Value (LLVD For Huawei) adjusted after finishing the test ": "40.5",
             },
         )
         r = _rule_11_summary_checklist(bdt)

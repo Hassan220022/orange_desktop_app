@@ -20,9 +20,13 @@ from alarm_app.llm_tools.openrouter_agent import (
     _model_safe_tool_result,
 )
 from alarm_app.llm_tools.openrouter_models import (
+    DEFAULT_CHAT_MODEL,
+    DEEPSEEK_V4_FLASH_MODEL,
+    DEEPSEEK_V4_PRO_MODEL,
     FREE_MODELS_ROUTER,
     fetch_free_tool_models,
     is_free_model_id,
+    normalize_chat_model_id,
     normalize_free_model_id,
 )
 from alarm_app.llm_tools.service import (
@@ -644,11 +648,21 @@ def test_safe_export_path_does_not_overwrite_existing_file(tmp_path):
     assert existing.read_text(encoding="utf-8") == "old export"
 
 
-def test_openrouter_model_helpers_enforce_free_models():
+def test_openrouter_model_helpers_allow_pinned_deepseek_and_free_models():
     assert is_free_model_id(FREE_MODELS_ROUTER)
     assert is_free_model_id("provider/model:free")
-    assert normalize_free_model_id("openai/gpt-4o-mini") == FREE_MODELS_ROUTER
+    assert normalize_chat_model_id(DEEPSEEK_V4_FLASH_MODEL) == DEEPSEEK_V4_FLASH_MODEL
+    assert normalize_chat_model_id(DEEPSEEK_V4_PRO_MODEL) == DEEPSEEK_V4_PRO_MODEL
+    assert normalize_chat_model_id("openai/gpt-4o-mini") == DEFAULT_CHAT_MODEL
     assert normalize_free_model_id("provider/model:free") == "provider/model:free"
+
+
+def test_openrouter_agent_defaults_to_deepseek_v4_flash_and_falls_back_to_pro():
+    service = SimpleNamespace(list_data_sources=lambda: {"ok": True})
+    agent = OpenRouterAgent(api_key="test", service=service)
+
+    assert agent.model == DEEPSEEK_V4_FLASH_MODEL
+    assert openrouter_agent_mod.TOOL_CAPABLE_FALLBACK_MODEL == DEEPSEEK_V4_PRO_MODEL
 
 
 def test_fetch_free_tool_models_filters_api_response(monkeypatch):
@@ -688,7 +702,11 @@ def test_fetch_free_tool_models_filters_api_response(monkeypatch):
     options = fetch_free_tool_models()
     ids = {option.id for option in options}
 
+    assert options[0].id == DEEPSEEK_V4_FLASH_MODEL
+    assert options[1].id == DEEPSEEK_V4_PRO_MODEL
     assert FREE_MODELS_ROUTER in ids
+    assert DEEPSEEK_V4_FLASH_MODEL in ids
+    assert DEEPSEEK_V4_PRO_MODEL in ids
     assert "free/tool:free" in ids
     assert "free/no-tools:free" not in ids
     assert "paid/tool" not in ids
@@ -3546,7 +3564,7 @@ def test_openrouter_agent_retries_tool_capable_fallback_model():
     agent._complete = _complete
 
     assert agent.ask("sources?") == "fallback worked"
-    assert models == ["provider/model:free", FREE_MODELS_ROUTER]
+    assert models == ["provider/model:free", openrouter_agent_mod.TOOL_CAPABLE_FALLBACK_MODEL]
 
 
 def test_openrouter_agent_main_loads_api_key_and_model_from_dotenv(tmp_path, monkeypatch, capsys):
@@ -8165,3 +8183,227 @@ def test_get_all_sites_full_context_redacts_local_paths_in_nested_context(monkey
         return False
 
     assert _contains_local_path(context) is False
+
+
+def test_query_battery_backup_insights_schema_and_dispatch():
+    from alarm_app.llm_tools.tools import TOOL_SCHEMAS, dispatch_tool, tool_definitions_for_mcp
+
+    schema = TOOL_SCHEMAS["query_battery_backup_insights"]["inputSchema"]
+    assert schema["additionalProperties"] is False
+    assert "min_backup_minutes" in schema["properties"]
+    assert "backup_minutes_tolerance" in schema["properties"]
+
+    tool = next(item for item in tool_definitions_for_mcp() if item["name"] == "query_battery_backup_insights")
+    assert tool["annotations"]["readOnlyHint"] is True
+
+    class _Service:
+        def query_battery_backup_insights(self, **kwargs):
+            return {"called": kwargs}
+
+    result = dispatch_tool(
+        _Service(),
+        "query_battery_backup_insights",
+        {"site_code": "AAA001", "limit": 5000, "min_backup_minutes": 120},
+    )
+
+    assert result["called"]["site_code"] == "AAA001"
+    assert result["called"]["limit"] == 500
+    assert result["called"]["min_backup_minutes"] == 120
+
+
+def test_query_battery_backup_insights_flags_network_bdt_mismatch_and_weak_critical_backup(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [{"site_id": "S1", "site_code": "S1", "site_name": "Alpha"}],
+            "returned": 1,
+            "limit": kwargs.get("limit", 50),
+            "offset": kwargs.get("offset", 0),
+            "has_more": False,
+            "total": 1,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "query_network_summary",
+        lambda **kwargs: {
+            "rows": [{
+                "site_id": "S1",
+                "Site Name": "Alpha",
+                "Battery Type": "Huawei Lithium 100",
+                "Backup Status": "Good ( 1.5 - 3 Hrs)",
+                "Backup Minutes": 180,
+                "No of Strings": 4,
+                "Nodal": "Nodal 10+",
+                "VIP": "V1",
+                "Power Source": "EC",
+            }],
+            "returned": 1,
+            "limit": 10,
+            "offset": 0,
+            "has_more": False,
+            "total": 1,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "query_bdt_full",
+        lambda **kwargs: {
+            "bdt_summary": {"rows": [{"site_id": "S1"}], "returned": 1, "limit": 50, "offset": 0, "has_more": False, "total": 1},
+            "bdt_tests": {"rows": [{
+                "site_code": "S1",
+                "test_date": "2026-03-01",
+                "battery_brand": "SBS",
+                "num_strings": 2,
+                "num_batteries": 2,
+                "discharge_minutes": 45,
+            }], "returned": 1, "limit": 50, "offset": 0, "has_more": False, "total": 1},
+            "validation_runs": {"rows": [{
+                "site_code": "S1",
+                "overall_verdict": "Rejected",
+                "test_date": "2026-03-01",
+            }], "returned": 1, "limit": 50, "offset": 0, "has_more": False, "total": 1},
+            "rule_results": {"rows": [{"site_code": "S1", "rule_id": "R1", "verdict": "Rejected"}], "returned": 1, "limit": 50, "offset": 0, "has_more": False, "total": 1},
+            "photos": {"rows": [], "returned": 0, "limit": 50, "offset": 0, "has_more": False, "total": 0},
+            "review_events": {"rows": [], "returned": 0, "limit": 50, "offset": 0, "has_more": False, "total": 0},
+        },
+    )
+
+    result = service.query_battery_backup_insights(limit=10, min_backup_minutes=90, backup_minutes_tolerance=30)
+
+    row = result["rows"][0]
+    assert row["insight_status"] == "Critical Site With Weak Backup"
+    assert row["severity"] == "high"
+    assert "weak_measured_backup" in row["insight_flags"]
+    assert "network_bdt_mismatch" in row["insight_flags"]
+    assert "missing_photo_evidence" in row["insight_flags"]
+    assert row["bdt"]["latest_validation_verdict"] == "Rejected"
+    assert row["bdt"]["failed_rule_count"] == 1
+    assert {diff["field"] for diff in row["differences"]} >= {"battery_type", "no_of_strings", "backup_minutes", "backup_status"}
+
+
+def test_query_battery_backup_insights_flags_declared_battery_without_bdt(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [{"site_id": "S2", "site_code": "S2"}],
+            "returned": 1,
+            "limit": kwargs.get("limit", 50),
+            "offset": kwargs.get("offset", 0),
+            "has_more": False,
+            "total": 1,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "query_network_summary",
+        lambda **kwargs: {
+            "rows": [{"site_id": "S2", "Battery Type": "Huawei Lithium 100", "Backup Minutes": 150, "No of Strings": 2}],
+            "returned": 1,
+            "limit": 10,
+            "offset": 0,
+            "has_more": False,
+            "total": 1,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "query_bdt_full",
+        lambda **kwargs: {
+            "bdt_summary": {"rows": [], "returned": 0, "limit": 50, "offset": 0, "has_more": False, "total": 0},
+            "bdt_tests": {"rows": [], "returned": 0, "limit": 50, "offset": 0, "has_more": False, "total": 0},
+            "validation_runs": {"rows": [], "returned": 0, "limit": 50, "offset": 0, "has_more": False, "total": 0},
+            "rule_results": {"rows": [], "returned": 0, "limit": 50, "offset": 0, "has_more": False, "total": 0},
+            "photos": {"rows": [], "returned": 0, "limit": 50, "offset": 0, "has_more": False, "total": 0},
+            "review_events": {"rows": [], "returned": 0, "limit": 50, "offset": 0, "has_more": False, "total": 0},
+        },
+    )
+
+    result = service.query_battery_backup_insights(limit=10)
+
+    row = result["rows"][0]
+    assert row["insight_status"] == "Battery Exists - No BDT"
+    assert row["network_summary"]["battery_declared"] is True
+    assert "missing_bdt" in row["insight_flags"]
+
+
+def test_query_battery_backup_insights_classifies_lead_acid_to_lithium_upgrade(monkeypatch):
+    from alarm_app.llm_tools.service import LocalDataService
+
+    service = LocalDataService()
+
+    monkeypatch.setattr(
+        service,
+        "list_sites",
+        lambda **kwargs: {
+            "rows": [{"site_id": "0704UP", "site_code": "0704UP", "site_name": "Upgrade Site"}],
+            "returned": 1,
+            "limit": kwargs.get("limit", 50),
+            "offset": kwargs.get("offset", 0),
+            "has_more": False,
+            "total": 1,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "query_network_summary",
+        lambda **kwargs: {
+            "rows": [{
+                "site_id": "0704UP",
+                "Battery Type": "SBS",
+                "Backup Status": "Good",
+                "Backup Minutes": 180,
+                "No of Strings": 4,
+                "Recent Test Date Or Reporting Date": "2024-05-26",
+            }],
+            "returned": 1,
+            "limit": 10,
+            "offset": 0,
+            "has_more": False,
+            "total": 1,
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "query_bdt_full",
+        lambda **kwargs: {
+            "bdt_summary": {"rows": [{"site_id": "0704UP"}], "returned": 1, "limit": 50, "offset": 0, "has_more": False, "total": 1},
+            "bdt_tests": {"rows": [{
+                "site_code": "0704UP",
+                "test_date": "2026-04-01",
+                "battery_brand": "Lithium-Huawei",
+                "battery_ah": 100,
+                "battery_voltage": 48,
+                "num_strings": 3,
+                "num_batteries": 3,
+                "discharge_minutes": 115,
+                "end_voltage": 43.7,
+            }], "returned": 1, "limit": 50, "offset": 0, "has_more": False, "total": 1},
+            "validation_runs": {"rows": [{
+                "site_code": "0704UP",
+                "overall_verdict": "Rejected",
+                "test_date": "2026-04-01",
+            }], "returned": 1, "limit": 50, "offset": 0, "has_more": False, "total": 1},
+            "rule_results": {"rows": [], "returned": 0, "limit": 50, "offset": 0, "has_more": False, "total": 0},
+            "photos": {"rows": [{}], "returned": 1, "limit": 50, "offset": 0, "has_more": False, "total": 1},
+            "review_events": {"rows": [], "returned": 0, "limit": 50, "offset": 0, "has_more": False, "total": 0},
+        },
+    )
+
+    result = service.query_battery_backup_insights(limit=10, min_backup_minutes=90, backup_minutes_tolerance=30)
+
+    row = result["rows"][0]
+    assert row["insight_status"] == "Battery Technology Upgrade Detected"
+    assert "battery_technology_upgrade" in row["insight_flags"]
+    assert "network_bdt_mismatch" not in row["insight_flags"]
+    assert row["battery_topology"]["upgrade_detected"] is True

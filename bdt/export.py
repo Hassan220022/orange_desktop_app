@@ -128,6 +128,23 @@ _VALIDATION_EXPORT_HEADERS = [
     "Test Date",
     "Verdict",
     "Verdict Reason",
+    "Insight Status",
+    "Insight Severity",
+    "Insight Flags",
+    "Insight Reasons",
+    "Insight Differences",
+    "Network Summary Freshness",
+    "Network Summary Warnings",
+    "Network Summary Date",
+    "Network Battery Type",
+    "Network Backup Status",
+    "Network Backup Minutes",
+    "Network Strings",
+    "BDT Battery Brand",
+    "BDT Strings",
+    "BDT Batteries",
+    "BDT Measured Backup Minutes",
+    "BDT End Voltage",
     *_RULE_EXPORT_HEADERS,
     "End Rectifier Voltage (V)",
     "Lead-acid SOH (%)",
@@ -518,17 +535,60 @@ def _format_lead_acid_soh(bdt, health_pct: float | None) -> str:
     return f"{health_pct * 100.0:.0f}"
 
 
+def _join_insight_values(value) -> str:
+    if not value:
+        return ""
+    if isinstance(value, list):
+        return " | ".join(_join_insight_values(item) for item in value if item)
+    if isinstance(value, dict):
+        return "; ".join(
+            f"{key}={_join_insight_values(val)}"
+            for key, val in value.items()
+            if val not in (None, "", [], {})
+        )
+    return str(value)
+
+
+def _insight_nested(insight: dict, section: str, key: str) -> str:
+    nested = insight.get(section)
+    if not isinstance(nested, dict):
+        return ""
+    value = nested.get(key)
+    return _join_insight_values(value)
+
+
 def build_validation_rows(results, health_pct: float | None = None) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for res in results:
         bdt = getattr(res, "bdt_data", None)
         rules = list(getattr(res, "rules", []) or [])
+        insight = getattr(res, "battery_backup_insight", None) or {}
+        if not isinstance(insight, dict):
+            insight = {}
+        freshness = insight.get("snapshot_freshness") if isinstance(insight.get("snapshot_freshness"), dict) else {}
         row = {
             "File": str(getattr(res, "filename", "") or "--"),
             "Site Code": str(getattr(res, "site_code", "") or "--"),
             "Test Date": str(getattr(res, "test_date", "") or "--"),
             "Verdict": str(getattr(res, "overall", "") or "--"),
             "Verdict Reason": _aggregate_verdict_reason(rules),
+            "Insight Status": str(insight.get("insight_status") or ""),
+            "Insight Severity": str(insight.get("severity") or ""),
+            "Insight Flags": _join_insight_values(insight.get("insight_flags")),
+            "Insight Reasons": _join_insight_values(insight.get("reasons")),
+            "Insight Differences": _join_insight_values(insight.get("differences")),
+            "Network Summary Freshness": _join_insight_values(freshness.get("status") if isinstance(freshness, dict) else ""),
+            "Network Summary Warnings": _join_insight_values(freshness.get("warnings") if isinstance(freshness, dict) else ""),
+            "Network Summary Date": _join_insight_values(freshness.get("network_summary_date") if isinstance(freshness, dict) else ""),
+            "Network Battery Type": _insight_nested(insight, "network_summary", "battery_type"),
+            "Network Backup Status": _insight_nested(insight, "network_summary", "backup_status"),
+            "Network Backup Minutes": _insight_nested(insight, "network_summary", "backup_minutes"),
+            "Network Strings": _insight_nested(insight, "network_summary", "no_of_strings"),
+            "BDT Battery Brand": _insight_nested(insight, "bdt", "battery_brand"),
+            "BDT Strings": _insight_nested(insight, "bdt", "num_strings"),
+            "BDT Batteries": _insight_nested(insight, "bdt", "num_batteries"),
+            "BDT Measured Backup Minutes": _insight_nested(insight, "bdt", "measured_discharge_minutes"),
+            "BDT End Voltage": _insight_nested(insight, "bdt", "end_voltage"),
             "End Rectifier Voltage (V)": _format_end_rectifier_voltage(bdt),
             "Lead-acid SOH (%)": _format_lead_acid_soh(bdt, health_pct),
         }

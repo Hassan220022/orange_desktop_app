@@ -58,7 +58,7 @@ def _resolve_context(tolerances: BDTTolerances | None,
 
 
 INTRO_HTML: str = """
-<h2>How BDT Validation Works</h2>
+<h2>How BDT Validation and Insights Work</h2>
 <p>Each BDT file goes through a series of checks. Every check produces
 one of these outcomes:</p>
 <ul>
@@ -79,7 +79,14 @@ retired. The active checks are <b>R1, R2, R3, R5, R6, R7, R8, R9, R10,
 R11</b>.</p>
 <p>If the battery is flagged as <i>no battery</i> or <i>faulty</i>, the
 seven battery-dependent checks (R2, R3, R5, R6, R7, R8, R9) are skipped
-and the file's verdict is decided from R1, R10, and R11 only.</p>
+because there is no usable battery to test. The whole file is still
+declined, while R1, R10, and R11 remain visible as evidence checks for
+photos, door alarm, and summary consistency.</p>
+<p>The BDT table also shows <b>Insight Status</b> and
+<b>Insight Severity</b>. Those are not extra pass/fail rules. They are
+cross-checks between Network Summary and BDT evidence, used to show
+whether the battery is actually reliable, untested, mismatched, or
+missing.</p>
 <p>All numbers shown in the sections below come from your current
 settings. To change them, close this window and click
 <b>Open Parameters</b>.</p>
@@ -293,6 +300,76 @@ matching values on the Summary sheet. The two sheets should agree.</p>
 """
 
 
+INSIGHTS_HTML: str = """
+<h2>Battery Backup Insights</h2>
+<p>Insights connect <b>Network Summary</b> with the BDT evidence. They
+answer a different question from the rule verdict: not only whether a
+BDT file passed, but whether the site really has a usable backup plan
+that matches the field evidence.</p>
+<h3>How to read the insight columns</h3>
+<ul>
+  <li><b>Insight Status</b> is the main business meaning for the row.</li>
+  <li><b>Insight Severity</b> is the priority level: low, medium, or high.</li>
+  <li><b>Network Summary Freshness</b> compares the Network Summary snapshot
+  date with the BDT test date. If Network Summary is older than the BDT, a
+  matching value can still be stale and must not be treated as final proof.</li>
+  <li>A high severity row should be investigated before trusting the
+  battery backup claim.</li>
+</ul>
+<h3>Insight statuses</h3>
+<ul>
+  <li><b>Critical Site With Weak Backup</b> &mdash; the site is marked as
+  important, for example VIP, 5G, or nodal/transport, and the measured
+  BDT discharge is below the backup threshold. This means the battery may
+  exist, but the site may still fail quickly during a power cut.</li>
+  <li><b>Network Summary / BDT Mismatch</b> &mdash; Network Summary and
+  BDT disagree. Examples: battery type does not match, string count does
+  not match, Network Summary says backup is good but BDT measured weak
+  backup, or backup minutes differ materially.</li>
+  <li><b>Battery Technology Upgrade Detected</b> &mdash; Network Summary
+  appears to describe an older lead-acid setup while the BDT shows a
+  lithium setup. Raw values such as 12V to 48V, 16 batteries to 3 modules,
+  or 4 strings to 3 strings are treated as an upgrade pattern first, not
+  as ordinary mismatch noise. The row still needs evidence review,
+  especially if Network Summary is older than the BDT.</li>
+  <li><b>Battery Exists - BDT Failed</b> &mdash; Network Summary declares
+  a battery, but the latest BDT validation is rejected, revise, failed,
+  no-data, or has failed rules. The battery may be installed, but the test
+  evidence does not prove reliable backup.</li>
+  <li><b>Battery Exists - No BDT</b> &mdash; Network Summary declares
+  battery backup, but no BDT summary, test, or validation was found. This
+  means the battery exists on paper only until field evidence is added.</li>
+  <li><b>Battery Exists - BDT Not Validated</b> &mdash; BDT data exists,
+  but no validation run was found. The test may have been imported, but
+  it has not been checked against the rules yet.</li>
+  <li><b>No Battery Declared</b> &mdash; Network Summary does not show a
+  usable battery setup. This can be caused by blank/no battery type, zero
+  strings, zero backup minutes, zero-backup status, or a reason such as
+  stolen or removed battery.</li>
+  <li><b>Battery Exists - BDT Passed</b> &mdash; Network Summary says the
+  battery exists, the latest BDT validation is accepted, and no configured
+  mismatch was detected. This is the strongest positive status.</li>
+  <li><b>Battery Exists - BDT Present</b> &mdash; Network Summary says
+  battery exists and some BDT evidence is present, but there is not enough
+  evidence to classify the row as passed, failed, or mismatched.</li>
+  <li><b>Insufficient Data</b> &mdash; the available Network Summary and
+  BDT evidence is not enough to make a clear classification.</li>
+  <li><b>Insight Unavailable</b> &mdash; fallback status shown only if
+  the insight calculation fails for that row. The BDT row is still shown,
+  but the insight could not be calculated.</li>
+</ul>
+<h3>What this helps validate</h3>
+<ul>
+  <li>Whether the site has a declared battery in Network Summary.</li>
+  <li>Whether a BDT actually exists for that site.</li>
+  <li>Whether the BDT was validated by the rules.</li>
+  <li>Whether the measured BDT backup supports the claimed backup plan.</li>
+  <li>Whether Network Summary and field evidence disagree.</li>
+  <li>Whether the Network Summary record was fresh enough to support that BDT.</li>
+</ul>
+"""
+
+
 SETTINGS_HTML: str = """
 <h2>Where these numbers come from</h2>
 <p>Every threshold shown above is read from your saved settings:</p>
@@ -323,6 +400,7 @@ RULE_DOCS: tuple[tuple[str, str, str], ...] = (
     ("R9", "R9 \u2014 Discharge Current Stability", R9_HTML),
     ("R10", "R10 \u2014 Door Alarm", R10_HTML),
     ("R11", "R11 \u2014 Summary Sheet Match", R11_HTML),
+    ("insights", "Battery Backup Insights", INSIGHTS_HTML),
     ("settings", "Where these numbers come from", SETTINGS_HTML),
 )
 

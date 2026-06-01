@@ -185,7 +185,7 @@ def format_bdt_rule_label(rule_code: str, rule_name: str | None = None) -> str:
     return f"{code} - {name}" if name else code
 
 BDT_RESULT_HEADERS = [
-    "File", "Site Code", "Test Date", "Verdict", "Battery Status",
+    "File", "Site Code", "Test Date", "Verdict", "Insight Status", "Insight Severity", "Battery Status",
     "R1", "R2", "R3", "R5", "R6", "R7", "R8", "R9", "R10", "R11",
     "End Rectifier Voltage (V)", "Lead-acid SOH (%)",
 ]
@@ -226,6 +226,7 @@ BDT_SUMMARY_EXPORT_HEADERS = [
 
 BDT_RESULT_WIDTHS = {
     "File": 200, "Site Code": 90, "Test Date": 100, "Verdict": 90,
+    "Insight Status": 220, "Insight Severity": 110,
     "Battery Status": 120,
     "R1": 65, "R2": 65, "R3": 65,
     "R5": 65, "R6": 65, "R7": 65, "R8": 65, "R9": 65, "R10": 65, "R11": 65,

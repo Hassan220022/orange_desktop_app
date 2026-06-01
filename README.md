@@ -554,13 +554,13 @@ OPENROUTER_API_KEY="..." AlarmViewer --ask "How many rejected BDT validations do
 Optional model override:
 
 ```bash
-OPENROUTER_MODEL="openrouter/free" python -m alarm_app.llm_tools.openrouter_agent "Export rejected R3 BDT rows to CSV"
+OPENROUTER_MODEL="deepseek/deepseek-v4-pro" python -m alarm_app.llm_tools.openrouter_agent "Export rejected R3 BDT rows to CSV"
 ```
 
-The chat agent only offers free OpenRouter models. `openrouter/free` is the
-default because OpenRouter routes to free models and filters by required features
-such as tool calling. If a selected free model/provider does not support tools,
-the agent retries once with `openrouter/free`.
+The chat agent defaults to `deepseek/deepseek-v4-flash`, pins
+`deepseek/deepseek-v4-pro` as the tool-capable fallback, and also offers the
+current free OpenRouter models that advertise required features such as tool
+calling.
 
 ## Contributing
 

@@ -1,0 +1,85 @@
+<h2>Uncovered Temp Alarms: header cleanup options</h2>
+<p class="subtitle">The current issue appears to be cramped header layout: margin control, metric cards, and export button are competing for one row. Pick the direction you prefer.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#11111b;border:1px solid #313244;border-radius:10px;padding:12px;color:#cdd6f4;font-family:Inter,system-ui;">
+        <div style="display:flex;align-items:center;gap:14px;background:#313244;border-radius:8px;padding:12px;">
+          <div style="min-width:230px;">
+            <div style="font-size:11px;color:#a6adc8;font-weight:700;margin-bottom:7px;">Y MARGIN AFTER POWER CLEARANCE</div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <div style="background:#1e1e2e;border:1px solid #89b4fa;border-radius:6px;padding:8px 18px;font-weight:700;">60 min</div>
+              <span style="font-size:11px;color:#6c7086;">0–60</span>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;flex:1;">
+            <div style="background:#181825;border-radius:6px;padding:8px 10px;text-align:center;"><b style="color:#f38ba8;">52,700</b><br><span style="font-size:10px;color:#a6adc8;">Uncovered</span></div>
+            <div style="background:#181825;border-radius:6px;padding:8px 10px;text-align:center;"><b style="color:#a6e3a1;">1,502</b><br><span style="font-size:10px;color:#a6adc8;">Sites</span></div>
+            <div style="background:#181825;border-radius:6px;padding:8px 10px;text-align:center;"><b style="color:#fab387;">60 min</b><br><span style="font-size:10px;color:#a6adc8;">Y margin</span></div>
+            <div style="background:#181825;border-radius:6px;padding:8px 10px;text-align:center;"><b style="color:#94e2d5;">86809:42:22</b><br><span style="font-size:10px;color:#a6adc8;">Clear duration</span></div>
+          </div>
+          <button style="background:#12351f;color:#c8ffc8;border:0;border-radius:8px;padding:14px 18px;font-weight:800;">Export XLSX</button>
+        </div>
+        <div style="font-size:11px;color:#7f849c;margin-top:8px;">Temp alarms shown only when no same-site Power alarm covers them.</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. Same row, fixed spacing</h3>
+      <p>Keeps the current compact top bar but gives margin and metrics predictable widths. Best if you want minimal change.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#11111b;border:1px solid #313244;border-radius:10px;padding:12px;color:#cdd6f4;font-family:Inter,system-ui;">
+        <div style="display:flex;align-items:center;justify-content:space-between;background:#313244;border-radius:8px 8px 0 0;padding:12px;">
+          <div>
+            <div style="font-size:14px;font-weight:800;">Uncovered Temp Alarms</div>
+            <div style="font-size:11px;color:#a6adc8;margin-top:3px;">Power coverage: occurrence → clearance + Y margin</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span style="font-size:11px;color:#a6adc8;font-weight:700;">Y margin</span>
+            <div style="background:#1e1e2e;border:1px solid #89b4fa;border-radius:6px;padding:8px 18px;font-weight:700;">60 min</div>
+            <button style="background:#12351f;color:#c8ffc8;border:0;border-radius:8px;padding:12px 16px;font-weight:800;">Export XLSX</button>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;background:#1e1e2e;border-radius:0 0 8px 8px;padding:10px;">
+          <div style="background:#181825;border-left:3px solid #f38ba8;border-radius:6px;padding:8px 10px;"><b style="color:#f38ba8;">52,700</b><br><span style="font-size:10px;color:#a6adc8;">Uncovered temp alarms</span></div>
+          <div style="background:#181825;border-left:3px solid #a6e3a1;border-radius:6px;padding:8px 10px;"><b style="color:#a6e3a1;">1,502</b><br><span style="font-size:10px;color:#a6adc8;">Unique sites</span></div>
+          <div style="background:#181825;border-left:3px solid #fab387;border-radius:6px;padding:8px 10px;"><b style="color:#fab387;">60 min</b><br><span style="font-size:10px;color:#a6adc8;">Y margin</span></div>
+          <div style="background:#181825;border-left:3px solid #94e2d5;border-radius:6px;padding:8px 10px;"><b style="color:#94e2d5;">86809:42:22</b><br><span style="font-size:10px;color:#a6adc8;">Total clear duration</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. Two-tier header</h3>
+      <p>Separates controls from metrics. Most readable and resilient at smaller window widths. Recommended.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#11111b;border:1px solid #313244;border-radius:10px;padding:12px;color:#cdd6f4;font-family:Inter,system-ui;">
+        <div style="display:grid;grid-template-columns:260px 1fr 110px;gap:12px;align-items:stretch;">
+          <div style="background:#313244;border-radius:8px;padding:12px;">
+            <div style="font-size:11px;color:#a6adc8;font-weight:700;margin-bottom:8px;">FILTER</div>
+            <div style="font-size:12px;color:#a6adc8;margin-bottom:6px;">Y margin after Power clearance</div>
+            <div style="background:#1e1e2e;border:1px solid #89b4fa;border-radius:6px;padding:9px 18px;font-weight:700;text-align:center;">60 min</div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;">
+            <div style="background:#181825;border-radius:8px;padding:12px;text-align:center;"><div style="font-size:18px;color:#f38ba8;font-weight:800;">52,700</div><div style="font-size:10px;color:#a6adc8;">Uncovered</div></div>
+            <div style="background:#181825;border-radius:8px;padding:12px;text-align:center;"><div style="font-size:18px;color:#a6e3a1;font-weight:800;">1,502</div><div style="font-size:10px;color:#a6adc8;">Sites</div></div>
+            <div style="background:#181825;border-radius:8px;padding:12px;text-align:center;"><div style="font-size:18px;color:#fab387;font-weight:800;">60</div><div style="font-size:10px;color:#a6adc8;">Minutes</div></div>
+            <div style="background:#181825;border-radius:8px;padding:12px;text-align:center;"><div style="font-size:18px;color:#94e2d5;font-weight:800;">86k h</div><div style="font-size:10px;color:#a6adc8;">Duration</div></div>
+          </div>
+          <button style="background:#12351f;color:#c8ffc8;border:0;border-radius:8px;font-weight:800;">Export<br>XLSX</button>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. Card dashboard</h3>
+      <p>More dashboard-like; cleaner metrics but taller and less similar to the current app style.</p>
+    </div>
+  </div>
+</div>

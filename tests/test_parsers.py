@@ -255,6 +255,63 @@ class TestExternalSummaryHelpers:
         assert row["Discharge time( Mins)"] == "120"
         assert row["Test Date"] == "2026-01-05"
 
+    def test_load_external_summary_lookup_accepts_bdt_summary_workbook_in_parent_folder(self, tmp_path):
+        root = tmp_path / "HASSAN"
+        bdt_dir = root / "BDT" / "2026"
+        bdt_dir.mkdir(parents=True)
+        bdt_file = bdt_dir / "3868DE_BDT.xlsx"
+        bdt_file.touch()
+        summary_file = root / "Huawei_BDT Summary_Last Update.xlsx"
+
+        df = pd.DataFrame([{
+            "Short Code": "3868DE",
+            "PLD Value": "44",
+            "Rectifier Brand": "Delta 3",
+            "Test Date": "5-Jan-26",
+        }])
+        df.to_excel(summary_file, index=False, sheet_name="BDT 2025-2026")
+
+        lookup = _load_external_summary_lookup([str(bdt_file), str(summary_file)])
+
+        key = ("3868DE", "2026-01-05")
+        assert key in lookup["by_site_date"]
+        assert lookup["by_site_date"][key]["PLVD Value"] == "44"
+
+    def test_load_external_summary_lookup_accepts_huawei_2026_headers(self, tmp_path):
+        root = tmp_path / "HASSAN"
+        bdt_dir = root / "BDT" / "2026"
+        bdt_dir.mkdir(parents=True)
+        bdt_file = bdt_dir / "0704UP_BDT.xlsx"
+        bdt_file.touch()
+        summary_file = root / "Huawei_BDT Summary_Last Update.xlsx"
+
+        df = pd.DataFrame([{
+            "Site ID": "0704UP",
+            "PLVD Value (LLVD For Huawei) adjusted after finishing the test ": 40.5,
+            "Rectifier Brand": "Huawei",
+            "# of Modules": 4,
+            "Battery Brand": "Lithium-\u00a0Huawei",
+            "Battery Volt": 48,
+            "No of String": 3,
+            "No of Batteries ": 3,
+            "Start Volt": 53.4,
+            "Start Amp": 134.4,
+            "End Volt": 43.7,
+            "End Amp": 157.5,
+            "Discharge time( Mins)": 115,
+            "Test Date": "1-Apr-26",
+        }])
+        df.to_excel(summary_file, index=False, sheet_name="Huawei BDT Summary_2026")
+
+        lookup = _load_external_summary_lookup([str(bdt_file)])
+
+        key = ("0704UP", "2026-04-01")
+        assert key in lookup["by_site_date"]
+        row = lookup["by_site_date"][key]
+        assert row["Short Code"] == "0704UP"
+        assert row["PLVD Value"] == "40.5"
+        assert row["No of Batteries"] == "3"
+
     def test_match_external_summary_row_uses_site_date_key(self):
         class _FakeBdtData:
             site_code = "3868DE"

@@ -28,6 +28,7 @@ try:
         BDT_START_AMPERE_THRESHOLD_A,
         BDT_STRING_AMPERE_TOLERANCE_A,
     )
+    from alarm_app.core.battery_topology import battery_topology_from_bdt
 except ImportError:
     from bdt.parser import BDTData
     from constants import (
@@ -43,6 +44,7 @@ except ImportError:
         BDT_START_AMPERE_THRESHOLD_A,
         BDT_STRING_AMPERE_TOLERANCE_A,
     )
+    from core.battery_topology import battery_topology_from_bdt
 
 
 @dataclass
@@ -65,6 +67,7 @@ class ValidationResult:
     rules: list[RuleResult] = field(default_factory=list)
     parse_errors: list[str] = field(default_factory=list)
     bdt_data: BDTData | None = None  # parsed source data for detail view
+    battery_backup_insight: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -181,6 +184,11 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
     )
 
     if failed:
+        result.overall = "Rejected"
+    elif battery_skip_reason:
+        # A BDT cannot be accepted as a battery backup test when the BDT
+        # itself reports no usable battery. Keep battery-dependent rules
+        # skipped, but decline the whole file.
         result.overall = "Rejected"
     elif revise:
         result.overall = "Revise"
@@ -956,8 +964,13 @@ def _theoretical_backup_minutes(bdt: BDTData, health_pct: float) -> float | None
         return None
     load_w = load_v * load_a
 
-    efficiency = 1.0 if _is_lithium(bdt.battery_brand) else health_pct
-    capacity_wh = bdt.battery_ah * bdt.battery_voltage * bdt.num_strings * efficiency
+    topology = battery_topology_from_bdt(bdt)
+    sizing_voltage = topology.string_voltage or bdt.battery_voltage
+    if sizing_voltage is None:
+        return None
+
+    efficiency = 1.0 if topology.chemistry == "lithium" else health_pct
+    capacity_wh = bdt.battery_ah * sizing_voltage * bdt.num_strings * efficiency
     return (capacity_wh / load_w) * 60  # convert hours to minutes
 
 
@@ -1270,8 +1283,13 @@ def _values_match(bdt_val: str, summary_val: str, field_name: str) -> bool:
     return a in b or b in a
 
 
+def _has_numeric_comparison_value(value: str) -> bool:
+    normalized = _normalize_for_comparison(value)
+    return bool(re.fullmatch(r"[-+]?\d+(?:\.\d+)?", normalized))
+
+
 _SUMMARY_KEY_ALIASES = {
-    "Short Code": ("Short Code", "Site Code"),
+    "Short Code": ("Short Code", "Site Code", "Site ID"),
     "PLVD Value": ("PLVD Value", "PLD Value"),
     "Rectifier Brand": ("Rectifier Brand",),
     "# of Modules": ("# of Modules", "Number of Modules", "No of Modules"),
@@ -1351,6 +1369,8 @@ def _rule_11_summary_checklist(bdt: BDTData) -> RuleResult:
     checked = 0
     for display_name, bdt_val, summary_key in checks:
         summary_val = _summary_lookup_value(bdt.summary_data, summary_key)
+        if display_name == "PLD Value" and not _has_numeric_comparison_value(bdt_val):
+            continue
         if not bdt_val and not summary_val:
             continue  # skip fields missing from both
         checked += 1

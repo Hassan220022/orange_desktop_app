@@ -91,6 +91,57 @@ class TestBDTExport:
         assert row["End Rectifier Voltage (V)"] == "46.25"
         assert row["Lead-acid SOH (%)"] == "80"
 
+    def test_validation_sheet_exports_battery_backup_insight_columns(self):
+        res = _make_result()
+        res.battery_backup_insight = {
+            "insight_status": "Network Summary / BDT Mismatch",
+            "severity": "high",
+            "insight_flags": ["network_bdt_mismatch", "weak_measured_backup"],
+            "reasons": ["Network Summary says backup is good, but measured BDT backup is weak."],
+            "differences": [{"field": "backup_status", "network_summary": "Good", "bdt": "60 measured minutes"}],
+            "snapshot_freshness": {
+                "status": "network_summary_older_than_bdt",
+                "network_summary_date": "2026-02-01",
+                "bdt_test_date": "2026-03-01",
+                "warnings": [
+                    "Network Summary snapshot is older than the BDT test date; matching values may still be stale."
+                ],
+            },
+            "network_summary": {
+                "battery_type": "Narada",
+                "backup_status": "Good",
+                "backup_minutes": 120,
+                "no_of_strings": 2,
+            },
+            "bdt": {
+                "battery_brand": "Narada",
+                "num_strings": 2,
+                "num_batteries": 8,
+                "measured_discharge_minutes": 60,
+                "end_voltage": 46.1,
+            },
+        }
+
+        row = build_bdt_export_sheets([res], health_pct=0.8)["Validation Results"].iloc[0]
+
+        assert row["Insight Status"] == "Network Summary / BDT Mismatch"
+        assert row["Insight Severity"] == "high"
+        assert row["Insight Flags"] == "network_bdt_mismatch | weak_measured_backup"
+        assert "measured BDT backup is weak" in row["Insight Reasons"]
+        assert "field=backup_status" in row["Insight Differences"]
+        assert row["Network Summary Freshness"] == "network_summary_older_than_bdt"
+        assert "matching values may still be stale" in row["Network Summary Warnings"]
+        assert row["Network Summary Date"] == "2026-02-01"
+        assert row["Network Battery Type"] == "Narada"
+        assert row["Network Backup Status"] == "Good"
+        assert row["Network Backup Minutes"] == "120"
+        assert row["Network Strings"] == "2"
+        assert row["BDT Battery Brand"] == "Narada"
+        assert row["BDT Strings"] == "2"
+        assert row["BDT Batteries"] == "8"
+        assert row["BDT Measured Backup Minutes"] == "60"
+        assert row["BDT End Voltage"] == "46.1"
+
     def test_validation_sheet_includes_revise_reasons_in_verdict_reason(self):
         res = _make_result(
             overall="Revise",
