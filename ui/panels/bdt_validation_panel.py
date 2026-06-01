@@ -33,6 +33,7 @@ from PyQt5.QtWidgets import (
 
 try:
     from alarm_app.bdt.export import build_bdt_export_sheets
+    from alarm_app.bdt.discovery import is_raw_bdt_workbook_filename
     from alarm_app.bdt.parser import BDTData
     from alarm_app.bdt.validator import BDTTolerances, ValidationResult, bdt_battery_status
     from alarm_app.constants import (
@@ -54,6 +55,7 @@ try:
     from alarm_app.ui.threads import BDTValidationThread, ExportThread
 except ImportError:
     from bdt.export import build_bdt_export_sheets
+    from bdt.discovery import is_raw_bdt_workbook_filename
     from bdt.parser import BDTData
     from bdt.validator import BDTTolerances, ValidationResult, bdt_battery_status
     from constants import (
@@ -398,9 +400,7 @@ class BdtValidationPanel(QWidget):
         if not bdt_files and directory and os.path.isdir(directory):
             for root, _dirs, files in os.walk(directory):
                 for f in files:
-                    fl = f.lower()
-                    if (fl.endswith(".xlsx") and "bdt" in fl
-                            and not f.startswith("~$") and not f.startswith("._")):
+                    if is_raw_bdt_workbook_filename(f):
                         bdt_files.append(os.path.join(root, f))
 
         if not bdt_files:
