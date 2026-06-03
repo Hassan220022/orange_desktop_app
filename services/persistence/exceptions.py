@@ -27,3 +27,7 @@ class HashingError(PersistenceError):
 
 class CatalogError(PersistenceError):
     """Raised when reference-data catalog operations fail."""
+
+
+class EngineCreationError(PersistenceError):
+    """Raised when the SQLAlchemy engine cannot be created or configured."""
