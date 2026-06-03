@@ -265,7 +265,6 @@ QGroupBox {
     font-size: 11px;
     font-weight: bold;
     letter-spacing: 0.8px;
-    text-transform: uppercase;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
@@ -532,6 +531,9 @@ QFrame#assistant_toolbar, QFrame#assistant_composer {
     border: 1px solid {102};
     border-radius: 8px;
 }
+QFrame#assistant_composer {
+    margin-top: 4px;
+}
 QFrame#assistant_quick_actions {
     background: transparent;
     border: none;
@@ -586,6 +588,19 @@ QPushButton#assistant_send:hover {
     background: {118};
     border-color: {119};
 }
+QPushButton#assistant_stop {
+    background: {30};
+    color: {31};
+    border: 1px solid {32};
+    border-radius: 8px;
+    min-height: 32px;
+    font-size: 13px;
+    font-weight: 700;
+}
+QPushButton#assistant_stop:hover {
+    background: {33};
+    border-color: {34};
+}
 QScrollArea#assistant_history_scroll {
     background: {120};
     border: none;
@@ -613,10 +628,25 @@ QFrame#chat_bubble_system {
     border: 1px solid {128};
     border-radius: 8px;
 }
+QFrame#chat_bubble_thinking {
+    background: {127};
+    border: 1px dashed {128};
+    border-radius: 8px;
+}
 QFrame#chat_bubble_error {
     background: {129};
     border: 1px solid {130};
     border-radius: 8px;
+}
+QFrame#chat_empty_state {
+    background: transparent;
+    border: none;
+}
+QFrame#chat_api_banner {
+    background: {129};
+    border: 1px solid {130};
+    border-radius: 6px;
+    margin: 4px 0;
 }
 QLabel#chat_meta_user {
     color: {131};
@@ -663,7 +693,7 @@ QFrame#tool_card {
     background: {142};
     border: 1px solid {143};
     border-radius: 8px;
-    margin: 2px 0px;
+    margin: 6px 0px;
 }
 QFrame#tool_card_error {
     background: {144};
@@ -706,7 +736,6 @@ QLabel#tool_section {
     font-size: 10px;
     font-weight: 800;
     letter-spacing: 1px;
-    text-transform: uppercase;
 }
 QLabel#tool_body, QLabel#tool_kv_value {
     color: {152};
@@ -820,7 +849,6 @@ QHeaderView::section {
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.6px;
-    text-transform: uppercase;
 }
 QHeaderView::section:first {
     border-top-left-radius: 6px;
@@ -912,7 +940,6 @@ QLabel#lbl_section {
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 1.5px;
-    text-transform: uppercase;
 }
 QLabel#activity_brand {
     color: {206};
@@ -928,7 +955,6 @@ QLabel#sidebar_brand {
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.9px;
-    text-transform: uppercase;
 }
 QLabel#sidebar_title {
     color: {210};
@@ -1079,7 +1105,6 @@ QCalendarWidget QHeaderView::section {
     padding: 6px 4px;
     font-size: 11px;
     font-weight: 700;
-    text-transform: uppercase;
 }
 
 /* SpinBox in calendar (year) */
@@ -1137,7 +1162,6 @@ QLabel#bdt_info_key {
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.5px;
-    text-transform: uppercase;
     background: transparent;
     padding: 2px 0;
 }
@@ -1154,7 +1178,6 @@ QLabel#bdt_section_title {
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 1.6px;
-    text-transform: uppercase;
     background: transparent;
     padding: 6px 0 4px 0;
 }
@@ -1178,7 +1201,6 @@ QLabel#bdt_history_separator {
     font-size: 10px;
     font-weight: 800;
     letter-spacing: 2px;
-    text-transform: uppercase;
     padding: 8px 12px;
     margin-top: 14px;
     margin-bottom: 4px;
@@ -1253,7 +1275,6 @@ QLabel#filter_section {
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 1.6px;
-    text-transform: uppercase;
     background: transparent;
     padding: 0 0 2px 0;
 }
@@ -1262,7 +1283,6 @@ QLabel#filter_section_active {
     font-size: 9px;
     font-weight: 800;
     letter-spacing: 1.6px;
-    text-transform: uppercase;
     background: transparent;
     padding: 0 0 2px 0;
 }
@@ -1587,7 +1607,6 @@ QGroupBox {
     font-size: 11px;
     font-weight: bold;
     letter-spacing: 0.8px;
-    text-transform: uppercase;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
@@ -1840,6 +1859,9 @@ QFrame#assistant_toolbar, QFrame#assistant_composer {
     border: 1px solid {102};
     border-radius: 8px;
 }
+QFrame#assistant_composer {
+    margin-top: 4px;
+}
 QFrame#assistant_quick_actions {
     background: transparent;
     border: none;
@@ -1894,6 +1916,19 @@ QPushButton#assistant_send:hover {
     background: {118};
     border-color: {119};
 }
+QPushButton#assistant_stop {
+    background: {30};
+    color: {31};
+    border: 1px solid {32};
+    border-radius: 8px;
+    min-height: 32px;
+    font-size: 13px;
+    font-weight: 700;
+}
+QPushButton#assistant_stop:hover {
+    background: {33};
+    border-color: {34};
+}
 QScrollArea#assistant_history_scroll {
     background: {120};
     border: none;
@@ -1921,10 +1956,25 @@ QFrame#chat_bubble_system {
     border: 1px solid {128};
     border-radius: 8px;
 }
+QFrame#chat_bubble_thinking {
+    background: {127};
+    border: 1px dashed {128};
+    border-radius: 8px;
+}
 QFrame#chat_bubble_error {
     background: {129};
     border: 1px solid {130};
     border-radius: 8px;
+}
+QFrame#chat_empty_state {
+    background: transparent;
+    border: none;
+}
+QFrame#chat_api_banner {
+    background: {129};
+    border: 1px solid {130};
+    border-radius: 6px;
+    margin: 4px 0;
 }
 QLabel#chat_meta_user {
     color: {131};
@@ -1971,7 +2021,7 @@ QFrame#tool_card {
     background: {142};
     border: 1px solid {143};
     border-radius: 8px;
-    margin: 2px 0px;
+    margin: 6px 0px;
 }
 QFrame#tool_card_error {
     background: {144};
@@ -2014,7 +2064,6 @@ QLabel#tool_section {
     font-size: 10px;
     font-weight: 800;
     letter-spacing: 1px;
-    text-transform: uppercase;
 }
 QLabel#tool_body, QLabel#tool_kv_value {
     color: {152};
@@ -2128,7 +2177,6 @@ QHeaderView::section {
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.6px;
-    text-transform: uppercase;
 }
 QHeaderView::section:first {
     border-top-left-radius: 6px;
@@ -2220,7 +2268,6 @@ QLabel#lbl_section {
     font-size: 10px;
     font-weight: 700;
     letter-spacing: 1.5px;
-    text-transform: uppercase;
 }
 QLabel#activity_brand {
     color: {206};
@@ -2236,7 +2283,6 @@ QLabel#sidebar_brand {
     font-size: 11px;
     font-weight: 700;
     letter-spacing: 0.9px;
-    text-transform: uppercase;
 }
 QLabel#sidebar_title {
     color: {210};
@@ -2387,7 +2433,6 @@ QCalendarWidget QHeaderView::section {
     padding: 6px 4px;
     font-size: 11px;
     font-weight: 700;
-    text-transform: uppercase;
 }
 
 /* SpinBox in calendar (year) */
@@ -2445,7 +2490,6 @@ QLabel#bdt_info_key {
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.5px;
-    text-transform: uppercase;
     background: transparent;
     padding: 2px 0;
 }
@@ -2462,7 +2506,6 @@ QLabel#bdt_section_title {
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 1.6px;
-    text-transform: uppercase;
     background: transparent;
     padding: 6px 0 4px 0;
 }
@@ -2486,7 +2529,6 @@ QLabel#bdt_history_separator {
     font-size: 10px;
     font-weight: 800;
     letter-spacing: 2px;
-    text-transform: uppercase;
     padding: 8px 12px;
     margin-top: 14px;
     margin-bottom: 4px;
@@ -2561,7 +2603,6 @@ QLabel#filter_section {
     font-size: 9px;
     font-weight: 700;
     letter-spacing: 1.6px;
-    text-transform: uppercase;
     background: transparent;
     padding: 0 0 2px 0;
 }
@@ -2570,7 +2611,6 @@ QLabel#filter_section_active {
     font-size: 9px;
     font-weight: 800;
     letter-spacing: 1.6px;
-    text-transform: uppercase;
     background: transparent;
     padding: 0 0 2px 0;
 }

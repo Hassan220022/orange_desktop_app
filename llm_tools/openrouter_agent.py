@@ -21,8 +21,8 @@ except ImportError:
     from runtime.env import load_local_env
 
 from .openrouter_models import (
-    DEFAULT_CHAT_MODEL,
     DEEPSEEK_V4_PRO_MODEL,
+    DEFAULT_CHAT_MODEL,
     normalize_chat_model_id,
 )
 from .service import (
@@ -56,6 +56,16 @@ SUMMARY_SYSTEM_PROMPT = """You compress Alarm Viewer assistant conversations.
 Preserve all user goals, key facts, tool findings, decisions, generated files,
 uploaded files, unresolved questions, and the most recent active topic.
 Be dense and specific. Do not invent facts."""
+
+CONTEXT_BUDGET_MAX_CHARS = 400_000
+CONTEXT_MESSAGE_MAX_CHARS = 120_000
+CONTEXT_MIN_RECENT_MESSAGES = 8
+CONTEXT_TRUNCATION_MARKER = "\n\n[truncated to fit context budget]\n\n"
+CONTEXT_TOO_LARGE_MESSAGE = (
+    "OpenRouter request was too large after automatic context trimming. "
+    "Start a new chat or ask about a narrower slice of data, and export large "
+    "result sets instead of asking the assistant to repeat them."
+)
 
 
 def _runtime_context_message() -> str:
@@ -132,6 +142,101 @@ def _model_safe_tool_result(value: Any) -> Any:
     if isinstance(value, str):
         return _redact_model_bound_text(value)
     return value
+
+
+def _truncate_text_to_chars(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    marker = CONTEXT_TRUNCATION_MARKER
+    if max_chars <= len(marker) + 20:
+        return marker.strip()[:max_chars]
+    available = max_chars - len(marker)
+    head_chars = max(1, available // 2)
+    tail_chars = max(0, available - head_chars)
+    tail = text[-tail_chars:] if tail_chars else ""
+    return f"{text[:head_chars]}{marker}{tail}"
+
+
+def _payload_char_count(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    model: str,
+) -> int:
+    payload: dict[str, Any] = {"model": model, "messages": messages}
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = "auto"
+    return len(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+def _bounded_openrouter_messages(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    model: str,
+    *,
+    max_chars: int | None = None,
+) -> list[dict[str, Any]]:
+    budget = CONTEXT_BUDGET_MAX_CHARS if max_chars is None else max_chars
+    bounded: list[dict[str, Any]] = []
+    for message in messages:
+        copied = dict(message)
+        content = copied.get("content")
+        if isinstance(content, str):
+            copied["content"] = _truncate_text_to_chars(content, min(CONTEXT_MESSAGE_MAX_CHARS, budget))
+        bounded.append(copied)
+
+    if _payload_char_count(bounded, tools, model) <= budget:
+        return bounded
+
+    protected_tail_count = min(CONTEXT_MIN_RECENT_MESSAGES, max(2, len(bounded) // 2))
+    protected_tail_start = max(0, len(bounded) - protected_tail_count)
+    dropped: set[int] = set()
+    for idx, message in enumerate(bounded):
+        if idx >= protected_tail_start or idx in dropped:
+            continue
+        if message.get("role") == "system":
+            continue
+        if message.get("tool_call_id") or message.get("tool_calls"):
+            continue
+        dropped.add(idx)
+        next_idx = idx + 1
+        if next_idx < protected_tail_start:
+            next_message = bounded[next_idx]
+            if (
+                next_message.get("role") in {"user", "assistant"}
+                and not next_message.get("tool_call_id")
+                and not next_message.get("tool_calls")
+            ):
+                dropped.add(next_idx)
+        candidate = [item for item_idx, item in enumerate(bounded) if item_idx not in dropped]
+        if _payload_char_count(candidate, tools, model) <= budget:
+            return candidate
+
+    bounded = [item for item_idx, item in enumerate(bounded) if item_idx not in dropped]
+    while _payload_char_count(bounded, tools, model) > budget:
+        largest_idx = -1
+        largest_len = 0
+        for idx, message in enumerate(bounded):
+            content = message.get("content")
+            if isinstance(content, str) and len(content) > largest_len:
+                largest_idx = idx
+                largest_len = len(content)
+        min_content_chars = len(CONTEXT_TRUNCATION_MARKER) + 80
+        if largest_idx < 0 or largest_len <= min_content_chars:
+            break
+        excess = _payload_char_count(bounded, tools, model) - budget
+        next_limit = max(min_content_chars, largest_len - excess - 1_000)
+        if next_limit >= largest_len:
+            next_limit = max(min_content_chars, largest_len // 2)
+        bounded[largest_idx] = dict(bounded[largest_idx])
+        bounded[largest_idx]["content"] = _truncate_text_to_chars(
+            str(bounded[largest_idx].get("content") or ""),
+            next_limit,
+        )
+
+    if _payload_char_count(bounded, tools, model) > budget:
+        raise RuntimeError(CONTEXT_TOO_LARGE_MESSAGE)
+    return bounded
 
 
 class OpenRouterToolSupportError(RuntimeError):
@@ -379,9 +484,11 @@ class OpenRouterAgent:
         tools: list[dict[str, Any]],
         model: str | None = None,
     ) -> dict[str, Any]:
+        active_model = model or self.model
+        bounded_messages = _bounded_openrouter_messages(messages, tools, active_model)
         payload = {
-            "model": model or self.model,
-            "messages": messages,
+            "model": active_model,
+            "messages": bounded_messages,
         }
         if tools:
             payload["tools"] = tools

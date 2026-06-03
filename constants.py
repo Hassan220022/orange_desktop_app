@@ -148,10 +148,12 @@ HT_MEET_WIDTHS = {
 # ── BDT validation constants ──────────────────────────────
 BDT_DEFAULT_TOLERANCE = 0.15   # 15% — fractional sizing tolerance for R8
 BDT_DEFAULT_HEALTH_PCT = 0.80  # 80% default battery health (lead-acid)
-BDT_DISCHARGE_CURRENT_TOLERANCE_A = 1.0   # R9 — discharge current ±A from baseline
-BDT_STRING_AMPERE_TOLERANCE_A = 3.0       # R3 — rectifier-vs-strings amp band
+BDT_DISCHARGE_CURRENT_TOLERANCE_A = 1.0   # R9 — discharge current absolute floor (A)
+BDT_DISCHARGE_CURRENT_PCT = 0.03          # R9 — discharge current % tolerance of baseline (3%)
+BDT_STRING_AMPERE_TOLERANCE_A = 3.0       # R3 — max strings-above-bus (negative diff lower bound)
+BDT_STRING_AMPERE_POS_TOLERANCE_A = 0.5   # R3 — max bus-above-strings (positive diff epsilon)
 BDT_POWER_TIMING_TOLERANCE_MIN = 15       # R2 — power-alarm timing window (minutes)
-BDT_START_AMPERE_THRESHOLD_A = 0.5        # R5 — starting I-Battery |I| threshold
+BDT_START_AMPERE_THRESHOLD_A = 1.0        # R5 — starting I-Battery |I| tolerance for human-reviewed idle current
 BDT_COMPLETION_MINUTES = 180              # R6/R8 — discharge target ceiling (minutes)
 BDT_END_VOLTAGE_MIN = 45.0                # R6 — acceptable end voltage min (V)
 BDT_END_VOLTAGE_MAX = 47.0                # R6 — acceptable end voltage max (V)

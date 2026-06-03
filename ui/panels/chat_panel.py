@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -74,6 +75,7 @@ _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _TABLE_ROW_RE = re.compile(r"^\|(.+)\|\s*$")
 _TABLE_SEP_RE = re.compile(r"^\|\s*(:?-+:?\s*\|\s*)+$")
+_HEADING_RE = re.compile(r"^(#{1,3})\s+(.+)$")
 MAX_SAVED_SESSIONS = 50
 CHAT_SUMMARY_TRIGGER_TURNS = 14
 CHAT_SUMMARY_BATCH_TURNS = 6
@@ -169,6 +171,13 @@ def _parse_markdown_blocks(text: str) -> list[tuple[str, str | list[str] | list[
             blocks.append(("code", "\n".join(code_lines)))
             continue
 
+        heading_match = _HEADING_RE.match(stripped)
+        if heading_match:
+            level = len(heading_match.group(1))
+            blocks.append((f"h{level}", heading_match.group(2).strip()))
+            i += 1
+            continue
+
         bullet_match = _BULLET_RE.match(line)
         if bullet_match:
             items: list[str] = []
@@ -232,6 +241,7 @@ def _parse_markdown_blocks(text: str) -> list[tuple[str, str | list[str] | list[
             if (
                 not nxt_stripped
                 or nxt_stripped.startswith("```")
+                or _HEADING_RE.match(nxt_stripped)
                 or _BULLET_RE.match(nxt)
                 or _NUMBERED_RE.match(nxt)
                 or _KEY_VALUE_RE.match(nxt)
@@ -688,7 +698,7 @@ class ChatHistoryDialog(QDialog):
     def __init__(self, sessions: list[dict], parent=None):
         super().__init__(parent)
         self.setWindowTitle("Chat History")
-        self.setMinimumSize(420, 340)
+        self.setMinimumSize(520, 340)
         self._sessions = list(sessions)
 
         layout = QVBoxLayout(self)
@@ -698,17 +708,17 @@ class ChatHistoryDialog(QDialog):
         if not self._sessions:
             layout.addWidget(QLabel("No saved conversations yet."))
         else:
+            self._search = QLineEdit()
+            self._search.setPlaceholderText("Search saved conversations...")
+            self._search.textChanged.connect(self._filter_sessions)
+            layout.addWidget(self._search)
+
             self._list = QListWidget()
             self._list.setObjectName("chat_history_list")
             for sess in self._sessions:
-                title = str(sess.get("title") or "Untitled chat")
-                ts = str(sess.get("saved_at") or "")
-                turn_count = len(sess.get("messages") or [])
-                label = f"{title}  ({turn_count} turns)"
-                if ts:
-                    label += f"  —  {ts[:16]}"
-                item = QListWidgetItem(label)
+                item = QListWidgetItem(self._session_label(sess))
                 item.setData(Qt.UserRole, sess)
+                item.setData(Qt.UserRole + 1, str(sess.get("title") or "Untitled chat").lower())
                 self._list.addItem(item)
             self._list.itemDoubleClicked.connect(self._on_double_click)
             layout.addWidget(self._list, 1)
@@ -724,35 +734,94 @@ class ChatHistoryDialog(QDialog):
         self._btn_delete.clicked.connect(self._delete_selected)
         layout.addWidget(buttons)
 
-    def _restore_selected(self):
+    def _session_label(self, sess: dict) -> str:
+        title = str(sess.get("title") or "Untitled chat")
+        if len(title) > 60:
+            title = f"{title[:57]}..."
+        saved_at = str(sess.get("saved_at") or "")[:16].replace("T", " ")
+        turn_count = len(sess.get("messages") or [])
+        model = self._short_model(str(sess.get("model") or ""))
+        label = f"{title} ({turn_count} turns)"
+        if saved_at:
+            label += f" — {saved_at}"
+        if model:
+            label += f"  [{model}]"
+        return label
+
+    def _short_model(self, model_id: str) -> str:
+        return (model_id.split("/")[-1] or model_id)[:20]
+
+    def _filter_sessions(self, text: str):
         if not hasattr(self, "_list"):
             return
+        needle = text.strip().lower()
+        for row in range(self._list.count()):
+            item = self._list.item(row)
+            title = item.data(Qt.UserRole + 1) or ""
+            self._list.setRowHidden(row, bool(needle and needle not in title))
+        self._select_first_visible_item()
+        self._refresh_buttons()
+
+    def _selected_visible_item(self) -> QListWidgetItem | None:
+        if not hasattr(self, "_list"):
+            return None
         item = self._list.currentItem()
-        if item is None and self._list.count():
-            item = self._list.item(0)
+        if item is not None and not self._list.isRowHidden(self._list.row(item)):
+            return item
+        return self._first_visible_item()
+
+    def _first_visible_item(self) -> QListWidgetItem | None:
+        for row in range(self._list.count()):
+            if not self._list.isRowHidden(row):
+                return self._list.item(row)
+        return None
+
+    def _select_first_visible_item(self):
+        item = self._selected_visible_item()
+        if item is None:
+            self._list.clearSelection()
+            self._list.setCurrentItem(None)
+            return
+        self._list.setCurrentItem(item)
+
+    def _has_visible_items(self) -> bool:
+        return self._first_visible_item() is not None if hasattr(self, "_list") else False
+
+    def _refresh_buttons(self):
+        has_visible_items = self._has_visible_items()
+        self._btn_restore.setEnabled(has_visible_items)
+        self._btn_delete.setEnabled(has_visible_items)
+
+    def _restore_selected(self):
+        item = self._selected_visible_item()
         if item is None:
             return
         self.session_selected.emit(item.data(Qt.UserRole))
         self.accept()
 
     def _on_double_click(self, item: QListWidgetItem):
+        if self._list.isRowHidden(self._list.row(item)):
+            return
         self.session_selected.emit(item.data(Qt.UserRole))
         self.accept()
 
     def _delete_selected(self):
         if not hasattr(self, "_list"):
             return
-        row = self._list.currentRow()
-        if row < 0:
+        item = self._selected_visible_item()
+        if item is None:
             return
-        self._list.takeItem(row)
-        if 0 <= row < len(self._sessions):
-            self._sessions.pop(row)
-        self._btn_restore.setEnabled(self._list.count() > 0)
-        self._btn_delete.setEnabled(self._list.count() > 0)
+        self._list.takeItem(self._list.row(item))
+        self._select_first_visible_item()
+        self._refresh_buttons()
 
     def remaining_sessions(self) -> list[dict]:
-        return list(self._sessions)
+        if not hasattr(self, "_list"):
+            return []
+        return [
+            self._list.item(row).data(Qt.UserRole)
+            for row in range(self._list.count())
+        ]
 
 
 class ChatPanel(QWidget):
@@ -773,8 +842,12 @@ class ChatPanel(QWidget):
         self._upload_allowlist: dict[str, dict[str, object]] = {}
         self._saved_sessions: list[dict] = []
         self._models_thread: FreeModelsThread | None = None
+        self._thinking_widget: QWidget | None = None
+        self._stopped_threads: list[ChatRequestThread] = []
         self._model = DEFAULT_MODEL
         self._recommended_min_width = 350
+        self._empty_state_widget: QWidget | None = None
+        self._api_banner_widget: QWidget | None = None
         self._build()
 
     def _build(self):
@@ -906,11 +979,20 @@ class ChatPanel(QWidget):
         self.btn_send.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.btn_send.clicked.connect(self.send_current_message)
 
+        self.btn_stop = QPushButton("Stop")
+        self.btn_stop.setObjectName("assistant_stop")
+        self.btn_stop.setMinimumHeight(32)
+        self.btn_stop.setMinimumWidth(72)
+        self.btn_stop.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_stop.setVisible(False)
+        self.btn_stop.clicked.connect(self.stop_generation)
+
         self.lbl_char_count = QLabel("0 / 4000")
         self.lbl_char_count.setObjectName("assistant_status")
         self.lbl_char_count.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         actions.addWidget(self.lbl_char_count)
         actions.addStretch(1)
+        actions.addWidget(self.btn_stop)
         actions.addWidget(self.btn_send)
         composer_lay.addLayout(actions)
 
@@ -922,11 +1004,13 @@ class ChatPanel(QWidget):
             self.btn_upload,
             self.btn_clear,
             self.btn_history,
+            self.btn_stop,
             self.btn_send,
         ]
         self._refresh_responsive_metrics()
         self._refresh_send_state()
         self.refresh_free_models()
+        self._show_empty_state()
 
     def _refresh_responsive_metrics(self):
         content_width = 0
@@ -987,6 +1071,7 @@ class ChatPanel(QWidget):
             return
         if self._summary_thread and self._summary_thread.isRunning():
             return
+        self._remove_thinking_bubble()
         self._archive_current_session()
         self._messages.clear()
         self._conversation_summary = ""
@@ -1000,12 +1085,14 @@ class ChatPanel(QWidget):
             self._upload_allowlist = {}
         else:
             upload_allowlist.clear()
+        self._empty_state_widget = None
+        self._api_banner_widget = None
         while self._history_layout.count() > 1:
             item = self._history_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-        self._append_system("Chat cleared.")
+        self._show_empty_state()
 
     def ask_data_sources(self):
         self.send_prompt("List the local data sources and tell me which ones have data.")
@@ -1207,6 +1294,38 @@ class ChatPanel(QWidget):
     def send_current_message(self):
         self.send_prompt(self.input.toPlainText())
 
+    def stop_generation(self):
+        thread = self._thread
+        if thread is None or not thread.isRunning():
+            return
+
+        self._remove_thinking_bubble()
+        self._disconnect_request_thread(thread)
+        thread.finished.connect(lambda _answer, t=thread: self._discard_stopped_thread(t))
+        thread.error.connect(lambda _error, t=thread: self._discard_stopped_thread(t))
+        thread.quit()
+        thread.wait(2000)
+        if thread.isRunning():
+            self._stopped_threads.append(thread)
+        self._thread = None
+        self._pending_tool_events.clear()
+        self._pending_tool_order.clear()
+        self._append_system("Generation stopped.")
+        self._set_busy(False)
+        self._refresh_send_state()
+        self.input.setFocus(Qt.OtherFocusReason)
+
+    def _disconnect_request_thread(self, thread: ChatRequestThread):
+        for signal in (thread.tool_event, thread.finished, thread.error):
+            try:
+                signal.disconnect()
+            except TypeError:
+                pass
+
+    def _discard_stopped_thread(self, thread: ChatRequestThread):
+        if thread in self._stopped_threads:
+            self._stopped_threads.remove(thread)
+
     def send_prompt(self, text: str):
         text = text.strip()
         if not text or (self._thread and self._thread.isRunning()):
@@ -1233,10 +1352,10 @@ class ChatPanel(QWidget):
         summary = self._conversation_summary
         self._messages.append(_chat_message("user", text))
         self._append_message("You", text)
+        self._show_thinking_bubble()
         self._pending_tool_events.clear()
         self._pending_tool_order.clear()
         self._pending_tool_seq = 0
-        self._set_busy(True)
 
         self._thread = ChatRequestThread(
             prompt=text,
@@ -1252,6 +1371,7 @@ class ChatPanel(QWidget):
         self._thread.error.connect(self._on_error)
         self._thread.finished.connect(lambda _answer: self._set_busy(False))
         self._thread.error.connect(lambda _error: self._set_busy(False))
+        self._set_busy(True)
         self._thread.start()
 
     def _build_system_context(self) -> str:
@@ -1292,6 +1412,8 @@ class ChatPanel(QWidget):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+        self._empty_state_widget = None
+        self._api_banner_widget = None
         if self._conversation_summary.strip():
             self._append_system("Earlier chat summarized and will be included in future replies.")
         if self._uploaded_files:
@@ -1304,12 +1426,14 @@ class ChatPanel(QWidget):
         for item in self._messages:
             role = str(item.get("role") or "").strip().lower()
             content = str(item.get("content") or "")
+            ts = str(item.get("timestamp") or "")
             if role == "user":
-                self._append_message("You", content)
+                self._append_message("You", content, timestamp=ts or None)
             elif role == "assistant":
-                self._append_message("Assistant", content)
+                self._append_message("Assistant", content, timestamp=ts or None)
 
     def _on_answer(self, answer: str):
+        self._remove_thinking_bubble()
         answer = answer.strip() or "(no answer)"
         if any((self._pending_tool_events.get(call_id) or {}).get("name") in {"query_alarms", "query_bdt_results", "query_backup_times"} for call_id in self._pending_tool_order):
             answer = _strip_table_blocks(answer)
@@ -1321,6 +1445,7 @@ class ChatPanel(QWidget):
         self._viewer._sbar.showMessage("Chat response received", 2500)
 
     def _on_error(self, error: str):
+        self._remove_thinking_bubble()
         self._pending_tool_events.clear()
         self._pending_tool_order.clear()
         self._messages.append(_chat_message("assistant", "The previous request failed before an assistant answer was received."))
@@ -1453,7 +1578,7 @@ class ChatPanel(QWidget):
 
         args = event.get("args") if isinstance(event.get("args"), dict) else {}
         if args:
-            layout.addWidget(self._make_rich_label("Input", object_name="tool_section"))
+            layout.addWidget(self._make_rich_label("Input".upper(), object_name="tool_section"))
             layout.addWidget(self._kv_widget(args))
 
         if status == "running":
@@ -1797,11 +1922,11 @@ class ChatPanel(QWidget):
         }))
         alarm_rows = result.get("alarm_rows")
         if isinstance(alarm_rows, list) and alarm_rows:
-            lay.addWidget(self._make_rich_label("Alarm Preview", object_name="tool_section"))
+            lay.addWidget(self._make_rich_label("Alarm Preview".upper(), object_name="tool_section"))
             lay.addWidget(self._rows_table_widget(alarm_rows, max_rows=8, source_name="query_alarms"))
         bdt_rows = result.get("bdt_rows")
         if isinstance(bdt_rows, list) and bdt_rows:
-            lay.addWidget(self._make_rich_label("BDT Preview", object_name="tool_section"))
+            lay.addWidget(self._make_rich_label("BDT Preview".upper(), object_name="tool_section"))
             lay.addWidget(self._rows_table_widget(bdt_rows, max_rows=8, source_name="query_bdt_results"))
         return frame
 
@@ -1826,26 +1951,26 @@ class ChatPanel(QWidget):
 
         network_rows = self._paged_rows(result.get("network_summary"))
         if network_rows:
-            lay.addWidget(self._make_rich_label("Network Summary", object_name="tool_section"))
+            lay.addWidget(self._make_rich_label("Network Summary".upper(), object_name="tool_section"))
             lay.addWidget(self._rows_table_widget(network_rows, max_rows=3))
 
         if alarm_stats:
-            lay.addWidget(self._make_rich_label("Alarm Stats", object_name="tool_section"))
+            lay.addWidget(self._make_rich_label("Alarm Stats".upper(), object_name="tool_section"))
             lay.addWidget(self._stats_widget(alarm_stats))
 
         alarm_rows = self._paged_rows(result.get("alarm_rows"))
         if alarm_rows:
-            lay.addWidget(self._make_rich_label("Alarm Preview", object_name="tool_section"))
+            lay.addWidget(self._make_rich_label("Alarm Preview".upper(), object_name="tool_section"))
             lay.addWidget(self._rows_table_widget(alarm_rows, max_rows=8, source_name="query_alarms"))
 
         bdt_summary_rows = self._paged_rows(result.get("bdt_summary"))
         if bdt_summary_rows:
-            lay.addWidget(self._make_rich_label("BDT Summary", object_name="tool_section"))
+            lay.addWidget(self._make_rich_label("BDT Summary".upper(), object_name="tool_section"))
             lay.addWidget(self._rows_table_widget(bdt_summary_rows, max_rows=5))
 
         validation_rows = self._paged_rows(result.get("validation_runs"))
         if validation_rows:
-            lay.addWidget(self._make_rich_label("Validation Runs", object_name="tool_section"))
+            lay.addWidget(self._make_rich_label("Validation Runs".upper(), object_name="tool_section"))
             lay.addWidget(self._rows_table_widget(validation_rows, max_rows=5, source_name="query_bdt_results"))
 
         return frame
@@ -2159,6 +2284,9 @@ class ChatPanel(QWidget):
     def _set_busy(self, busy: bool):
         summary_busy = bool(self._summary_thread and self._summary_thread.isRunning())
         effective_busy = busy or summary_busy
+        request_busy = bool(busy and self._thread is not None)
+        self.btn_stop.setVisible(request_busy)
+        self.btn_stop.setEnabled(request_busy)
         self.btn_send.setEnabled(not effective_busy and bool(self.input.toPlainText().strip()))
         self.btn_clear.setEnabled(not effective_busy)
         self.btn_sources.setEnabled(not effective_busy)
@@ -2174,11 +2302,13 @@ class ChatPanel(QWidget):
             (self._thread and self._thread.isRunning())
             or (self._summary_thread and self._summary_thread.isRunning())
         )
-        self.btn_send.setEnabled(not busy and bool(self.input.toPlainText().strip()))
         text = self.input.toPlainText()
         char_count = len(text)
+        over_limit = char_count > 4000
+        self.btn_send.setEnabled(not busy and bool(text.strip()) and not over_limit)
         if hasattr(self, "lbl_char_count"):
             self.lbl_char_count.setText(f"{char_count} / 4000")
+            self.lbl_char_count.setStyleSheet("color: #f38ba8;" if over_limit else "")
 
     def _adjust_input_height(self):
         """Auto-resize the input field to fit its content."""
@@ -2199,9 +2329,65 @@ class ChatPanel(QWidget):
 
     def refresh_settings(self):
         self.lbl_status.setText(self._api_status_text())
+        if self._viewer.openrouter_api_key():
+            self._hide_api_banner()
+        else:
+            self._show_api_banner()
 
     def _append_system(self, text: str):
         self._append_message("System", text, store=False)
+
+    def _show_thinking_bubble(self):
+        self._remove_thinking_bubble()
+
+        row = QWidget()
+        row.setObjectName("chat_row")
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 2, 0, 2)
+        row_layout.setSpacing(0)
+
+        bubble = QFrame()
+        bubble.setObjectName("chat_bubble_thinking")
+        max_w = self._message_bubble_width(self.width(), "system")
+        bubble.setMaximumWidth(max_w)
+        bubble.setMinimumWidth(min(max_w, 300))
+        bubble_sp = QSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        bubble_sp.setHeightForWidth(True)
+        bubble.setSizePolicy(bubble_sp)
+
+        bubble_layout = QVBoxLayout(bubble)
+        bubble_layout.setContentsMargins(12, 10, 12, 10)
+        bubble_layout.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        timestamp = datetime.now().strftime("%H:%M")
+        meta = QLabel(f"Assistant · {timestamp}")
+        meta.setObjectName("chat_meta_system")
+        header.addWidget(meta)
+        header.addStretch(1)
+        bubble_layout.addLayout(header)
+        bubble_layout.addWidget(self._make_rich_label("Thinking..."))
+
+        row_layout.addWidget(bubble, 1, Qt.AlignLeft)
+        self._thinking_widget = row
+        self._history_layout.insertWidget(self._history_layout.count() - 1, row)
+        self._schedule_scroll_to_bottom()
+
+    def _remove_thinking_bubble(self):
+        try:
+            widget = self._thinking_widget
+        except (AttributeError, RuntimeError):
+            return
+        self._thinking_widget = None
+        if widget is None:
+            return
+        try:
+            self._history_layout.removeWidget(widget)
+            widget.deleteLater()
+        except RuntimeError:
+            pass
 
     @staticmethod
     def _make_rich_label(text: str, *, object_name: str = "chat_text") -> QLabel:
@@ -2213,7 +2399,15 @@ class ChatPanel(QWidget):
 
     def _append_blocks(self, bubble_layout: QVBoxLayout, text: str):
         for kind, payload in _parse_markdown_blocks(text):
-            if kind == "p":
+            if kind in ("h1", "h2", "h3"):
+                sizes = {"h1": 16, "h2": 14, "h3": 13}
+                size = sizes[kind]
+                label = self._make_rich_label(
+                    f"<span style='font-size:{size}px; font-weight:700;'>"
+                    f"{_format_inline_markdown(str(payload))}</span>"
+                )
+                bubble_layout.addWidget(label)
+            elif kind == "p":
                 bubble_layout.addWidget(self._make_rich_label(_format_inline_markdown(str(payload))))
             elif kind == "ul":
                 items = "".join(f"<li>{_format_inline_markdown(item)}</li>" for item in payload)
@@ -2251,8 +2445,9 @@ class ChatPanel(QWidget):
                     if not cells:
                         continue
                     cell_tag = "th" if row_idx == 0 else "td"
+                    border_col = QApplication.palette().mid().color().name()
                     cell_html = "".join(
-                        f"<{cell_tag} style='padding:4px 8px; border:1px solid #2a4060; text-align:left;'>{_format_inline_markdown(cell)}</{cell_tag}>"
+                        f"<{cell_tag} style='padding:4px 8px; border:1px solid {border_col}; text-align:left;'>{_format_inline_markdown(cell)}</{cell_tag}>"
                         for cell in cells
                     )
                     html_rows.append(f"<tr>{cell_html}</tr>")
@@ -2266,7 +2461,74 @@ class ChatPanel(QWidget):
                         )
                     )
 
-    def _append_message(self, role: str, text: str, *, store: bool = True):
+    def _show_empty_state(self):
+        if self._empty_state_widget is not None:
+            return
+        frame = QFrame()
+        frame.setObjectName("chat_empty_state")
+        lay = QVBoxLayout(frame)
+        lay.setContentsMargins(20, 32, 20, 32)
+        lay.setSpacing(12)
+        lay.setAlignment(Qt.AlignCenter)
+        title = QLabel("Alarm Copilot")
+        title.setObjectName("assistant_title")
+        title.setAlignment(Qt.AlignCenter)
+        lay.addWidget(title)
+        desc = QLabel("Ask about alarms, BDT tests, sites, or generate reports.")
+        desc.setObjectName("assistant_status")
+        desc.setAlignment(Qt.AlignCenter)
+        desc.setWordWrap(True)
+        lay.addWidget(desc)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        chips.setAlignment(Qt.AlignCenter)
+        for chip_label in ("Alarm stats", "Data sources", "Site dossier…"):
+            chip = _make_assistant_button(chip_label)
+            chip.clicked.connect(lambda _c=False, t=chip_label: self.send_prompt(t))
+            chips.addWidget(chip)
+        lay.addLayout(chips)
+        self._empty_state_widget = frame
+        self._history_layout.insertWidget(0, frame)
+
+    def _remove_empty_state(self):
+        if self._empty_state_widget is not None:
+            self._empty_state_widget.deleteLater()
+            self._empty_state_widget = None
+
+    def _live_api_banner_widget(self) -> QWidget | None:
+        widget = self._api_banner_widget
+        if widget is None:
+            return None
+        try:
+            widget.parent()
+        except RuntimeError:
+            self._api_banner_widget = None
+            return None
+        return widget
+
+    def _show_api_banner(self):
+        if self._live_api_banner_widget() is not None:
+            return
+        frame = QFrame()
+        frame.setObjectName("chat_api_banner")
+        row = QHBoxLayout(frame)
+        row.setContentsMargins(12, 8, 12, 8)
+        row.setSpacing(8)
+        lbl = QLabel("OpenRouter API key is not configured. Chat will not work.")
+        lbl.setObjectName("assistant_status")
+        lbl.setWordWrap(True)
+        row.addWidget(lbl, 1)
+        self._api_banner_widget = frame
+        self._history_layout.insertWidget(0, frame)
+
+    def _hide_api_banner(self):
+        widget = self._live_api_banner_widget()
+        if widget is not None:
+            widget.deleteLater()
+            self._api_banner_widget = None
+
+    def _append_message(self, role: str, text: str, *, store: bool = True, timestamp: str | None = None):
+        self._remove_empty_state()
         role_key = role.lower()
         bubble_name = {
             "you": "chat_bubble_user",
@@ -2312,8 +2574,15 @@ class ChatPanel(QWidget):
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
 
-        timestamp = datetime.now().strftime("%H:%M")
-        meta = QLabel(f"{role} · {timestamp}")
+        if timestamp:
+            try:
+                _dt = datetime.fromisoformat(timestamp)
+                ts = _dt.astimezone().strftime("%H:%M")
+            except (ValueError, TypeError):
+                ts = timestamp[:5] if len(timestamp) >= 5 else timestamp
+        else:
+            ts = datetime.now().strftime("%H:%M")
+        meta = QLabel(f"{role} · {ts}")
         meta.setObjectName(meta_name)
         header.addWidget(meta)
         header.addStretch(1)
@@ -2339,6 +2608,12 @@ class ChatPanel(QWidget):
             self._schedule_scroll_to_bottom()
 
     def _message_actions_widget(self, role: str, text: str) -> QWidget:
+        role_key = role.lower()
+        if role_key == "system":
+            placeholder = QWidget()
+            placeholder.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            return placeholder
+
         frame = QFrame()
         frame.setObjectName("tool_detail")
         row = QHBoxLayout(frame)
@@ -2348,6 +2623,18 @@ class ChatPanel(QWidget):
         btn_copy = _make_assistant_button("Copy", minimum_width=52)
         btn_copy.clicked.connect(lambda _checked=False, t=text: self._copy_text(t))
         row.addWidget(btn_copy)
+
+        if role_key == "error":
+            last_user = next(
+                (m["content"] for m in reversed(self._messages) if m.get("role") == "user"),
+                None,
+            )
+            btn_retry = _make_assistant_button("Retry", minimum_width=52)
+            btn_retry.setEnabled(bool(last_user) and not self._chat_work_in_progress())
+            btn_retry.clicked.connect(
+                lambda _checked=False, t=last_user: self.send_prompt(t) if t else None
+            )
+            row.addWidget(btn_retry)
 
         return frame
 

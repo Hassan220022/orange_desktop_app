@@ -7,6 +7,8 @@ import pandas as pd
 from alarm_app.bdt.parser import BDTData, PhotoSlot
 from alarm_app.bdt.validator import (
     BDTTolerances,
+    BDT_TOLERANCE_PROFILE_VERSION,
+    BDT_TOLERANCE_PROFILE_VERSION_KEY,
     _find_door_alarms,
     _rule_1_photos,
     _rule_2_power_alarm_match,
@@ -216,16 +218,76 @@ class TestValidateBDTOverall:
         assert any(r.rule_id == "R10" and r.verdict == "Rejected" for r in result.rules)
         assert result.overall == "Rejected"
 
-    def test_overall_revise_when_only_na_and_accepted(self):
+    def test_overall_rejected_when_no_alarm_data_loaded(self):
         slots = [
             _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
             for i in range(16)
         ]
         bdt = _make_bdt(photo_slots=slots, photo_count=16)
-        # No alarm data -> alarm-dependent rules become N/A
         result = validate_bdt(bdt, None)
-        assert any(r.verdict == "N/A" for r in result.rules)
+        verdicts = {r.rule_id: r.verdict for r in result.rules}
+        assert verdicts["R2"] == "N/A"
+        assert verdicts["R10"] == "Rejected"
+        assert result.overall == "Rejected"
+
+    def test_overall_revise_when_power_evidence_revise_and_door_accepted(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(
+            photo_slots=slots,
+            photo_count=16,
+            discharge_minutes=120.0,
+            summary_data={
+                "Short Code": "SITE001",
+                "Battery Brand": "Narada",
+                "Battery Voltage": "48",
+                "Number of Strings": "1",
+                "Start Voltage": "48.0",
+                "End Voltage": "46.0",
+                "Discharge Time (mins)": "120",
+                "Test Date": "2026-01-15",
+            },
+        )
+        alarm_df = _make_alarm_df([_door_alarm()])
+
+        result = validate_bdt(bdt, alarm_df)
+
+        verdicts = {r.rule_id: r.verdict for r in result.rules}
+        assert verdicts["R2"] == "Revise"
+        assert verdicts["R10"] == "Accepted"
+        assert not any(r.verdict == "Rejected" for r in result.rules)
         assert result.overall == "Revise"
+
+    def test_overall_rejected_without_door_even_when_battery_rules_accepted(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(
+            photo_slots=slots,
+            photo_count=16,
+            discharge_minutes=120.0,
+            summary_data={
+                "Short Code": "SITE001",
+                "Battery Brand": "Narada",
+                "Battery Voltage": "48",
+                "Number of Strings": "1",
+                "Start Voltage": "48.0",
+                "End Voltage": "46.0",
+                "Discharge Time (mins)": "120",
+                "Test Date": "2026-01-15",
+            },
+        )
+        alarm_df = _make_alarm_df([_power_alarm()])
+
+        result = validate_bdt(bdt, alarm_df)
+
+        verdicts = {r.rule_id: r.verdict for r in result.rules}
+        assert verdicts["R2"] == "Accepted"
+        assert verdicts["R10"] == "Rejected"
+        assert result.overall == "Rejected"
 
     def test_no_battery_skips_battery_dependent_rules_and_declines_bdt(self):
         slots = [
@@ -461,13 +523,13 @@ class TestR2PowerAlarmMatch:
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
 
-    def test_outside_tolerance_rejected(self):
+    def test_outside_tolerance_revise(self):
         bdt = _make_bdt(time_in="08:00", time_out="10:00")
         alarm_df = _make_alarm_df([
             _power_alarm(occurred="2026-01-15 08:16:00", cleared="2026-01-15 10:16:00")
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
-        assert r.verdict == "Rejected"
+        assert r.verdict == "Revise"
 
     def test_default_tolerance_15_minutes_accepted(self):
         bdt = _make_bdt(time_in="08:00", time_out="10:00")
@@ -489,13 +551,13 @@ class TestR2PowerAlarmMatch:
         r = _rule_2_power_alarm_match(bdt, None)
         assert r.verdict == "N/A"
 
-    def test_no_power_same_site_date_rejected(self):
+    def test_no_power_same_site_date_revise(self):
         bdt = _make_bdt()
         alarm_df = _make_alarm_df([
             _power_alarm(site_id="SITE999"),
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
-        assert r.verdict == "Rejected"
+        assert r.verdict == "Revise"
 
     def test_power_to_down_path_accepted_when_clear_mismatch(self):
         bdt = _make_bdt(
@@ -516,7 +578,7 @@ class TestR2PowerAlarmMatch:
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
 
-    def test_duration_mismatch_rejected_even_with_start_end_match(self):
+    def test_duration_mismatch_revise_even_with_start_end_match(self):
         bdt = _make_bdt(
             time_in="08:00",
             time_out="10:00",
@@ -531,7 +593,7 @@ class TestR2PowerAlarmMatch:
             _power_alarm(occurred="2026-01-15 08:09:00", cleared="2026-01-15 10:40:00")
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
-        assert r.verdict == "Rejected"
+        assert r.verdict == "Revise"
         assert "duration" in r.detail.lower()
 
     def test_duration_over_180_minutes_no_longer_auto_rejected(self):
@@ -623,13 +685,13 @@ class TestR2PowerAlarmMatch:
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
 
-    def test_batteries_with_duration_but_no_power_alarm_rejected(self):
+    def test_batteries_with_duration_but_no_power_alarm_revise(self):
         """Site has discharge data but no power alarm at all."""
         bdt = _make_bdt(discharge_minutes=120.0)
         alarm_df = _make_alarm_df([_door_alarm()])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
-        assert r.verdict == "Rejected"
-        assert "No Power alarms" in r.detail
+        assert r.verdict == "Revise"
+        assert "Power alarm evidence" in r.detail
 
     def test_power_cleared_no_site_down_accepted(self):
         """Case A: Power alarm clears (grid restores), no Down alarm."""
@@ -648,9 +710,9 @@ class TestR2PowerAlarmMatch:
             _power_alarm(occurred="2026-01-15 08:04:00",
                          cleared="2026-01-15 10:04:00")
         ])
-        # With 3-minute tolerance, 4-minute offset should fail
+        # With 3-minute tolerance, 4-minute offset needs review
         r = _rule_2_power_alarm_match(bdt, alarm_df, tol_override=3.0)
-        assert r.verdict == "Rejected"
+        assert r.verdict == "Revise"
         # With 5-minute tolerance, 4-minute offset should pass
         r = _rule_2_power_alarm_match(bdt, alarm_df, tol_override=5.0)
         assert r.verdict == "Accepted"
@@ -661,15 +723,20 @@ class TestR2PowerAlarmMatch:
 
 class TestR5StartAmpere:
 
-    def test_approx_zero_accepted_with_updated_wording(self):
-        bdt = _make_bdt(ibat_before_test=0.4)
+    def test_default_accepts_human_review_start_current(self):
+        bdt = _make_bdt(ibat_before_test=0.9)
         r = _rule_5_start_ampere(bdt)
         assert r.verdict == "Accepted"
         assert r.rule_name == "Starting I-Battery ampere"
-        assert "approximate 0A threshold" in r.detail
+        assert "|I| <= 1.00A" in r.detail
 
-    def test_threshold_boundary_rejected(self):
-        bdt = _make_bdt(ibat_before_test=0.5)
+    def test_threshold_boundary_accepted(self):
+        bdt = _make_bdt(ibat_before_test=1.0)
+        r = _rule_5_start_ampere(bdt)
+        assert r.verdict == "Accepted"
+
+    def test_above_threshold_rejected(self):
+        bdt = _make_bdt(ibat_before_test=1.01)
         r = _rule_5_start_ampere(bdt)
         assert r.verdict == "Rejected"
 
@@ -693,8 +760,14 @@ class TestR6CompletionOrRule:
         r = _rule_6_end_voltage(bdt, health_pct=0.80)
         assert r.verdict == "Accepted"
 
-    def test_both_conditions_fail_rejected(self):
-        bdt = _make_bdt(discharge_minutes=120.0, end_voltage=44.8)
+    def test_low_voltage_accepts_as_depleted_battery_evidence(self):
+        bdt = _make_bdt(discharge_minutes=65.0, end_voltage=43.0)
+        r = _rule_6_end_voltage(bdt, health_pct=0.80)
+        assert r.verdict == "Accepted"
+        assert "depleted" in r.detail or "weak" in r.detail
+
+    def test_short_duration_with_high_voltage_rejected(self):
+        bdt = _make_bdt(discharge_minutes=120.0, end_voltage=48.5)
         r = _rule_6_end_voltage(bdt, health_pct=0.80)
         assert r.verdict == "Rejected"
 
@@ -758,7 +831,7 @@ class TestR8SizingVsActual:
         assert r.verdict == "Accepted"
         assert "Theoretical: 120" in r.detail
 
-    def test_theoretical_over_180_requires_cap_reached_rejected(self):
+    def test_theoretical_over_180_accepts_short_as_weak_backup_evidence(self):
         # theoretical = (100*48*1)/(48*30)*60 = 200 min (>180 cap)
         bdt = _make_bdt(
             battery_brand="Lithium",
@@ -770,7 +843,8 @@ class TestR8SizingVsActual:
             discharge_minutes=170.0,
         )
         r = _rule_8_backup_time(bdt, health_pct=0.95)
-        assert r.verdict == "Rejected"
+        assert r.verdict == "Accepted"
+        assert "weak" in r.detail or "short backup" in r.detail
         assert "short by" in r.detail
 
     def test_theoretical_over_180_accepts_when_cap_reached(self):
@@ -802,9 +876,8 @@ class TestR8SizingVsActual:
         r = _rule_8_backup_time(bdt, health_pct=0.95)
         assert r.verdict == "Accepted"
 
-    def test_abs_difference_above_tolerance_rejected(self):
-        # theoretical = 150 min; default tolerance window = max(150*0.15, 15) = 22.5 min;
-        # actual = 120, diff=30 → above window
+    def test_actual_below_theoretical_accepted_as_weak_backup_evidence(self):
+        # theoretical = 150 min; actual = 120 is weak/short backup evidence, not fraud.
         bdt = _make_bdt(
             battery_brand="Lithium",
             battery_ah=100.0,
@@ -815,8 +888,23 @@ class TestR8SizingVsActual:
             discharge_minutes=120.0,
         )
         r = _rule_8_backup_time(bdt, health_pct=0.95)
+        assert r.verdict == "Accepted"
+        assert "weak" in r.detail or "short backup" in r.detail
+
+    def test_actual_above_theoretical_beyond_tolerance_rejected(self):
+        # theoretical = 150 min; default upper window = 172.5 min; actual = 180 is suspicious.
+        bdt = _make_bdt(
+            battery_brand="Lithium",
+            battery_ah=100.0,
+            battery_voltage=48.0,
+            num_strings=1,
+            start_voltage=48.0,
+            start_ampere=40.0,
+            discharge_minutes=180.0,
+        )
+        r = _rule_8_backup_time(bdt, health_pct=0.95)
         assert r.verdict == "Rejected"
-        assert "limit:" in r.detail and "% of theoretical" in r.detail
+        assert "over-performance" in r.detail
 
     def test_tolerance_floor_15_minutes_for_short_tests(self):
         # theoretical ≈ 60 min; theoretical * 0.15 = 9 min, but floor is 15 min;
@@ -838,7 +926,7 @@ class TestR8SizingVsActual:
 
     def test_tolerance_parameter_widens_window(self):
         # theoretical = 150 min; with tolerance=0.30, window = 45 min;
-        # actual = 110, diff=40 → would be Rejected at 0.15 (window 22.5),
+        # actual = 190, over by 40 → Rejected at 0.15 (window 22.5),
         # but Accepted at 0.30 (window 45)
         bdt = _make_bdt(
             battery_brand="Lithium",
@@ -847,7 +935,7 @@ class TestR8SizingVsActual:
             num_strings=1,
             start_voltage=48.0,
             start_ampere=40.0,
-            discharge_minutes=110.0,
+            discharge_minutes=190.0,
         )
         strict = _rule_8_backup_time(bdt, health_pct=0.95, tolerance=0.15)
         loose = _rule_8_backup_time(bdt, health_pct=0.95, tolerance=0.30)
@@ -898,10 +986,12 @@ class TestR9DischargeCurrentTolerance:
 
 class TestR10DoorAlarmCondition:
 
-    def test_no_alarm_data_na(self):
+    def test_no_alarm_data_rejected(self):
         bdt = _make_bdt()
         r = _rule_10_door_alarm_match(bdt, None)
-        assert r.verdict == "N/A"
+        assert r.verdict == "Rejected"
+        assert "required" in r.detail.lower()
+        assert "no alarm data" in r.detail.lower()
 
     def test_detect_by_alarm_category_accepted(self):
         bdt = _make_bdt()
@@ -1386,8 +1476,10 @@ class TestBDTTolerancesDataclass:
         assert tol.sizing_minutes_floor == 15.0
         assert tol.power_timing_min == 15.0
         assert tol.string_ampere_a == 3.0
+        assert tol.string_ampere_pos_a == 0.5
         assert tol.discharge_current_a == 1.0
-        assert tol.start_ampere_a == 0.5
+        assert tol.discharge_current_pct == 0.03
+        assert tol.start_ampere_a == 1.0
         assert tol.end_voltage_min == 45.0
         assert tol.end_voltage_max == 47.0
         assert tol.completion_minutes == 180.0
@@ -1404,12 +1496,31 @@ class TestBDTTolerancesDataclass:
         tol = BDTTolerances.from_dict(
             {"unknown": 1.0, "discharge_current_a": "not-a-number", "start_ampere_a": None})
         assert tol.discharge_current_a == 1.0  # invalid, falls back
-        assert tol.start_ampere_a == 0.5       # None ignored
+        assert tol.start_ampere_a == 1.0       # None ignored
+
+    def test_from_dict_migrates_legacy_start_ampere_default(self):
+        tol = BDTTolerances.from_dict({"start_ampere_a": 0.5})
+        assert tol.start_ampere_a == 1.0
+
+    def test_from_dict_preserves_custom_start_ampere(self):
+        tol = BDTTolerances.from_dict({"start_ampere_a": 0.75})
+        assert tol.start_ampere_a == 0.75
+
+    def test_from_dict_preserves_versioned_start_ampere_half_ampere(self):
+        tol = BDTTolerances.from_dict({
+            BDT_TOLERANCE_PROFILE_VERSION_KEY: BDT_TOLERANCE_PROFILE_VERSION,
+            "start_ampere_a": 0.5,
+        })
+        assert tol.start_ampere_a == 0.5
 
     def test_to_dict_round_trips(self):
         tol = BDTTolerances(discharge_current_a=2.5, string_ampere_a=4.5)
         roundtrip = BDTTolerances.from_dict(tol.to_dict())
         assert roundtrip == tol
+
+    def test_current_defaults_to_dict_round_trips(self):
+        roundtrip = BDTTolerances.from_dict(BDTTolerances.defaults().to_dict())
+        assert roundtrip == BDTTolerances.defaults()
 
     def test_from_dict_none_returns_defaults(self):
         assert BDTTolerances.from_dict(None) == BDTTolerances.defaults()
@@ -1426,10 +1537,33 @@ class TestR3ConfigurableStringAmpereTolerance:
             ],
         )
 
-    def test_default_band_rejects_positive_diff(self):
-        # diff > 0 always rejects regardless of band magnitude (positive
-        # rectifier excess is structurally invalid, not a tolerance question)
+    def test_large_positive_diff_rejected(self):
+        # diff=+3.0A clearly exceeds the +0.5A positive epsilon → Rejected
         r = _rule_3_string_vs_busbar(self._build_bdt())
+        assert r.verdict == "Rejected"
+
+    def test_small_positive_diff_within_epsilon_accepted(self):
+        # diff=+0.1A (measurement noise, bus barely above strings) → Accepted
+        bdt = _make_bdt(
+            discharge_readings=[("10 Mins", 49.0, 30.1)],
+            string_discharge_readings=[
+                [(54.0, 0.0)],
+                [(49.0, 30.0)],   # sum=30.0, bus=30.1, diff=+0.1 ≤ +0.5A
+            ],
+        )
+        r = _rule_3_string_vs_busbar(bdt)
+        assert r.verdict == "Accepted"
+
+    def test_positive_diff_just_above_epsilon_rejected(self):
+        # diff=+0.6A is just over the +0.5A epsilon → Rejected
+        bdt = _make_bdt(
+            discharge_readings=[("10 Mins", 49.0, 30.6)],
+            string_discharge_readings=[
+                [(54.0, 0.0)],
+                [(49.0, 30.0)],   # sum=30.0, bus=30.6, diff=+0.6 > +0.5A
+            ],
+        )
+        r = _rule_3_string_vs_busbar(bdt)
         assert r.verdict == "Rejected"
 
     def test_widened_band_accepts_diff_within(self):
@@ -1461,19 +1595,19 @@ class TestR5ConfigurableStartAmpereThreshold:
 
 
 class TestR6ConfigurableVoltageBandAndCompletion:
-    def test_widened_voltage_band_accepts(self):
-        bdt = _make_bdt(end_voltage=44.0, discharge_minutes=120.0)
+    def test_widened_voltage_band_accepts_high_voltage(self):
+        bdt = _make_bdt(end_voltage=48.0, discharge_minutes=120.0)
         strict = _rule_6_end_voltage(
             bdt, health_pct=0.95,
             tolerances=BDTTolerances(end_voltage_min=45.0, end_voltage_max=47.0))
         loose = _rule_6_end_voltage(
             bdt, health_pct=0.95,
-            tolerances=BDTTolerances(end_voltage_min=43.0, end_voltage_max=47.0))
+            tolerances=BDTTolerances(end_voltage_min=45.0, end_voltage_max=49.0))
         assert strict.verdict == "Rejected"
         assert loose.verdict == "Accepted"
 
     def test_lowered_completion_minutes_accepts_short_test(self):
-        bdt = _make_bdt(end_voltage=40.0, discharge_minutes=100.0)
+        bdt = _make_bdt(end_voltage=48.5, discharge_minutes=100.0)
         strict = _rule_6_end_voltage(
             bdt, health_pct=0.95,
             tolerances=BDTTolerances(completion_minutes=180.0))
@@ -1486,7 +1620,8 @@ class TestR6ConfigurableVoltageBandAndCompletion:
 
 class TestR9ConfigurableDischargeCurrentBand:
     def test_widened_band_accepts_drift(self):
-        # baseline=25.0, follow-up=27.0 → drift = 2.0A
+        # baseline=25.0, follow-up=27.0 → drift=2.0A
+        # 3% of 25.0=0.75A < floor 1.0A → band=1.0A → still Rejected with default floor
         bdt = _make_bdt(
             discharge_readings=[
                 ("Before", 53.0, 25.0),
@@ -1500,6 +1635,29 @@ class TestR9ConfigurableDischargeCurrentBand:
         assert strict.verdict == "Rejected"
         assert loose.verdict == "Accepted"
 
+    def test_high_baseline_pct_tolerance_accepts_small_relative_drift(self):
+        # baseline=90.0A, drift=+1.8A → 3% of 90=2.7A → band=2.7A → 1.8 ≤ 2.7 → Accepted
+        # (mirrors real 0704UP data that human reviewers accepted)
+        bdt = _make_bdt(
+            discharge_readings=[
+                ("10 Mins", 49.0, 90.0),
+                ("30 Mins", 48.5, 91.8),
+            ],
+        )
+        r = _rule_9_discharge_current_tolerance(bdt)
+        assert r.verdict == "Accepted"
+
+    def test_low_baseline_floor_still_rejects_just_above_1a(self):
+        # baseline=20.0A, drift=+1.2A → 3% of 20=0.6A < floor 1.0A → band=1.0A → Rejected
+        bdt = _make_bdt(
+            discharge_readings=[
+                ("10 Mins", 52.0, 20.0),
+                ("30 Mins", 51.0, 21.2),
+            ],
+        )
+        r = _rule_9_discharge_current_tolerance(bdt)
+        assert r.verdict == "Rejected"
+
 
 class TestValidateBdtPlumbsTolerances:
     """End-to-end: validate_bdt should pass tolerances to rules."""
@@ -1509,11 +1667,11 @@ class TestValidateBdtPlumbsTolerances:
             battery_brand="Lithium",
             battery_ah=100.0, battery_voltage=48.0, num_strings=1,
             start_voltage=48.0, start_ampere=40.0,
-            discharge_minutes=110.0,  # diff=40 vs theoretical=150
+            discharge_minutes=190.0,  # over by 40 vs theoretical=150
             ibat_before_test=0.0,
             end_voltage=46.0,
         )
-        # Default fractional 0.15 → window 22.5 → diff=40 rejected
+        # Default fractional 0.15 → upper window 22.5 → over by 40 rejected
         result_default = validate_bdt(bdt, alarm_df=None,
                                        tolerances=BDTTolerances.defaults())
         r8_default = next(r for r in result_default.rules if r.rule_id == "R8")
@@ -1531,7 +1689,7 @@ class TestValidateBdtPlumbsTolerances:
             battery_brand="Lithium",
             battery_ah=100.0, battery_voltage=48.0, num_strings=1,
             start_voltage=48.0, start_ampere=40.0,
-            discharge_minutes=110.0,
+            discharge_minutes=190.0,
             ibat_before_test=0.0,
             end_voltage=46.0,
         )

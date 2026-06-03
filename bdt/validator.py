@@ -19,6 +19,7 @@ try:
         BDT_COMPLETION_MINUTES,
         BDT_DEFAULT_HEALTH_PCT,
         BDT_DEFAULT_TOLERANCE,
+        BDT_DISCHARGE_CURRENT_PCT,
         BDT_DISCHARGE_CURRENT_TOLERANCE_A,
         BDT_END_VOLTAGE_MAX,
         BDT_END_VOLTAGE_MIN,
@@ -26,6 +27,7 @@ try:
         BDT_REQUIRED_PHOTO_COUNT,
         BDT_SIZING_TOLERANCE_MINUTES,
         BDT_START_AMPERE_THRESHOLD_A,
+        BDT_STRING_AMPERE_POS_TOLERANCE_A,
         BDT_STRING_AMPERE_TOLERANCE_A,
     )
     from alarm_app.core.battery_topology import battery_topology_from_bdt
@@ -35,6 +37,7 @@ except ImportError:
         BDT_COMPLETION_MINUTES,
         BDT_DEFAULT_HEALTH_PCT,
         BDT_DEFAULT_TOLERANCE,
+        BDT_DISCHARGE_CURRENT_PCT,
         BDT_DISCHARGE_CURRENT_TOLERANCE_A,
         BDT_END_VOLTAGE_MAX,
         BDT_END_VOLTAGE_MIN,
@@ -42,9 +45,16 @@ except ImportError:
         BDT_REQUIRED_PHOTO_COUNT,
         BDT_SIZING_TOLERANCE_MINUTES,
         BDT_START_AMPERE_THRESHOLD_A,
+        BDT_STRING_AMPERE_POS_TOLERANCE_A,
         BDT_STRING_AMPERE_TOLERANCE_A,
     )
     from core.battery_topology import battery_topology_from_bdt
+
+
+BDT_TOLERANCE_PROFILE_VERSION = 2
+BDT_TOLERANCE_PROFILE_VERSION_KEY = "_profile_version"
+_LEGACY_START_AMPERE_DEFAULT_A = 0.5
+_LEGACY_FLOAT_EPSILON = 1e-6
 
 
 @dataclass
@@ -83,7 +93,9 @@ class BDTTolerances:
     sizing_minutes_floor: float = float(BDT_SIZING_TOLERANCE_MINUTES)
     power_timing_min: float = float(BDT_POWER_TIMING_TOLERANCE_MIN)
     string_ampere_a: float = float(BDT_STRING_AMPERE_TOLERANCE_A)
+    string_ampere_pos_a: float = float(BDT_STRING_AMPERE_POS_TOLERANCE_A)
     discharge_current_a: float = float(BDT_DISCHARGE_CURRENT_TOLERANCE_A)
+    discharge_current_pct: float = float(BDT_DISCHARGE_CURRENT_PCT)
     start_ampere_a: float = float(BDT_START_AMPERE_THRESHOLD_A)
     end_voltage_min: float = float(BDT_END_VOLTAGE_MIN)
     end_voltage_max: float = float(BDT_END_VOLTAGE_MAX)
@@ -100,6 +112,7 @@ class BDTTolerances:
         defaults = cls()
         if not data:
             return defaults
+        has_profile_version = BDT_TOLERANCE_PROFILE_VERSION_KEY in data
         kwargs: dict[str, float] = {}
         for fld in defaults.__dataclass_fields__:
             if fld in data and data[fld] is not None:
@@ -107,10 +120,19 @@ class BDTTolerances:
                     kwargs[fld] = float(data[fld])
                 except (TypeError, ValueError):
                     pass
-        return cls(**{**defaults.to_dict(), **kwargs})
+        if (
+            not has_profile_version
+            and "start_ampere_a" in kwargs
+            and abs(kwargs["start_ampere_a"] - _LEGACY_START_AMPERE_DEFAULT_A) <= _LEGACY_FLOAT_EPSILON
+        ):
+            kwargs.pop("start_ampere_a")
+        default_values = {fld: getattr(defaults, fld) for fld in defaults.__dataclass_fields__}
+        return cls(**{**default_values, **kwargs})
 
     def to_dict(self) -> dict[str, float]:
-        return {fld: getattr(self, fld) for fld in self.__dataclass_fields__}
+        values = {fld: getattr(self, fld) for fld in self.__dataclass_fields__}
+        values[BDT_TOLERANCE_PROFILE_VERSION_KEY] = float(BDT_TOLERANCE_PROFILE_VERSION)
+        return values
 
 
 def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
@@ -678,8 +700,8 @@ def _rule_2_power_alarm_match(bdt: BDTData,
     if bdt.test_date is None:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm + Duration",
-            passed=False, verdict="Rejected",
-            detail="No test date found in BDT file",
+            passed=False, verdict="Revise",
+            detail="Cannot check Power alarm evidence: no test date found in BDT file",
         )
 
     try:
@@ -687,8 +709,8 @@ def _rule_2_power_alarm_match(bdt: BDTData,
     except Exception:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm + Duration",
-            passed=False, verdict="Rejected",
-            detail=f"Invalid test date: {bdt.test_date!r}",
+            passed=False, verdict="Revise",
+            detail=f"Cannot check Power alarm evidence: invalid test date {bdt.test_date!r}",
         )
 
     discharge_minutes = _max_reached_discharge_minutes(bdt)
@@ -718,8 +740,8 @@ def _rule_2_power_alarm_match(bdt: BDTData,
     if power.empty:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm + Duration",
-            passed=False, verdict="Rejected",
-            detail=f"No Power alarms found for site {bdt.site_code}",
+            passed=False, verdict="Revise",
+            detail=f"No matching Power alarm evidence found for site {bdt.site_code}",
         )
 
     # Check if any Power alarm occurred on the test date
@@ -728,9 +750,9 @@ def _rule_2_power_alarm_match(bdt: BDTData,
     if same_date.empty:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm + Duration",
-            passed=False, verdict="Rejected",
-            detail=(f"No Power alarm on {test_date.date()} for site "
-                    f"{bdt.site_code}. Power was never cut from the grid."),
+            passed=False, verdict="Revise",
+            detail=(f"No matching Power alarm evidence found on {test_date.date()} "
+                    f"for site {bdt.site_code}"),
         )
 
     same_date = same_date.copy()
@@ -742,8 +764,8 @@ def _rule_2_power_alarm_match(bdt: BDTData,
         min_start = same_date["start_diff_min"].min()
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm + Duration",
-            passed=False, verdict="Rejected",
-            detail=(f"No Power alarm start match within ±{tol_min:.0f} min "
+            passed=False, verdict="Revise",
+            detail=(f"No matching Power alarm start evidence within ±{tol_min:.0f} min "
                     f"(closest start Δ={min_start:.1f} min)"),
         )
 
@@ -833,8 +855,8 @@ def _rule_2_power_alarm_match(bdt: BDTData,
     )
     return RuleResult(
         rule_id="R2", rule_name="Power Alarm + Duration",
-        passed=False, verdict="Rejected",
-        detail=(f"No Power timing/duration match within ±{tol_min:.0f} min. "
+        passed=False, verdict="Revise",
+        detail=(f"No matching Power timing/duration evidence within ±{tol_min:.0f} min. "
                 f"Closest path {best['path']}: "
                 f"start Δ={best['start_diff_min']:.1f} min, "
                 f"end Δ={best['end_diff_min']:.1f} min, "
@@ -847,7 +869,7 @@ def _rule_2_power_alarm_match(bdt: BDTData,
 
 def _rule_5_start_ampere(bdt: BDTData,
                          tolerances: "BDTTolerances | None" = None) -> RuleResult:
-    """R5: Starting I-Battery ampere should be approximately 0A."""
+    """R5: Starting I-Battery ampere should be near idle before discharge."""
     if bdt.ibat_before_test is None:
         return RuleResult(
             rule_id="R5", rule_name="Starting I-Battery ampere",
@@ -857,21 +879,24 @@ def _rule_5_start_ampere(bdt: BDTData,
 
     tol = tolerances or BDTTolerances.defaults()
     threshold_a = float(tol.start_ampere_a)
-    passed = abs(bdt.ibat_before_test) < threshold_a
+    passed = abs(bdt.ibat_before_test) <= threshold_a
     return RuleResult(
         rule_id="R5", rule_name="Starting I-Battery ampere",
         passed=passed,
         verdict="Accepted" if passed else "Rejected",
         detail=(f"Starting I-Battery ampere: {bdt.ibat_before_test} A "
-                f"(approximate 0A threshold: |I| < {threshold_a:.2f}A)"),
+                f"(idle-current tolerance: |I| <= {threshold_a:.2f}A)"),
     )
 
 
 def _rule_6_end_voltage(bdt: BDTData, health_pct: float,
                         tolerances: "BDTTolerances | None" = None) -> RuleResult:
-    """R6: Completion OR rule — discharge meets the configured target OR end
-    voltage falls inside the configured ``[end_voltage_min, end_voltage_max]``
-    band."""
+    """R6: accept completed tests, in-range stops, or depleted low-voltage stops.
+
+    Low end voltage below the normal stop band is weak/depleted battery evidence,
+    not fake spreadsheet evidence. Short tests with high end voltage still fail
+    because they appear to have stopped before depletion or completion.
+    """
     if bdt.end_voltage is None:
         return RuleResult(
             rule_id="R6", rule_name="End Voltage Range",
@@ -885,14 +910,28 @@ def _rule_6_end_voltage(bdt: BDTData, health_pct: float,
     v_max = float(tol.end_voltage_max)
 
     reported = float(bdt.discharge_minutes or 0.0)
-    in_voltage_range = v_min <= bdt.end_voltage <= v_max
-    passed = reported >= completion_min or in_voltage_range
+    end_voltage = float(bdt.end_voltage)
+    reached_completion = reported >= completion_min
+    in_voltage_range = v_min <= end_voltage <= v_max
+    depleted_low_voltage = end_voltage < v_min
+    passed = reached_completion or in_voltage_range or depleted_low_voltage
+
+    if reached_completion:
+        reason = "reached completion target"
+    elif in_voltage_range:
+        reason = "end voltage inside normal stop range"
+    elif depleted_low_voltage:
+        reason = "low end voltage indicates depleted/weak battery stop"
+    else:
+        reason = "short duration with high end voltage suggests early stop"
+
     return RuleResult(
         rule_id="R6", rule_name="End Voltage Range",
         passed=passed,
         verdict="Accepted" if passed else "Rejected",
-        detail=(f"Discharge: {reported:.0f} min (target >={completion_min:.0f}) OR "
-                f"end voltage: {bdt.end_voltage}V (range: {v_min:.1f}-{v_max:.1f}V)"),
+        detail=(f"Discharge: {reported:.0f} min (target >= {completion_min:.0f}); "
+                f"end voltage: {end_voltage:.1f}V (normal range: {v_min:.1f}-{v_max:.1f}V); "
+                f"{reason}"),
     )
 
 
@@ -977,16 +1016,16 @@ def _theoretical_backup_minutes(bdt: BDTData, health_pct: float) -> float | None
 def _rule_8_backup_time(bdt: BDTData, health_pct: float,
                         tolerance: float | None = None,
                         tolerances: "BDTTolerances | None" = None) -> RuleResult:
-    """R8: Sizing-vs-actual discharge time consistency check (never N/A).
+    """R8: Sizing-vs-actual discharge time plausibility check (never N/A).
 
     Business rules:
-    - The test target is capped at the configured ``completion_minutes``.
-    - If theoretical duration is greater than that cap, accept only when
-      actual discharge meets it.
-    - Otherwise compare actual vs theoretical with a fractional window
-      (``theoretical_mins * sizing_fractional_tolerance``), floored at
-      ``sizing_minutes_floor`` so very short tests never get tighter than
-      the historical default.
+    - Missing/invalid battery specs remain Rejected because the theoretical
+      backup time cannot be checked.
+    - Actual backup shorter than theoretical is valid weak/short backup evidence.
+    - When theoretical exceeds the completion cap, an actual below the cap is
+      still Accepted as weak backup evidence and reports how short it was.
+    - Actual backup materially above theoretical is suspicious over-performance
+      and is Rejected when it exceeds the configured tolerance window.
     """
     tol = tolerances or BDTTolerances.defaults()
     fractional = (
@@ -1006,42 +1045,50 @@ def _rule_8_backup_time(bdt: BDTData, health_pct: float,
                     "strings, or starting load readings)"),
         )
 
-    # Cap-driven branch: batteries theoretically needing more than the
-    # completion cap are expected to hit/exceed it.
-    if theoretical_mins > completion_min:
-        short_by = max(0.0, completion_min - reported)
-        passed = reported >= completion_min
-        if passed:
-            detail = (f"Theoretical: {theoretical_mins:.0f} min (>{completion_min:.0f} cap), "
-                      f"actual: {reported:.0f} min (reached cap)")
-        else:
-            detail = (f"Theoretical: {theoretical_mins:.0f} min (>{completion_min:.0f} cap), "
-                      f"actual: {reported:.0f} min, short by {short_by:.1f} min to {completion_min:.0f}")
-        return RuleResult(
-            rule_id="R8", rule_name="Sizing vs Actual",
-            passed=passed,
-            verdict="Accepted" if passed else "Rejected",
-            detail=detail,
-        )
-
-    # Normal branch: compare against theoretical target with a configurable
-    # fractional tolerance, floored at the historical default so very short
-    # theoretical windows still get a reasonable allowance.
     fractional_window = theoretical_mins * fractional
     tol_min = max(fractional_window, minutes_floor)
     floor_won = minutes_floor > fractional_window
-    delta = abs(theoretical_mins - reported)
-    passed = delta <= tol_min
     if floor_won:
         explanation = f"{minutes_floor:.0f} min floor"
     else:
         explanation = f"{fractional * 100:.0f}% of theoretical"
+
+    if theoretical_mins > completion_min:
+        short_by = max(0.0, completion_min - reported)
+        if reported < completion_min:
+            detail = (f"Theoretical: {theoretical_mins:.0f} min (>{completion_min:.0f} cap), "
+                      f"actual: {reported:.0f} min; weak/short backup evidence, "
+                      f"short by {short_by:.1f} min to cap")
+        else:
+            detail = (f"Theoretical: {theoretical_mins:.0f} min (>{completion_min:.0f} cap), "
+                      f"actual: {reported:.0f} min (reached cap)")
+        return RuleResult(
+            rule_id="R8", rule_name="Sizing vs Actual",
+            passed=True, verdict="Accepted", detail=detail,
+        )
+
+    upper_limit = theoretical_mins + tol_min
+    if reported <= upper_limit:
+        if reported < theoretical_mins:
+            short_by = theoretical_mins - reported
+            status = f"weak/short backup evidence, short by {short_by:.1f} min"
+        else:
+            over_by = reported - theoretical_mins
+            status = f"within expected upper window, over by {over_by:.1f} min"
+        return RuleResult(
+            rule_id="R8", rule_name="Sizing vs Actual",
+            passed=True, verdict="Accepted",
+            detail=(f"Theoretical: {theoretical_mins:.0f} min, actual: {reported:.0f} min; "
+                    f"{status} (upper limit: {upper_limit:.1f} min, {explanation})"),
+        )
+
+    over_by = reported - theoretical_mins
     return RuleResult(
         rule_id="R8", rule_name="Sizing vs Actual",
-        passed=passed,
-        verdict="Accepted" if passed else "Rejected",
-        detail=(f"Theoretical: {theoretical_mins:.0f} min, actual: {reported:.0f} min, "
-                f"difference: {delta:.1f} min (limit: {tol_min:.1f} min, {explanation})"),
+        passed=False, verdict="Rejected",
+        detail=(f"Theoretical: {theoretical_mins:.0f} min, actual: {reported:.0f} min; "
+                f"over-performance beyond expected sizing by {over_by:.1f} min "
+                f"(upper limit: {upper_limit:.1f} min, {explanation})"),
     )
 
 
@@ -1058,9 +1105,12 @@ def _rule_9_discharge_current_tolerance(
         )
 
     tol = tolerances or BDTTolerances.defaults()
-    band = float(tol.discharge_current_a)
+    abs_floor = float(tol.discharge_current_a)
+    pct = float(tol.discharge_current_pct)
 
     baseline_label, baseline = readings[0]
+    band = max(abs(baseline) * pct, abs_floor)
+
     for label, current in readings[1:]:
         diff = abs(current - baseline)
         if diff > band:
@@ -1074,7 +1124,8 @@ def _rule_9_discharge_current_tolerance(
     return RuleResult(
         rule_id="R9", rule_name="Discharge Current Tolerance",
         passed=True, verdict="Accepted",
-        detail=f"All discharge currents stayed within ±{band:.2f}A from baseline ({baseline:.2f}A)",
+        detail=(f"All discharge currents stayed within ±{band:.2f}A from baseline "
+                f"({baseline:.2f}A, tolerance: {pct*100:.0f}% or ±{abs_floor:.1f}A floor)"),
     )
 
 
@@ -1131,15 +1182,15 @@ def _rule_10_door_alarm_match(bdt: BDTData,
     if alarm_df is None or alarm_df.empty:
         return RuleResult(
             rule_id="R10", rule_name="Door Alarm Condition",
-            passed=None, verdict="N/A",
-            detail="No alarm data loaded",
+            passed=False, verdict="Rejected",
+            detail="Door alarm evidence is required, but no alarm data loaded",
         )
 
     if bdt.test_date is None:
         return RuleResult(
             rule_id="R10", rule_name="Door Alarm Condition",
-            passed=False, verdict="Revise",
-            detail="Cannot validate door alarm condition: missing test date",
+            passed=False, verdict="Rejected",
+            detail="Door alarm evidence is required, but the BDT test date is missing",
         )
 
     try:
@@ -1147,8 +1198,9 @@ def _rule_10_door_alarm_match(bdt: BDTData,
     except Exception:
         return RuleResult(
             rule_id="R10", rule_name="Door Alarm Condition",
-            passed=False, verdict="Revise",
-            detail=f"Cannot validate door alarm condition: invalid test date {bdt.test_date!r}",
+            passed=False, verdict="Rejected",
+            detail=(f"Door alarm evidence is required, but the BDT test date "
+                    f"is invalid: {bdt.test_date!r}"),
         )
 
     window_start, window_end = _build_test_window(bdt)
@@ -1189,6 +1241,7 @@ def _rule_3_string_vs_busbar(bdt: BDTData,
 
     tol = tolerances or BDTTolerances.defaults()
     tolerance = float(tol.string_ampere_a)
+    pos_tol = float(tol.string_ampere_pos_a)
     checked = 0
 
     # string_discharge_readings[0] is the "Before disconnecting" row,
@@ -1208,14 +1261,14 @@ def _rule_3_string_vs_busbar(bdt: BDTData,
         diff = bus_a - string_sum
         checked += 1
 
-        if diff > 0 or diff < -tolerance:
+        if diff > pos_tol or diff < -tolerance:
             return RuleResult(
                 rule_id="R3", rule_name="String vs Bus Bar Ampere",
                 passed=False, verdict="Rejected",
                 detail=(f"Batteries Amp not matched with the rectifier summation Amp "
                         f"at {dr[0]}: rectifier={bus_a:.2f}A, "
                         f"strings_sum={string_sum:.2f}A "
-                        f"(E-(G+I)={diff:.2f}A, required -{tolerance:.1f}A to 0.0A)"),
+                        f"(E-(G+I)={diff:.2f}A, required -{tolerance:.1f}A to +{pos_tol:.1f}A)"),
             )
 
     if checked == 0:
@@ -1229,7 +1282,7 @@ def _rule_3_string_vs_busbar(bdt: BDTData,
         rule_id="R3", rule_name="String vs Bus Bar Ampere",
         passed=True, verdict="Accepted",
         detail=(f"All {checked} time points within tolerance "
-                f"(E-(G+I) between -{tolerance:.1f}A and 0.0A)"),
+                f"(E-(G+I) between -{tolerance:.1f}A and +{pos_tol:.1f}A)"),
     )
 
 

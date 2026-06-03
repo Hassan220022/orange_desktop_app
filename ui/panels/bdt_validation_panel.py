@@ -34,7 +34,13 @@ from PyQt5.QtWidgets import (
 try:
     from alarm_app.bdt.export import build_bdt_export_sheets
     from alarm_app.bdt.parser import BDTData
-    from alarm_app.bdt.validator import BDTTolerances, ValidationResult, bdt_battery_status
+    from alarm_app.bdt.validator import (
+        BDTTolerances,
+        BDT_TOLERANCE_PROFILE_VERSION,
+        BDT_TOLERANCE_PROFILE_VERSION_KEY,
+        ValidationResult,
+        bdt_battery_status,
+    )
     from alarm_app.constants import (
         BDT_RESULT_HEADERS,
         BDT_RESULT_WIDTHS,
@@ -55,7 +61,13 @@ try:
 except ImportError:
     from bdt.export import build_bdt_export_sheets
     from bdt.parser import BDTData
-    from bdt.validator import BDTTolerances, ValidationResult, bdt_battery_status
+    from bdt.validator import (
+        BDTTolerances,
+        BDT_TOLERANCE_PROFILE_VERSION,
+        BDT_TOLERANCE_PROFILE_VERSION_KEY,
+        ValidationResult,
+        bdt_battery_status,
+    )
     from constants import (
         BDT_RESULT_HEADERS,
         BDT_RESULT_WIDTHS,
@@ -759,15 +771,17 @@ class BdtValidationPanel(QWidget):
             health_pct = dlg.get_values()
             self.spn_health.setValue(health_pct)
             tolerance_values = dlg.get_tolerances()
+            tolerance_values[BDT_TOLERANCE_PROFILE_VERSION_KEY] = float(BDT_TOLERANCE_PROFILE_VERSION)
+            tolerances = BDTTolerances.from_dict(tolerance_values)
             try:
                 saved_state = state.load_state() or {}
-                saved_state["bdt_tolerances"] = tolerance_values
+                saved_state["bdt_tolerances"] = tolerances.to_dict()
                 state.save_state(saved_state)
             except Exception:
                 import logging
                 _log = logging.getLogger(__name__)
                 _log.warning("Failed to persist BDT tolerances", exc_info=True)
-            self._viewer._last_bdt_tolerances = BDTTolerances.from_dict(tolerance_values)
+            self._viewer._last_bdt_tolerances = tolerances
             self._refresh_parameter_summary()
 
     def _show_rules_reference_dialog(self):

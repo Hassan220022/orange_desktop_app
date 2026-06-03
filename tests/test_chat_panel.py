@@ -4,6 +4,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import alarm_app.ui.panels.chat_panel as chat_panel_mod
+from PyQt5.QtCore import QEvent
 from PyQt5.QtWidgets import QApplication, QLabel, QTableWidget
 from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
 from alarm_app.ui.panels.chat_panel import (
@@ -189,10 +190,10 @@ def test_full_context_tool_result_uses_structured_sections_not_raw_json():
     widget = ChatPanel._tool_result_widget(panel, "get_site_full_context", result)
 
     labels = [label.text() for label in widget.findChildren(QLabel)]
-    assert "Network Summary" in labels
-    assert "Alarm Preview" in labels
-    assert "BDT Summary" in labels
-    assert "Validation Runs" in labels
+    assert "NETWORK SUMMARY" in labels
+    assert "ALARM PREVIEW" in labels
+    assert "BDT SUMMARY" in labels
+    assert "VALIDATION RUNS" in labels
     assert not any('"rows"' in text for text in labels)
     assert len(widget.findChildren(QTableWidget)) >= 3
 
@@ -390,6 +391,38 @@ def test_restore_chat_state_rehydrates_after_uploads_are_loaded():
 
     assert calls == [[{"name": "vip.csv", "path": "/tmp/vip.csv", "kind": "uploaded_list"}]]
 
+
+
+
+def test_refresh_settings_ignores_api_banner_deleted_during_history_rehydrate(monkeypatch):
+    app = _ensure_qapp()
+    monkeypatch.setattr(ChatPanel, "refresh_free_models", lambda self: None)
+
+    class _Viewer:
+        def __init__(self):
+            self.api_key = ""
+
+        def openrouter_api_key(self):
+            return self.api_key
+
+    viewer = _Viewer()
+    panel = ChatPanel(viewer)
+    panel.refresh_settings()
+    assert panel._api_banner_widget is not None
+
+    panel._conversation_summary = ""
+    panel._uploaded_files = []
+    panel._upload_allowlist = {}
+    panel._messages = []
+    panel._rehydrate_history()
+    app.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    viewer.api_key = "openrouter-key"
+    panel.refresh_settings()
+
+    assert panel._api_banner_widget is None
+    panel.deleteLater()
+    app.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 

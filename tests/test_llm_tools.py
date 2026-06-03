@@ -14,16 +14,20 @@ import alarm_app.llm_tools.service as service_mod
 from alarm_app.data import alarm_store
 from alarm_app.llm_tools.mcp_server import AlarmViewerMcpServer
 from alarm_app.llm_tools.openrouter_agent import (
+    CONTEXT_TOO_LARGE_MESSAGE,
+    CONTEXT_TRUNCATION_MARKER,
     OpenRouterAgent,
     OpenRouterToolSupportError,
+    _bounded_openrouter_messages,
     _chat_message,
-    default_llm_response_log_path,
     _model_safe_tool_result,
+    _payload_char_count,
+    default_llm_response_log_path,
 )
 from alarm_app.llm_tools.openrouter_models import (
-    DEFAULT_CHAT_MODEL,
     DEEPSEEK_V4_FLASH_MODEL,
     DEEPSEEK_V4_PRO_MODEL,
+    DEFAULT_CHAT_MODEL,
     FREE_MODELS_ROUTER,
     fetch_free_tool_models,
     is_free_model_id,
@@ -3131,6 +3135,93 @@ def test_openrouter_agent_uses_env_response_log_path(monkeypatch, tmp_path):
     record = json.loads(log_path.read_text(encoding="utf-8").strip())
     assert record["event"] == "llm_response"
     assert record["response"] == "hookable answer"
+
+
+def test_bounded_openrouter_messages_drops_oldest_history_first():
+    messages = [
+        {"role": "system", "content": "keep system"},
+        {"role": "user", "content": "old user " + ("x" * 500)},
+        {"role": "assistant", "content": "old assistant " + ("y" * 500)},
+        {"role": "user", "content": "recent user"},
+        {"role": "assistant", "content": "recent assistant"},
+        {"role": "user", "content": "latest user"},
+    ]
+
+    bounded = _bounded_openrouter_messages(messages, [], "test-model", max_chars=420)
+    serialized = json.dumps(bounded)
+
+    assert _payload_char_count(bounded, [], "test-model") <= 420
+    assert "keep system" in serialized
+    assert "old user" not in serialized
+    assert "old assistant" not in serialized
+    assert "latest user" in serialized
+
+
+def test_bounded_openrouter_messages_truncates_large_protected_content():
+    messages = [
+        {"role": "system", "content": "summary " + ("s" * 1200)},
+        {"role": "user", "content": "recent question"},
+    ]
+
+    bounded = _bounded_openrouter_messages(messages, [], "test-model", max_chars=700)
+
+    assert _payload_char_count(bounded, [], "test-model") <= 700
+    assert CONTEXT_TRUNCATION_MARKER.strip() in bounded[0]["content"]
+    assert bounded[1]["content"] == "recent question"
+
+
+def test_openrouter_complete_sends_bounded_payload(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"choices": [{"message": {"content": "bounded answer"}}]}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout):
+        captured["payload"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr(openrouter_agent_mod, "CONTEXT_BUDGET_MAX_CHARS", 900)
+    monkeypatch.setattr(openrouter_agent_mod.urllib.request, "urlopen", _fake_urlopen)
+    agent = OpenRouterAgent(api_key="test", service=SimpleNamespace())
+    messages = [
+        {"role": "system", "content": "keep system"},
+        {"role": "user", "content": "old user " + ("x" * 800)},
+        {"role": "assistant", "content": "old assistant " + ("y" * 800)},
+        {"role": "user", "content": "latest question"},
+    ]
+
+    assert agent._complete(messages, tools=[], model="test-model") == {"content": "bounded answer"}
+
+    payload = captured["payload"]
+    assert isinstance(payload, dict)
+    assert len(json.dumps(payload, ensure_ascii=False)) <= 900
+    assert payload["model"] == "test-model"
+    payload_text = json.dumps(payload)
+    assert "old user" not in payload_text
+    assert "latest question" in payload_text
+
+
+def test_bounded_openrouter_messages_fails_friendly_when_tools_alone_exceed_budget():
+    huge_tools = [{"type": "function", "function": {"name": "huge", "description": "x" * 1000}}]
+
+    try:
+        _bounded_openrouter_messages(
+            [{"role": "user", "content": "hi"}],
+            huge_tools,
+            "test-model",
+            max_chars=200,
+        )
+    except RuntimeError as exc:
+        assert str(exc) == CONTEXT_TOO_LARGE_MESSAGE
+    else:
+        raise AssertionError("expected friendly context budget error")
 
 
 def test_openrouter_agent_redacts_local_paths_from_model_bound_tool_results(tmp_path):
