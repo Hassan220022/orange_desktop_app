@@ -329,8 +329,8 @@ achieve this by:
 
 - adding new code in `app/`, `services/`, `adapters/`, `qml/`
 - not touching `main.py` until cutover
-- v1 entry point (`main.py`) keeps importing from `ui/`
-- the new entry point (`app/engine.py`) is opt-in via a flag
+- v1 entry point (`main.py`) keeps importing from `ui/` until step 6 lands
+- the new entry point (`app/engine.py`) is opt-in via `--qml` flag once step 6 lands
 
 Once `v2/cutover` is ready, we:
 
