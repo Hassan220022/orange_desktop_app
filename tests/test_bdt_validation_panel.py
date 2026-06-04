@@ -373,3 +373,42 @@ def test_show_rules_reference_dialog_passes_all_rules(monkeypatch):
     insights_html = next(html for key, _title, html in docs if key == "insights")
     assert "Network Summary / BDT Mismatch" in insights_html
     assert "Critical Site With Weak Backup" in insights_html
+
+
+class _RunningThread:
+    def isRunning(self):
+        return True
+
+
+class _StatusBar:
+    def __init__(self):
+        self.messages = []
+
+    def showMessage(self, message, timeout=0):
+        self.messages.append((message, timeout))
+
+
+def test_run_validation_returns_when_validation_already_running():
+    from types import SimpleNamespace
+    from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
+
+    panel = SimpleNamespace(
+        _bdt_thread=_RunningThread(),
+        _viewer=SimpleNamespace(_sbar=_StatusBar()),
+    )
+
+    BdtValidationPanel._run_validation(panel)
+
+    assert panel._viewer._sbar.messages[-1][0] == "BDT validation already running"
+
+
+def test_bdt_source_mode_help_explains_read_and_save_behavior():
+    from alarm_app.ui.panels.bdt_validation_panel import BDT_SOURCE_TOOLTIPS
+
+    assert set(BDT_SOURCE_TOOLTIPS) == {"directory", "db", "both"}
+    assert "reads selected BDT Excel files" in BDT_SOURCE_TOOLTIPS["directory"]
+    assert "saves BDT tests and PM validation runs to SQLite" in BDT_SOURCE_TOOLTIPS["directory"]
+    assert "reads only saved BDT validation results from SQLite" in BDT_SOURCE_TOOLTIPS["db"]
+    assert "does not write" in BDT_SOURCE_TOOLTIPS["db"]
+    assert "loads saved SQLite validation results first" in BDT_SOURCE_TOOLTIPS["both"]
+    assert "saves new validation history to SQLite" in BDT_SOURCE_TOOLTIPS["both"]

@@ -1055,3 +1055,33 @@ class TestSchemaDetection:
         assert result is not None
         # vendor column should come from Huawei mapping
         assert result.iloc[0]["vendor"] == "Huawei"
+
+
+class TestBackgroundWorkerCancellation:
+    def test_bdt_validation_cancel_before_run_emits_cancelled_not_finished(self):
+        from alarm_app.ui.threads import BDTValidationThread
+
+        th = BDTValidationThread(["/fake/good.xlsx"], None, 0.15, 0.80)
+        captured = {"cancelled": [], "finished": []}
+        th.cancelled.connect(lambda message: captured["cancelled"].append(message))
+        th.finished.connect(lambda results, by_site: captured["finished"].append((results, by_site)))
+
+        th.cancel()
+        th.run()
+
+        assert captured["finished"] == []
+        assert captured["cancelled"] == ["BDT validation cancelled"]
+
+    def test_loader_cancel_before_run_emits_cancelled_not_finished(self):
+        from alarm_app.ui.threads import LoaderThread
+
+        th = LoaderThread([{"path": "/fake/alarm.csv", "filename": "alarm.csv", "size_kb": 1}])
+        captured = {"cancelled": [], "finished": []}
+        th.cancelled.connect(lambda message: captured["cancelled"].append(message))
+        th.finished.connect(lambda df, message: captured["finished"].append((df, message)))
+
+        th.cancel()
+        th.run()
+
+        assert captured["finished"] == []
+        assert captured["cancelled"] == ["Alarm loading cancelled"]

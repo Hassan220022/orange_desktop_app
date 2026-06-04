@@ -152,30 +152,29 @@ def clear_cache() -> None:
 
 
 # Tables whose rows are derived from source files and safe to wipe on
-# "clear cached data". Anything NOT in this set (uploaded_files, ui_state,
-# site_metadata_catalog, sync_*, review_events, pm_rule_catalog,
-# pm_rule_parameter_sets) is a dedup helper, user preference, or audit log
-# and is preserved so the user does not lose work.
+# scoped cache-clearing actions. Anything NOT in these sets (uploaded_files,
+# ui_state, site_metadata_catalog, sync_*, review_events, pm_rule_catalog,
+# pm_rule_parameter_sets) is a dedup helper, user preference, or audit log and
+# is preserved so the user does not lose work.
 #
 # DELETE ORDER MATTERS — child tables must be removed before their parents
-# because the engine enables PRAGMA foreign_keys=ON. The order is the same
-# as a topological sort of the FK dependency graph:
-#
-#   pm_rule_results  ← pm_validation_runs  ← bdt_tests
-#                                              ↑
-#                                          bdt_photos, bdt_summary_catalog
-#   bdt_photos  ←── bdt_tests
-#   alarm_records.file_id  ──>  uploaded_files   (parent preserved, OK to delete)
-#   blob_assets   (no FK children in this set)
-_CLEAR_ORDER: tuple[str, ...] = (
-    "pm_rule_results",       # child of pm_validation_runs
-    "bdt_photos",            # child of bdt_tests
-    "pm_validation_runs",    # child of bdt_tests
-    "blob_assets",           # no FK children
-    "bdt_tests",             # parent of bdt_photos, pm_validation_runs
+# because the engine enables PRAGMA foreign_keys=ON.
+_ALARM_CLEAR_ORDER: tuple[str, ...] = (
     "alarm_records",         # FK to uploaded_files (preserved) — safe to delete
-    "bdt_summary_catalog",   # standalone (no FKs to other clearable tables)
 )
+
+_BDT_CLEAR_ORDER: tuple[str, ...] = (
+    "pm_rule_results",       # child of pm_validation_runs
+    "bdt_photos",            # child of bdt_tests and references blob_assets
+    "pm_validation_runs",    # child of bdt_tests
+    "blob_assets",           # referenced by bdt_photos, removed after photos
+    "bdt_tests",             # parent of bdt_photos, pm_validation_runs
+    "bdt_summary_catalog",   # standalone imported BDT summary rows
+)
+
+# Backward-compatible combined order for callers/tests that still discuss the
+# old global clear operation.
+_CLEAR_ORDER: tuple[str, ...] = _BDT_CLEAR_ORDER[:5] + _ALARM_CLEAR_ORDER + _BDT_CLEAR_ORDER[5:]
 
 
 def _clear_bdt_history_dir() -> int:
@@ -202,34 +201,8 @@ def _clear_bdt_history_dir() -> int:
     return removed
 
 
-def clear_all_caches() -> dict[str, int]:
-    """Wipe every cache that is derived from source files.
-
-    Removes:
-      * ``alarms.duckdb`` and ``alarms.local.duckdb`` (DuckDB alarm cache)
-      * Rows in the ``alarm_records`` table (the legacy SQLite alarm copy)
-      * BDT parsed tests, photos, blob assets, validation runs, rule results,
-        and BDT summary catalog rows
-      * Per-site BDT history JSON files under ``~/.alarm_viewer/bdt_history/``
-
-    Returns a summary dict mapping table name (or 'alarm_duckdb_files',
-    'bdt_history_files') to the number of rows / files removed. Tables or
-    files that did not exist (count = 0) are still listed for visibility.
-
-    Deliberately PRESERVED (dedup helpers, user prefs, audit trail):
-      * ``uploaded_files`` — SHA-256 dedup index; clearing it would force
-        re-hashing on the next load
-      * ``ui_state`` — UI preferences (theme, last directory, page size, ...)
-      * ``site_metadata_catalog`` — site catalog
-      * ``pm_rule_catalog``, ``pm_rule_parameter_sets`` — rule definitions
-      * ``sync_outbox``, ``sync_checkpoints`` — sync queue state
-      * ``review_events`` — daily-review audit log
-      * Photo files under ``~/.alarm_viewer/blobs/`` — re-linked by SHA-256
-        dedup on next BDT workbook load; deleting them is wasted I/O
-    """
-    summary: dict[str, int] = {}
-
-    # 1) DuckDB alarm cache files
+def _clear_alarm_duckdb_files() -> int:
+    """Remove alarm DuckDB cache files and return the number deleted."""
     duckdb_removed = 0
     for f in (_alarm_db_file(), _alarm_db_fallback_file()):
         try:
@@ -238,40 +211,23 @@ def clear_all_caches() -> dict[str, int]:
                 duckdb_removed += 1
         except OSError:
             _log.warning("Could not delete alarm cache file: %s", f, exc_info=True)
-    summary["alarm_duckdb_files"] = duckdb_removed
+    return duckdb_removed
 
-    # 2) BDT per-site history JSON files
-    summary["bdt_history_files"] = _clear_bdt_history_dir()
 
-    # 3) SQLite derived tables — use the shared app engine so we go through
-    #    SQLAlchemy (and the WAL pragma is in effect). Wrap each DELETE in
-    #    its own try/except so a single table failure does not abort the
-    #    rest of the cleanup.
+def _clear_sqlite_tables(table_to_model: dict[str, Any], clear_order: tuple[str, ...]) -> dict[str, int]:
+    """Delete rows from derived SQLite tables in FK-safe order.
+
+    Each table gets its own session/transaction so one failure is visible in
+    the summary but does not prevent later independent cleanup attempts.
+    """
     try:
         from .engine import get_shared_session
-        from .models import (
-            AlarmRecord,
-            BDTTest,
-            BDTPhoto,
-            BlobAsset,
-            PMValidationRun,
-            PMRuleResult,
-            BDTSummaryCatalog,
-        )
     except Exception as exc:
-        _log.error("Could not import persistence models for clear_all_caches: %s", exc)
-        return summary
+        _log.error("Could not import persistence engine for cache clear: %s", exc)
+        return {table_name: -1 for table_name in clear_order if table_name in table_to_model}
 
-    table_to_model = {
-        "alarm_records": AlarmRecord,
-        "bdt_tests": BDTTest,
-        "bdt_photos": BDTPhoto,
-        "blob_assets": BlobAsset,
-        "pm_validation_runs": PMValidationRun,
-        "pm_rule_results": PMRuleResult,
-        "bdt_summary_catalog": BDTSummaryCatalog,
-    }
-    for table_name in _CLEAR_ORDER:
+    summary: dict[str, int] = {}
+    for table_name in clear_order:
         if table_name not in table_to_model:
             continue
         model = table_to_model[table_name]
@@ -296,5 +252,79 @@ def clear_all_caches() -> dict[str, int]:
                     session.close()
                 except Exception:
                     pass
+    return summary
 
+
+def _alarm_table_models() -> dict[str, Any]:
+    from .models import AlarmRecord
+
+    return {"alarm_records": AlarmRecord}
+
+
+def _bdt_table_models() -> dict[str, Any]:
+    from .models import (
+        BDTTest,
+        BDTPhoto,
+        BlobAsset,
+        PMValidationRun,
+        PMRuleResult,
+        BDTSummaryCatalog,
+    )
+
+    return {
+        "bdt_tests": BDTTest,
+        "bdt_photos": BDTPhoto,
+        "blob_assets": BlobAsset,
+        "pm_validation_runs": PMValidationRun,
+        "pm_rule_results": PMRuleResult,
+        "bdt_summary_catalog": BDTSummaryCatalog,
+    }
+
+
+def clear_alarm_caches() -> dict[str, int]:
+    """Wipe alarm-derived caches only.
+
+    Removes:
+      * ``alarms.duckdb`` and ``alarms.local.duckdb``
+      * Rows in SQLite ``alarm_records``
+
+    Preserves all BDT validation results, BDT history, imported BDT summary
+    rows, photo/blob metadata, source-file dedup rows, UI state, rule catalogs,
+    sync state, audit logs, and source/photo files.
+    """
+    summary: dict[str, int] = {"alarm_duckdb_files": _clear_alarm_duckdb_files()}
+    try:
+        summary.update(_clear_sqlite_tables(_alarm_table_models(), _ALARM_CLEAR_ORDER))
+    except Exception as exc:
+        _log.error("Could not import alarm persistence models for clear_alarm_caches: %s", exc)
+        summary["alarm_records"] = -1
+    return summary
+
+
+def clear_bdt_caches() -> dict[str, int]:
+    """Wipe BDT-derived caches only.
+
+    Removes parsed BDT tests, BDT photo metadata, blob metadata, validation
+    runs, rule results, imported BDT summary rows, and per-site BDT history
+    JSON files. Alarm DuckDB files and SQLite ``alarm_records`` are preserved.
+    """
+    summary: dict[str, int] = {"bdt_history_files": _clear_bdt_history_dir()}
+    try:
+        summary.update(_clear_sqlite_tables(_bdt_table_models(), _BDT_CLEAR_ORDER))
+    except Exception as exc:
+        _log.error("Could not import BDT persistence models for clear_bdt_caches: %s", exc)
+        for table_name in _BDT_CLEAR_ORDER:
+            summary[table_name] = -1
+    return summary
+
+
+def clear_all_caches() -> dict[str, int]:
+    """Wipe every cache that is derived from source files.
+
+    Compatibility wrapper for the old global clear behavior. UI code should use
+    ``clear_alarm_caches`` or ``clear_bdt_caches`` so users can choose scope.
+    """
+    summary: dict[str, int] = {}
+    summary.update(clear_alarm_caches())
+    summary.update(clear_bdt_caches())
     return summary

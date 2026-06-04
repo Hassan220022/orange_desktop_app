@@ -130,6 +130,54 @@ class TestBDTParseToPersistToLoadE2E:
             assert vr.overall in ("Accepted", "Rejected", "Revise"), f"Unexpected verdict: {vr.overall}"
             assert vr.rules, "rules should be populated"
 
+
+    def test_validation_db_roundtrip_preserves_insight_and_battery_status(self, isolated_db):
+        from alarm_app.bdt.parser import BDTData
+        from alarm_app.bdt.validator import RuleResult, ValidationResult, bdt_battery_status
+
+        bdt_data = BDTData(
+            file_path="/tmp/roundtrip_bdt.xlsx",
+            filename="roundtrip_bdt.xlsx",
+            site_code="RT001",
+            site_name="Round Trip Site",
+            test_date=datetime(2026, 4, 2),
+            battery_brand="",
+            num_batteries=None,
+            num_strings=0,
+            summary_data={"No. of Batteries": "0"},
+            photo_count=0,
+        )
+        result = ValidationResult(
+            filename="roundtrip_bdt.xlsx",
+            site_code="RT001",
+            test_date="2026-04-02",
+            overall="Rejected",
+            rules=[RuleResult("R1", "Photos", False, "Rejected", "No photos embedded in file")],
+            bdt_data=bdt_data,
+            battery_backup_insight={
+                "insight_status": "Network Summary / BDT Mismatch",
+                "severity": "high",
+                "insight_flags": ["network_bdt_mismatch"],
+            },
+        )
+
+        run_payloads, _photo_jobs, failed = save_validation_batch(
+            items=[{"bdt_data": bdt_data, "validation_result": result}],
+            alarm_df=None,
+            params={},
+            validator_code_ref="test_roundtrip",
+        )
+        assert len(run_payloads) == 1
+        assert failed == []
+
+        loaded = load_all_validation_results(isolated_db)
+        assert len(loaded) == 1
+        loaded_result = loaded[0]
+
+        assert loaded_result.battery_backup_insight["insight_status"] == "Network Summary / BDT Mismatch"
+        assert loaded_result.battery_backup_insight["severity"] == "high"
+        assert bdt_battery_status(loaded_result.bdt_data) == "No Battery"
+
     def test_photo_persistence_and_load(self, isolated_db):
         session = isolated_db
         filepath = FIXTURES_DIR / "bdt_real_3938ca.xlsx"

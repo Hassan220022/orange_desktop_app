@@ -6,7 +6,6 @@ import logging
 import os
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Thread
 from uuid import uuid4
 
 import pandas as pd
@@ -133,13 +132,29 @@ class LoaderThread(QThread):
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(object, str)
     error    = pyqtSignal(str)
+    cancelled = pyqtSignal(str)
 
     def __init__(self, file_infos: list[dict]):
         super().__init__()
         self.file_infos = file_infos
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def _is_cancelled(self) -> bool:
+        return bool(self._cancel_requested)
+
+    def _emit_cancelled(self) -> None:
+        message = "Alarm loading cancelled"
+        self.progress.emit(0, message)
+        self.cancelled.emit(message)
 
     def run(self):
         try:
+            if self._is_cancelled():
+                self._emit_cancelled()
+                return
             dfs: list[pd.DataFrame] = []
             file_paths = [info.get("path", "") for info in self.file_infos if info.get("path")]
 
@@ -166,6 +181,14 @@ class LoaderThread(QThread):
                 reverse=True,
             )
             for idx, info in ordered:
+                if self._is_cancelled():
+                    if db_session:
+                        try:
+                            db_session.close()
+                        except Exception:
+                            pass
+                    self._emit_cancelled()
+                    return
                 fp = info.get("path", "")
                 if db_session and fp and os.path.isfile(fp):
                     try:
@@ -186,6 +209,11 @@ class LoaderThread(QThread):
                     for idx, info in infos_to_parse
                 }
                 for future in as_completed(futures):
+                    if self._is_cancelled():
+                        for pending in futures:
+                            pending.cancel()
+                        self._emit_cancelled()
+                        return
                     done_count += 1
                     idx = futures[future]
                     info = self.file_infos[idx]
@@ -199,6 +227,10 @@ class LoaderThread(QThread):
                             dfs.append(df)
                     except Exception:
                         _log.warning("File parse failed: %s", info.get("filename", "unknown"), exc_info=True)
+
+            if self._is_cancelled():
+                self._emit_cancelled()
+                return
 
             if not dfs:
                 if db_session:
@@ -264,6 +296,10 @@ class LoaderThread(QThread):
                     pass
                 db_session = None
 
+            if self._is_cancelled():
+                self._emit_cancelled()
+                return
+
             self.progress.emit(95, "Saving locally …")
             persistence_msg = _persist_alarm_cache_and_file_index(
                 combined,
@@ -306,6 +342,10 @@ class LoaderThread(QThread):
                 state.append_outbox_events(events)
             except Exception:
                 pass
+
+            if self._is_cancelled():
+                self._emit_cancelled()
+                return
 
             self.progress.emit(100, "Done!")
             self.finished.emit(
@@ -358,6 +398,34 @@ class ExportThread(QThread):
 
 
 # ─────────────────────────────────────────────────────────────────
+# BDT photo persistence thread
+# ─────────────────────────────────────────────────────────────────
+class BDTPhotoPersistenceThread(QThread):
+    """Persist deferred BDT photo jobs without blocking validation results."""
+
+    completed = pyqtSignal(int)
+    error = pyqtSignal(str)
+
+    def __init__(self, photo_jobs: list[dict]):
+        super().__init__()
+        self._photo_jobs = list(photo_jobs or [])
+
+    def run(self):
+        try:
+            if not self._photo_jobs:
+                self.completed.emit(0)
+                return
+            try:
+                from alarm_app.bdt.history import persist_photo_jobs
+            except ImportError:
+                from bdt.history import persist_photo_jobs
+            stored = persist_photo_jobs(self._photo_jobs)
+            self.completed.emit(int(stored or 0))
+        except Exception:
+            self.error.emit(traceback.format_exc())
+
+
+# ─────────────────────────────────────────────────────────────────
 # BDT validation thread
 # ─────────────────────────────────────────────────────────────────
 class BDTValidationThread(QThread):
@@ -371,6 +439,9 @@ class BDTValidationThread(QThread):
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(object, object)
     error    = pyqtSignal(str)
+    cancelled = pyqtSignal(str)
+    photo_persistence_finished = pyqtSignal(int)
+    photo_persistence_error = pyqtSignal(str)
 
     def __init__(self, bdt_files: list[str], alarm_df,
                  tolerance: float, health_pct: float, skip_photos: bool = False,
@@ -383,6 +454,19 @@ class BDTValidationThread(QThread):
         self._skip_photos = skip_photos
         self._tolerances = tolerances
         self._alarm_slice_cache: dict[tuple[str, str], pd.DataFrame] = {}
+        self._cancel_requested = False
+        self._photo_thread = None
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def _is_cancelled(self) -> bool:
+        return bool(self._cancel_requested)
+
+    def _emit_cancelled(self) -> None:
+        message = "BDT validation cancelled"
+        self.progress.emit(0, message)
+        self.cancelled.emit(message)
 
     @staticmethod
     def _is_invalid_bdt_payload(bdt_data) -> bool:
@@ -442,6 +526,10 @@ class BDTValidationThread(QThread):
     def run(self):
         from datetime import datetime
 
+        if self._is_cancelled():
+            self._emit_cancelled()
+            return
+
         try:
             from alarm_app.bdt.parser import parse_bdt_file
         except ImportError:
@@ -457,6 +545,9 @@ class BDTValidationThread(QThread):
 
         try:
             total = len(self._files)
+            if total <= 0:
+                self.finished.emit([], {})
+                return
             results = []
             by_site: dict[str, list] = {}
             persist_items: list[dict] = []
@@ -467,6 +558,8 @@ class BDTValidationThread(QThread):
             workers = min(total, (os.cpu_count() or 1) * 4, 32)
 
             def _parse_and_validate(file_path: str):
+                if self._is_cancelled():
+                    return None
                 bdt_data = parse_bdt_file(file_path, skip_photos=self._skip_photos)
                 if self._is_invalid_bdt_payload(bdt_data):
                     return None
@@ -477,7 +570,11 @@ class BDTValidationThread(QThread):
                     if matched_summary:
                         bdt_data.summary_data = matched_summary
 
+                if self._is_cancelled():
+                    return None
                 alarm_df = self._load_alarm_df_for_bdt(bdt_data)
+                if self._is_cancelled():
+                    return None
                 result = validate_bdt(
                     bdt_data, alarm_df,
                     self._tolerance, self._health_pct,
@@ -490,6 +587,11 @@ class BDTValidationThread(QThread):
                     for fp in self._files
                 }
                 for future in as_completed(futures):
+                    if self._is_cancelled():
+                        for pending in futures:
+                            pending.cancel()
+                        self._emit_cancelled()
+                        return
                     done += 1
                     fp = futures[future]
                     fname = os.path.basename(fp)
@@ -576,6 +678,10 @@ class BDTValidationThread(QThread):
                         key = bdt_data.site_code.strip().upper()
                         by_site.setdefault(key, []).append(bdt_data)
 
+            if self._is_cancelled():
+                self._emit_cancelled()
+                return
+
             self.progress.emit(92, "Sorting results…")
 
             # Sort each site's tests by date (newest first)
@@ -583,6 +689,10 @@ class BDTValidationThread(QThread):
                 by_site[key].sort(
                     key=lambda b: b.test_date or datetime.min,
                     reverse=True)
+
+            if self._is_cancelled():
+                self._emit_cancelled()
+                return
 
             if persist_items:
                 try:
@@ -629,13 +739,16 @@ class BDTValidationThread(QThread):
                             )
 
                     if photo_jobs:
-                        Thread(
-                            target=self._persist_deferred_photos,
-                            args=(photo_jobs,),
-                            daemon=True,
-                        ).start()
+                        self._photo_thread = BDTPhotoPersistenceThread(photo_jobs)
+                        self._photo_thread.completed.connect(self.photo_persistence_finished.emit)
+                        self._photo_thread.error.connect(self.photo_persistence_error.emit)
+                        self._photo_thread.start()
                 except Exception:
                     _log.warning("Deferred BDT persistence failed", exc_info=True)
+
+            if self._is_cancelled():
+                self._emit_cancelled()
+                return
 
             self.progress.emit(100, "Done!")
             self.finished.emit(results, by_site)

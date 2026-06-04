@@ -23,12 +23,21 @@ def save_bdt_test(session: Session, bdt_dict: dict,
     """Save a BDT test record. Returns existing if duplicate by content_hash."""
     content_hash = compute_bdt_content_hash(bdt_dict)
 
+    summary_data = bdt_dict.get("summary_data")
+    summary_json = json.dumps(summary_data, sort_keys=True, default=str) if summary_data else None
+
     existing = session.query(BDTTest).filter_by(
         content_hash=content_hash
     ).first()
     if existing:
+        changed = False
         if file_id is not None and existing.file_id is None:
             existing.file_id = file_id
+            changed = True
+        if summary_json and not getattr(existing, "summary_data_json", None):
+            existing.summary_data_json = summary_json
+            changed = True
+        if changed:
             safe_flush(session)
         return existing
 
@@ -74,6 +83,7 @@ def save_bdt_test(session: Session, bdt_dict: dict,
         after_reconnect_ampere=bdt_dict.get("after_reconnect_ampere"),
         discharge_readings_json=dr_json,
         string_discharge_readings_json=sdr_json,
+        summary_data_json=summary_json,
         content_hash=content_hash,
     )
     session.add(record)

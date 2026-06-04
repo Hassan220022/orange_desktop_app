@@ -95,6 +95,34 @@ def create_engine(url: str | None = None):
         raise EngineCreationError(f"Failed to create engine at {url!r}") from exc
 
 
+def _ensure_optional_columns(engine) -> None:
+    """Apply additive SQLite migrations for existing local databases."""
+    if engine.dialect.name != "sqlite":
+        return
+    migrations = {
+        "bdt_tests": {
+            "summary_data_json": "TEXT",
+        },
+        "pm_validation_runs": {
+            "insight_json": "TEXT",
+        },
+    }
+    with engine.begin() as conn:
+        for table_name, columns in migrations.items():
+            existing = {
+                str(row[1])
+                for row in conn.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
+            }
+            if not existing:
+                continue
+            for column_name, column_type in columns.items():
+                if column_name not in existing:
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+                    )
+
+
+
 def get_session_factory(engine=None):
     """Return a sessionmaker bound to the given engine."""
     if engine is None:
@@ -122,6 +150,7 @@ def init_db(engine=None, include_alarm_records: bool = True):
     if not include_alarm_records:
         tables = [t for t in tables if t.name != "alarm_records"]
     Base.metadata.create_all(engine, tables=tables)
+    _ensure_optional_columns(engine)
     _log.info("Tables created")
 
     from .seed import seed_database

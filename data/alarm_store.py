@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from contextlib import contextmanager
+from threading import RLock
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
@@ -23,6 +25,19 @@ ALARM_DB_FILE = STATE_DIR / "alarms.duckdb"
 ALARM_TABLE = "alarm_records"
 _log = logging.getLogger(__name__)
 _LOCK_WARNING_EMITTED = False
+_ALARM_STORE_LOCK = RLock()
+
+
+@contextmanager
+def _alarm_store_read_lock():
+    with _ALARM_STORE_LOCK:
+        yield
+
+
+@contextmanager
+def _alarm_store_write_lock():
+    with _ALARM_STORE_LOCK:
+        yield
 
 _COLUMN_WHITELIST = {
     "site_id",
@@ -244,15 +259,16 @@ def _ensure_derived_fields(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def replace_alarm_table(df: pd.DataFrame) -> None:
-    prepared = _ensure_derived_fields(df if df is not None else pd.DataFrame())
-    con = _connect(read_only=False)
-    try:
-        con.execute(f"DROP TABLE IF EXISTS {ALARM_TABLE}")
-        con.register("prepared_df", prepared)
-        con.execute(f"CREATE TABLE {ALARM_TABLE} AS SELECT * FROM prepared_df")
-        con.unregister("prepared_df")
-    finally:
-        con.close()
+    with _alarm_store_write_lock():
+        prepared = _ensure_derived_fields(df if df is not None else pd.DataFrame())
+        con = _connect(read_only=False)
+        try:
+            con.execute(f"DROP TABLE IF EXISTS {ALARM_TABLE}")
+            con.register("prepared_df", prepared)
+            con.execute(f"CREATE TABLE {ALARM_TABLE} AS SELECT * FROM prepared_df")
+            con.unregister("prepared_df")
+        finally:
+            con.close()
 
 
 def _build_where_clause(q: AlarmQuery, table_cols: set[str]) -> tuple[str, list[Any]]:
@@ -367,124 +383,128 @@ def _build_where_clause(q: AlarmQuery, table_cols: set[str]) -> tuple[str, list[
 
 
 def query_alarms(q: AlarmQuery) -> pd.DataFrame:
-    if not ALARM_DB_FILE.exists():
-        return pd.DataFrame()
-    con = _safe_connect(read_only=True)
-    if con is None:
-        return pd.DataFrame()
-    try:
-        table_cols = _table_columns(con)
-        if not table_cols:
+    with _alarm_store_read_lock():
+        if not ALARM_DB_FILE.exists():
             return pd.DataFrame()
-        where_sql, params = _build_where_clause(q, table_cols)
-        sql = f"SELECT * FROM {ALARM_TABLE}{where_sql}"
+        con = _safe_connect(read_only=True)
+        if con is None:
+            return pd.DataFrame()
+        try:
+            table_cols = _table_columns(con)
+            if not table_cols:
+                return pd.DataFrame()
+            where_sql, params = _build_where_clause(q, table_cols)
+            sql = f"SELECT * FROM {ALARM_TABLE}{where_sql}"
 
-        sort_by = q.sort_by if q.sort_by in _SORTABLE_COLUMNS and q.sort_by in table_cols else None
-        if sort_by:
-            direction = "DESC" if q.sort_desc else "ASC"
-            sql += f" ORDER BY {sort_by} {direction} NULLS LAST"
+            sort_by = q.sort_by if q.sort_by in _SORTABLE_COLUMNS and q.sort_by in table_cols else None
+            if sort_by:
+                direction = "DESC" if q.sort_desc else "ASC"
+                sql += f" ORDER BY {sort_by} {direction} NULLS LAST"
 
-        if q.limit is not None:
-            limit = max(int(q.limit), 0)
-            sql += " LIMIT ?"
-            params.append(limit)
-        if q.offset:
-            offset = max(int(q.offset), 0)
-            sql += " OFFSET ?"
-            params.append(offset)
+            if q.limit is not None:
+                limit = max(int(q.limit), 0)
+                sql += " LIMIT ?"
+                params.append(limit)
+            if q.offset:
+                offset = max(int(q.offset), 0)
+                sql += " OFFSET ?"
+                params.append(offset)
 
-        return con.execute(sql, params).fetchdf()
-    finally:
-        con.close()
+            return con.execute(sql, params).fetchdf()
+        finally:
+            con.close()
 
 
 def count_alarms(q: AlarmQuery) -> int:
-    if not ALARM_DB_FILE.exists():
-        return 0
-    con = _safe_connect(read_only=True)
-    if con is None:
-        return 0
-    try:
-        table_cols = _table_columns(con)
-        if not table_cols:
+    with _alarm_store_read_lock():
+        if not ALARM_DB_FILE.exists():
             return 0
-        where_sql, params = _build_where_clause(q, table_cols)
-        row = con.execute(f"SELECT COUNT(*) FROM {ALARM_TABLE}{where_sql}", params).fetchone()
-        return int(row[0] if row else 0)
-    finally:
-        con.close()
+        con = _safe_connect(read_only=True)
+        if con is None:
+            return 0
+        try:
+            table_cols = _table_columns(con)
+            if not table_cols:
+                return 0
+            where_sql, params = _build_where_clause(q, table_cols)
+            row = con.execute(f"SELECT COUNT(*) FROM {ALARM_TABLE}{where_sql}", params).fetchone()
+            return int(row[0] if row else 0)
+        finally:
+            con.close()
 
 
 def distinct_values(column: str, q: AlarmQuery | None = None) -> list[str]:
-    if column not in _COLUMN_WHITELIST:
-        raise ValueError(f"Unsupported column: {column}")
-    if not ALARM_DB_FILE.exists():
-        return []
-    con = _safe_connect(read_only=True)
-    if con is None:
-        return []
-    try:
-        table_cols = _table_columns(con)
-        if column not in table_cols:
+    with _alarm_store_read_lock():
+        if column not in _COLUMN_WHITELIST:
+            raise ValueError(f"Unsupported column: {column}")
+        if not ALARM_DB_FILE.exists():
             return []
-        normalized_q = replace(q, sort_by=None, limit=None, offset=0) if q else AlarmQuery()
-        where_sql, params = _build_where_clause(normalized_q, table_cols)
-        sql = (
-            f"SELECT DISTINCT COALESCE(CAST({column} AS VARCHAR), '') AS value "
-            f"FROM {ALARM_TABLE}{where_sql} ORDER BY value ASC"
-        )
-        rows = con.execute(sql, params).fetchall()
-        return [str(row[0]) for row in rows]
-    finally:
-        con.close()
+        con = _safe_connect(read_only=True)
+        if con is None:
+            return []
+        try:
+            table_cols = _table_columns(con)
+            if column not in table_cols:
+                return []
+            normalized_q = replace(q, sort_by=None, limit=None, offset=0) if q else AlarmQuery()
+            where_sql, params = _build_where_clause(normalized_q, table_cols)
+            sql = (
+                f"SELECT DISTINCT COALESCE(CAST({column} AS VARCHAR), '') AS value "
+                f"FROM {ALARM_TABLE}{where_sql} ORDER BY value ASC"
+            )
+            rows = con.execute(sql, params).fetchall()
+            return [str(row[0]) for row in rows]
+        finally:
+            con.close()
 
 
 def stats(q: AlarmQuery | None = None) -> dict[str, int | float]:
-    empty_stats = {
-        "total": 0,
-        "power": 0,
-        "down": 0,
-        "door": 0,
-        "temp": 0,
-        "sites": 0,
-        "avg_duration_secs": 0.0,
-    }
-    if not ALARM_DB_FILE.exists():
-        return empty_stats
-    con = _safe_connect(read_only=True)
-    if con is None:
-        return empty_stats
-    try:
-        table_cols = _table_columns(con)
-        if not table_cols:
-            return empty_stats
-        normalized_q = replace(q, sort_by=None, limit=None, offset=0) if q else AlarmQuery()
-        where_sql, params = _build_where_clause(normalized_q, table_cols)
-        row = con.execute(
-            f"""
-            SELECT
-                COUNT(*) AS total,
-                SUM(CASE WHEN alarm_category = 'Power' THEN 1 ELSE 0 END) AS power,
-                SUM(CASE WHEN alarm_category = 'Down' THEN 1 ELSE 0 END) AS down,
-                SUM(CASE WHEN alarm_category = 'Door' THEN 1 ELSE 0 END) AS door,
-                SUM(CASE WHEN alarm_category = 'Temp' THEN 1 ELSE 0 END) AS temp,
-                COUNT(DISTINCT site_id) AS sites,
-                COALESCE(AVG(_duration_secs), 0) AS avg_duration_secs
-            FROM {ALARM_TABLE}{where_sql}
-            """,
-            params,
-        ).fetchone()
-        return {
-            "total": int(row[0] or 0),
-            "power": int(row[1] or 0),
-            "down": int(row[2] or 0),
-            "door": int(row[3] or 0),
-            "temp": int(row[4] or 0),
-            "sites": int(row[5] or 0),
-            "avg_duration_secs": float(row[6] or 0.0),
+    with _alarm_store_read_lock():
+        empty_stats = {
+            "total": 0,
+            "power": 0,
+            "down": 0,
+            "door": 0,
+            "temp": 0,
+            "sites": 0,
+            "avg_duration_secs": 0.0,
         }
-    finally:
-        con.close()
+        if not ALARM_DB_FILE.exists():
+            return empty_stats
+        con = _safe_connect(read_only=True)
+        if con is None:
+            return empty_stats
+        try:
+            table_cols = _table_columns(con)
+            if not table_cols:
+                return empty_stats
+            normalized_q = replace(q, sort_by=None, limit=None, offset=0) if q else AlarmQuery()
+            where_sql, params = _build_where_clause(normalized_q, table_cols)
+            row = con.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN alarm_category = 'Power' THEN 1 ELSE 0 END) AS power,
+                    SUM(CASE WHEN alarm_category = 'Down' THEN 1 ELSE 0 END) AS down,
+                    SUM(CASE WHEN alarm_category = 'Door' THEN 1 ELSE 0 END) AS door,
+                    SUM(CASE WHEN alarm_category = 'Temp' THEN 1 ELSE 0 END) AS temp,
+                    COUNT(DISTINCT site_id) AS sites,
+                    COALESCE(AVG(_duration_secs), 0) AS avg_duration_secs
+                FROM {ALARM_TABLE}{where_sql}
+                """,
+                params,
+            ).fetchone()
+            return {
+                "total": int(row[0] or 0),
+                "power": int(row[1] or 0),
+                "down": int(row[2] or 0),
+                "door": int(row[3] or 0),
+                "temp": int(row[4] or 0),
+                "sites": int(row[5] or 0),
+                "avg_duration_secs": float(row[6] or 0.0),
+            }
+        finally:
+            con.close()
 
 
 def load_alarm_slice_for_bdt(
@@ -503,39 +523,41 @@ def load_alarm_slice_for_bdt(
 
 
 def load_all_alarms() -> pd.DataFrame:
-    if not ALARM_DB_FILE.exists():
-        return pd.DataFrame()
-    con = _safe_connect(read_only=True)
-    if con is None:
-        return pd.DataFrame()
-    try:
-        if not _table_exists(con):
+    with _alarm_store_read_lock():
+        if not ALARM_DB_FILE.exists():
             return pd.DataFrame()
-        return con.execute(f"SELECT * FROM {ALARM_TABLE}").fetchdf()
-    finally:
-        con.close()
+        con = _safe_connect(read_only=True)
+        if con is None:
+            return pd.DataFrame()
+        try:
+            if not _table_exists(con):
+                return pd.DataFrame()
+            return con.execute(f"SELECT * FROM {ALARM_TABLE}").fetchdf()
+        finally:
+            con.close()
 
 
 def occurred_on_bounds() -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
-    if not ALARM_DB_FILE.exists():
-        return None, None
-    con = _safe_connect(read_only=True)
-    if con is None:
-        return None, None
-    try:
-        table_cols = _table_columns(con)
-        if "occurred_on" not in table_cols:
+    with _alarm_store_read_lock():
+        if not ALARM_DB_FILE.exists():
             return None, None
-        row = con.execute(
-            f"SELECT MIN(occurred_on), MAX(occurred_on) FROM {ALARM_TABLE}"
-        ).fetchone()
-        if not row:
+        con = _safe_connect(read_only=True)
+        if con is None:
             return None, None
-        min_ts = pd.to_datetime(row[0], errors="coerce", format="mixed")
-        max_ts = pd.to_datetime(row[1], errors="coerce", format="mixed")
-        return (
-            None if pd.isna(min_ts) else pd.Timestamp(min_ts),
-            None if pd.isna(max_ts) else pd.Timestamp(max_ts),
-        )
-    finally:
-        con.close()
+        try:
+            table_cols = _table_columns(con)
+            if "occurred_on" not in table_cols:
+                return None, None
+            row = con.execute(
+                f"SELECT MIN(occurred_on), MAX(occurred_on) FROM {ALARM_TABLE}"
+            ).fetchone()
+            if not row:
+                return None, None
+            min_ts = pd.to_datetime(row[0], errors="coerce", format="mixed")
+            max_ts = pd.to_datetime(row[1], errors="coerce", format="mixed")
+            return (
+                None if pd.isna(min_ts) else pd.Timestamp(min_ts),
+                None if pd.isna(max_ts) else pd.Timestamp(max_ts),
+            )
+        finally:
+            con.close()

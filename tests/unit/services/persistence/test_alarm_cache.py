@@ -254,6 +254,140 @@ def _seed_clearable_tables(session, *, salt: str = "") -> None:
     session.commit()
 
 
+def _count_clearable_rows(session) -> dict[str, int]:
+    from services.persistence.models import (
+        AlarmRecord, BDTTest, BDTPhoto, BlobAsset,
+        PMRuleResult, PMValidationRun, UploadedFile, PMRuleCatalog,
+        BDTSummaryCatalog,
+    )
+
+    return {
+        "alarm_records": session.query(AlarmRecord).count(),
+        "bdt_tests": session.query(BDTTest).count(),
+        "bdt_photos": session.query(BDTPhoto).count(),
+        "blob_assets": session.query(BlobAsset).count(),
+        "pm_validation_runs": session.query(PMValidationRun).count(),
+        "pm_rule_results": session.query(PMRuleResult).count(),
+        "bdt_summary_catalog": session.query(BDTSummaryCatalog).count(),
+        "uploaded_files": session.query(UploadedFile).count(),
+        "pm_rule_catalog": session.query(PMRuleCatalog).count(),
+    }
+
+
+def _seed_bdt_summary_catalog(session, *, salt: str = "") -> None:
+    from datetime import date as _date
+    import hashlib
+
+    from services.persistence.models import BDTSummaryCatalog
+
+    digest = hashlib.sha256(f"summary{salt}".encode()).hexdigest()
+    session.add(BDTSummaryCatalog(
+        site_id=f"0167DE{salt[:3]}",
+        reporting_period=f"2026-W{salt or '00'}",
+        week="W01",
+        test_date=_date(2026, 4, 1),
+        test_year=2026,
+        content_hash=digest,
+        original_headers_json="{}",
+        raw_data_json="{}",
+    ))
+    session.commit()
+
+
+def _seed_bdt_history_files(history_dir: Path) -> list[Path]:
+    site_dir = history_dir / "0167DE"
+    site_dir.mkdir(parents=True)
+    files = [
+        site_dir / "2026-01-11.json",
+        site_dir / "2026-04-15.json",
+        history_dir / "_pm_runs" / "abc.jsonl",
+    ]
+    files[-1].parent.mkdir(parents=True)
+    for file_path in files:
+        file_path.write_text("{}")
+    return files
+
+
+def test_clear_alarm_caches_removes_only_alarm_targets(clear_all_caches_home, monkeypatch):
+    from bdt import history as bdt_history
+    from services.persistence.engine import init_db
+
+    init_db(alarm_cache._get_app_engine_for_test(), include_alarm_records=True)
+    session = alarm_cache._get_shared_session_for_test()
+    _seed_clearable_tables(session, salt="alarmonly")
+    _seed_bdt_summary_catalog(session, salt="alarmonly")
+    before = _count_clearable_rows(session)
+    session.close()
+
+    alarm_cache._alarm_db_file().write_text("primary")
+    alarm_cache._alarm_db_fallback_file().write_text("fallback")
+    history_dir = clear_all_caches_home / "bdt_history"
+    history_files = _seed_bdt_history_files(history_dir)
+    monkeypatch.setattr(bdt_history, "HISTORY_DIR", history_dir)
+
+    summary = alarm_cache.clear_alarm_caches()
+
+    assert summary == {"alarm_duckdb_files": 2, "alarm_records": 1}
+    assert not alarm_cache._alarm_db_file().exists()
+    assert not alarm_cache._alarm_db_fallback_file().exists()
+    assert all(path.exists() for path in history_files)
+
+    session = alarm_cache._get_shared_session_for_test()
+    after = _count_clearable_rows(session)
+    session.close()
+
+    assert after["alarm_records"] == 0
+    for key in (
+        "bdt_tests", "bdt_photos", "blob_assets", "pm_validation_runs",
+        "pm_rule_results", "bdt_summary_catalog", "uploaded_files", "pm_rule_catalog",
+    ):
+        assert after[key] == before[key], key
+
+
+def test_clear_bdt_caches_removes_only_bdt_targets(clear_all_caches_home, monkeypatch):
+    from bdt import history as bdt_history
+    from services.persistence.engine import init_db
+
+    init_db(alarm_cache._get_app_engine_for_test(), include_alarm_records=True)
+    session = alarm_cache._get_shared_session_for_test()
+    _seed_clearable_tables(session, salt="bdtonly")
+    _seed_bdt_summary_catalog(session, salt="bdtonly")
+    before = _count_clearable_rows(session)
+    session.close()
+
+    alarm_cache._alarm_db_file().write_text("primary")
+    alarm_cache._alarm_db_fallback_file().write_text("fallback")
+    history_dir = clear_all_caches_home / "bdt_history"
+    _seed_bdt_history_files(history_dir)
+    monkeypatch.setattr(bdt_history, "HISTORY_DIR", history_dir)
+
+    summary = alarm_cache.clear_bdt_caches()
+
+    assert summary["bdt_history_files"] == 3
+    assert summary["bdt_tests"] == 1
+    assert summary["bdt_photos"] == 1
+    assert summary["blob_assets"] == 1
+    assert summary["pm_validation_runs"] == 1
+    assert summary["pm_rule_results"] == 1
+    assert summary["bdt_summary_catalog"] == 1
+    assert alarm_cache._alarm_db_file().exists()
+    assert alarm_cache._alarm_db_fallback_file().exists()
+    assert all(not path.is_file() for path in history_dir.rglob("*"))
+
+    session = alarm_cache._get_shared_session_for_test()
+    after = _count_clearable_rows(session)
+    session.close()
+
+    assert after["alarm_records"] == before["alarm_records"]
+    assert after["uploaded_files"] == before["uploaded_files"]
+    assert after["pm_rule_catalog"] == before["pm_rule_catalog"]
+    for key in (
+        "bdt_tests", "bdt_photos", "blob_assets", "pm_validation_runs",
+        "pm_rule_results", "bdt_summary_catalog",
+    ):
+        assert after[key] == 0, key
+
+
 def test_clear_all_caches_returns_expected_keys(tmp_path, monkeypatch):
     """clear_all_caches returns a summary dict with one entry per target
     (DuckDB files, BDT history files, and each SQLite table)."""

@@ -7,7 +7,7 @@ from datetime import datetime as dt
 from types import SimpleNamespace
 
 import pytest
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, Qt, pyqtSignal
 from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
 
 # -------------------------------------------------------------------
@@ -199,6 +199,17 @@ class TestBDTValidationGUI:
         assert "Directory" in items
         assert "DB" in items
 
+
+    def test_visible_bdt_source_combo_has_mode_tooltips(self, gui_app):
+        from alarm_app.ui.panels.bdt_validation_panel import BDT_SOURCE_TOOLTIPS
+
+        combo = gui_app._bdt_sidebar.cmb_bdt_source
+
+        assert "where BDT validation results come from" in combo.toolTip()
+        for i in range(combo.count()):
+            mode = str(combo.itemData(i) or "")
+            assert combo.itemData(i, Qt.ToolTipRole) == BDT_SOURCE_TOOLTIPS[mode]
+
     def test_bdt_validation_runs_with_real_files(self, gui_app, tmp_path):
         import openpyxl
         wb = openpyxl.Workbook()
@@ -266,7 +277,7 @@ class TestBDTValidationGUI:
         assert filtered == 2
 
     def test_bdt_export_triggers_file_dialog(self, gui_app, monkeypatch):
-        from PyQt5.QtCore import QObject, pyqtSignal
+        from PyQt5.QtCore import QObject, Qt, pyqtSignal
         from PyQt5.QtWidgets import QFileDialog
         results = [_mock_result("S01", "2026-05-10", "Accepted", "exp.xlsx")]
         _inject_results(gui_app, results)

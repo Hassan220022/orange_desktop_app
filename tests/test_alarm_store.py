@@ -288,3 +288,47 @@ def test_lock_warning_is_logged_once_until_connection_recovers(monkeypatch, capl
     con = alarm_store._safe_connect(read_only=True)
     assert con is not None
     assert alarm_store._LOCK_WARNING_EMITTED is False
+
+
+def test_alarm_store_serializes_reads_behind_active_write(monkeypatch):
+    import threading
+    import time
+
+    events = []
+    original_ensure = alarm_store._ensure_derived_fields
+
+    def slow_ensure(df):
+        events.append("write-start")
+        time.sleep(0.1)
+        events.append("write-end")
+        return original_ensure(df)
+
+    monkeypatch.setattr(alarm_store, "_ensure_derived_fields", slow_ensure)
+
+    writer = threading.Thread(target=lambda: alarm_store.replace_alarm_table(_seed_df()))
+    writer.start()
+    while "write-start" not in events:
+        time.sleep(0.005)
+
+    alarm_store.load_all_alarms()
+    writer.join()
+
+    assert events == ["write-start", "write-end"]
+
+
+def test_occurred_on_bounds_uses_alarm_store_read_lock(monkeypatch):
+    calls = []
+
+    class _LockCtx:
+        def __enter__(self):
+            calls.append("enter")
+
+        def __exit__(self, exc_type, exc, tb):
+            calls.append("exit")
+
+    monkeypatch.setattr(alarm_store, "_alarm_store_read_lock", lambda: _LockCtx())
+
+    result = alarm_store.occurred_on_bounds()
+
+    assert result == (None, None)
+    assert calls == ["enter", "exit"]

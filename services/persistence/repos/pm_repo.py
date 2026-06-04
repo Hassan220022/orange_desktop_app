@@ -97,6 +97,7 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
                         overall_verdict: str,
                         rule_results: list[dict],
                         params: dict | None = None,
+                        insight: dict | None = None,
                         autocommit: bool = True,
                         catalog_map: dict[str, int] | None = None,
                         parameter_set_id: int | None = None) -> PMValidationRun | None:
@@ -117,6 +118,12 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
         param_set_id = ps.id
 
     # SQLite treats NULLs as distinct in unique constraints, so check manually
+    insight_json = (
+        json.dumps(insight, sort_keys=True, default=str)
+        if isinstance(insight, dict) and insight
+        else None
+    )
+
     existing = session.query(PMValidationRun).filter_by(
         bdt_test_id=bdt_test_id,
         parameter_set_id=param_set_id,
@@ -124,6 +131,12 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
         validator_code_ref=validator_code_ref,
     ).first()
     if existing:
+        if insight_json and not getattr(existing, "insight_json", None):
+            existing.insight_json = insight_json
+            if autocommit:
+                session.commit()
+            else:
+                safe_flush(session)
         _log.warning("Duplicate validation run skipped: bdt_test_id=%d, verdict=%s", bdt_test_id, overall_verdict)
         return None
 
@@ -133,6 +146,7 @@ def save_validation_run(session: Session, *, bdt_test_id: int,
         alarm_input_sha256=alarm_input_sha256,
         validator_code_ref=validator_code_ref,
         overall_verdict=overall_verdict,
+        insight_json=insight_json,
     )
     session.add(run)
     try:
@@ -279,6 +293,15 @@ def load_all_validation_results(session: Session) -> list:
             except (json.JSONDecodeError, TypeError):
                 pass
 
+        summary_data = {}
+        if getattr(bdt_db, "summary_data_json", None):
+            try:
+                loaded_summary = json.loads(bdt_db.summary_data_json)
+                if isinstance(loaded_summary, dict):
+                    summary_data = {str(k): str(v) for k, v in loaded_summary.items()}
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         bdt_data = BDTData(
             file_path=str(uploaded_file.original_path or "") if uploaded_file else "",
             filename=str(uploaded_file.original_name or "") if uploaded_file else "",
@@ -306,6 +329,7 @@ def load_all_validation_results(session: Session) -> list:
             after_reconnect_ampere=bdt_db.after_reconnect_ampere,
             discharge_readings=discharge_readings,
             string_discharge_readings=string_discharge_readings,
+            summary_data=summary_data,
             photo_slots=photo_slots,
             photo_count=len([s for s in photo_slots if s.image_data or getattr(s, "image_path", "")]),
         )
@@ -328,6 +352,15 @@ def load_all_validation_results(session: Session) -> list:
                 detail=str(detail),
             ))
 
+        insight = {}
+        if getattr(run, "insight_json", None):
+            try:
+                loaded_insight = json.loads(run.insight_json)
+                if isinstance(loaded_insight, dict):
+                    insight = loaded_insight
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         vr = ValidationResult(
             filename=(
                 str(uploaded_file.original_name or "")
@@ -338,6 +371,7 @@ def load_all_validation_results(session: Session) -> list:
             overall=run.overall_verdict or "",
             rules=rule_results,
             bdt_data=bdt_data,
+            battery_backup_insight=insight,
         )
         results.append(vr)
 

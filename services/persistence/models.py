@@ -99,6 +99,7 @@ class BDTTest(Base):
     after_reconnect_ampere = Column(Float)
     discharge_readings_json = Column(Text)       # JSON: [[label, voltage, ampere], ...]
     string_discharge_readings_json = Column(Text) # JSON: [[[v, a], ...], ...]
+    summary_data_json = Column(Text)              # JSON: imported BDT Summary row snapshot
     content_hash = Column(String(64), unique=True, index=True)
     created_at = Column(DateTime, default=func.now())
     tenant_id = Column(String(64), nullable=True)
@@ -166,6 +167,7 @@ class PMValidationRun(Base):
     alarm_input_sha256 = Column(String(64), nullable=False)
     validator_code_ref = Column(Text)
     overall_verdict = Column(String(20))
+    insight_json = Column(Text)                   # JSON: battery backup insight snapshot
     run_at = Column(DateTime, default=func.now())
     created_at = Column(DateTime, default=func.now())
     tenant_id = Column(String(64), nullable=True)

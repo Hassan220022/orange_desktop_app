@@ -18,6 +18,11 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+try:
+    from alarm_app.ui.panels.bdt_validation_panel import BDT_SOURCE_TOOLTIPS
+except ImportError:
+    from ui.panels.bdt_validation_panel import BDT_SOURCE_TOOLTIPS
+
 
 class BdtWorkspacePanel(QWidget):
     """Sidebar for the BDT/Test Validation workspace."""
@@ -136,6 +141,14 @@ class BdtWorkspacePanel(QWidget):
         self.cmb_bdt_source.addItem("Directory", "directory")
         self.cmb_bdt_source.addItem("DB", "db")
         self.cmb_bdt_source.addItem("Both (Verify)", "both")
+        self.cmb_bdt_source.setToolTip(
+            "Choose where BDT validation results come from and whether validation updates SQLite."
+        )
+        source_card.setToolTip(self.cmb_bdt_source.toolTip())
+        source_label.setToolTip(self.cmb_bdt_source.toolTip())
+        for i in range(self.cmb_bdt_source.count()):
+            mode = str(self.cmb_bdt_source.itemData(i) or "")
+            self.cmb_bdt_source.setItemData(i, BDT_SOURCE_TOOLTIPS.get(mode, ""), Qt.ToolTipRole)
         self.cmb_bdt_source.currentIndexChanged.connect(self._sync_to_main_panel)
         source_lay.addWidget(self.cmb_bdt_source)
         lay.addWidget(source_card)
@@ -189,6 +202,19 @@ class BdtWorkspacePanel(QWidget):
         btn_export.clicked.connect(self._viewer._bdt_validation_panel._export_bdt_results)
         actions_lay.addWidget(btn_export)
 
+        self.btn_clear_bdt_caches = QPushButton("Clear BDT cache")
+        self.btn_clear_bdt_caches.setObjectName("btn_clear")
+        self._mark_compact(self.btn_clear_bdt_caches)
+        self.btn_clear_bdt_caches.setToolTip(
+            "Wipe only BDT validation cache, imported BDT summary rows, and BDT history. "
+            "Alarm cache, source files, and photo files are preserved."
+        )
+        if hasattr(self._viewer, "_clear_bdt_caches"):
+            self.btn_clear_bdt_caches.clicked.connect(self._viewer._clear_bdt_caches)
+        else:  # pragma: no cover - viewer is always supplied in production
+            self.btn_clear_bdt_caches.setEnabled(False)
+        actions_lay.addWidget(self.btn_clear_bdt_caches)
+
         lay.addWidget(actions_card)
 
         status_card = QFrame()
@@ -219,6 +245,7 @@ class BdtWorkspacePanel(QWidget):
             btn_daily,
             self.btn_bdt_summary,
             btn_export,
+            self.btn_clear_bdt_caches,
         ]
         self._adaptive_small_buttons = [btn_all, btn_none]
         self._workflow_buttons = [
@@ -227,6 +254,7 @@ class BdtWorkspacePanel(QWidget):
             btn_daily,
             self.btn_bdt_summary,
             btn_export,
+            self.btn_clear_bdt_caches,
         ]
 
         self._viewer._bdt_validation_panel.cmb_bdt_source.currentIndexChanged.connect(
