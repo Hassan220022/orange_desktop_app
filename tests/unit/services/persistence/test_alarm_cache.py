@@ -1,5 +1,6 @@
 """Tests for the DuckDB-backed alarm cache (consolidated from v1 data/state.py)."""
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
