@@ -50,7 +50,9 @@ IMPORTANT RULES:
 4. Never claim that missing data proves a condition; say when the local store has no matching records.
 5. The alarm rows card starts collapsed and can expand up to 100 rows.
 6. Use query_backup_times for questions about backup time, backup duration, or battery hold-up between Power and Down alarms.
-7. Use the host clock context for any time-sensitive answer."""
+7. Use list_chart_types when the user asks what charts are available or asks vaguely for the best chart.
+8. Use list_chart_types and get_chart_data when the user asks for chart-ready data; server-side PNG chart generation is not exposed as a chat tool.
+9. Use the host clock context for any time-sensitive answer."""
 
 SUMMARY_SYSTEM_PROMPT = """You compress Alarm Viewer assistant conversations.
 Preserve all user goals, key facts, tool findings, decisions, generated files,

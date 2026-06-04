@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import re
 from dataclasses import asdict, is_dataclass, replace
 from datetime import date, datetime, timedelta, timezone
@@ -54,6 +55,7 @@ try:
     from alarm_app.db.repos import blob_repo
     from alarm_app.db.repos.pm_repo import load_all_validation_results
     from alarm_app.llm_tools import federated_site
+    from alarm_app.llm_tools.charts import CHART_SPECS, chart_specs_payload
 except ImportError:
     from bdt.export import build_bdt_export_sheets
     from core.battery_backup_insights import (
@@ -91,6 +93,7 @@ except ImportError:
     from db.repos import blob_repo
     from db.repos.pm_repo import load_all_validation_results
     from llm_tools import federated_site
+    from llm_tools.charts import CHART_SPECS, chart_specs_payload
 
 MAX_QUERY_LIMIT = 500
 MAX_BLOB_BYTES = 5 * 1024 * 1024
@@ -99,6 +102,9 @@ EXPORT_DIR = Path.home() / ".alarm_viewer" / "exports"
 ALLOWED_UPLOAD_SUFFIXES = {".csv", ".xls", ".xlsx"}
 MCP_DEFAULT_PAGE_LIMIT = 500
 MCP_MAX_PAGE_LIMIT = 500
+CHART_WIDGET_URI = "ui://widget/chart.html"
+CHART_WIDGET_MIME_TYPE = "text/html;profile=mcp-app"
+CHART_DATA_MAX_POINTS = 500
 _FIELD_ALIASES = {
     "site_name": ("site_name", "sitename", "name"),
     "area": ("area", "orange_area", "orangearea"),
@@ -227,6 +233,40 @@ def _sanitize_mcp_value(value: Any) -> Any:
             return _LOCAL_PATH_REDACTED
         return _sanitize_local_paths_in_text(value)
     return _jsonable(value)
+
+
+def _chart_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _normalize_chart_point(point: Any) -> dict[str, Any]:
+    if not isinstance(point, dict):
+        point = {"label": str(point), "value": 0.0}
+    normalized = _sanitize_mcp_value(point)
+    if not isinstance(normalized, dict):
+        return {"label": str(normalized), "value": 0.0}
+    for numeric_key in ("value", "x", "y"):
+        if numeric_key in normalized:
+            number = _chart_number(normalized.get(numeric_key))
+            if number is None:
+                normalized.pop(numeric_key, None)
+            else:
+                normalized[numeric_key] = number
+    if "label" not in normalized or normalized.get("label") is None:
+        normalized["label"] = str(normalized.get("x") or "")
+    else:
+        normalized["label"] = str(normalized.get("label"))
+    if "value" not in normalized:
+        normalized["value"] = _chart_number(normalized.get("y")) or 0.0
+    return normalized
 
 
 def _max_timestamp(*values: Any) -> Any:
@@ -1437,41 +1477,478 @@ class LocalDataService:
             "export_path": str(export_path),
         }
 
-    def generate_graph(self, **kwargs) -> dict[str, Any]:
-        graph_type = str(kwargs.get("graph_type") or "alarm_category_counts").strip()
-        site_code = normalize_site_key(kwargs.get("site_code") or kwargs.get("site_text") or "")
-        title = str(kwargs.get("title") or graph_type.replace("_", " ").title())
-        if graph_type.startswith("alarm_"):
-            alarm_df = self._alarm_rows_for_sites(
-                {site_code} if site_code else set(self._alarm_reference_df()["site_id"].map(normalize_site_key).dropna()),
-                date_from=_date_value(kwargs.get("date_from")),
-                date_to=_date_value(kwargs.get("date_to")),
-            ) if site_code else self._with_alarm_source(lambda: alarm_store.query_alarms(alarm_store.AlarmQuery(
-                date_from=_date_value(kwargs.get("date_from")),
-                date_to=_date_value(kwargs.get("date_to")),
+    def list_chart_types(self, **kwargs) -> dict[str, Any]:
+        charts = chart_specs_payload(
+            family=str(kwargs.get("family") or ""),
+            chart_kind=str(kwargs.get("chart_kind") or ""),
+            renderable_only=bool(kwargs.get("renderable_only", False)),
+        )
+        return {"charts": charts, "count": len(charts)}
+
+    def _chart_alarm_df(self, *, site_code: str, kwargs: dict[str, Any]) -> pd.DataFrame:
+        date_from = _date_value(kwargs.get("date_from"))
+        date_to = _date_value(kwargs.get("date_to"))
+        if site_code and kwargs.get("_prefer_site_slice"):
+            q = alarm_store.AlarmQuery(
+                site_text="",
+                site_scope_keys={normalize_site_key(site_code)},
+                category=str(kwargs.get("category") or "All"),
+                vendor=str(kwargs.get("vendor") or "All"),
+                network_type=str(kwargs.get("network_type") or "All"),
+                date_from=date_from,
+                date_to=date_to,
+                sort_by="occurred_on",
+                sort_desc=False,
                 limit=None,
                 offset=0,
-            )))
-            labels, values = self._alarm_graph_series(alarm_df, graph_type)
-        elif graph_type in {"bdt_verdict_counts", "bdt_duration_trend"}:
-            rows = self._query_all_bdt_rows(
-                site_code=site_code,
-                date_from=_date_value(kwargs.get("date_from")),
-                date_to=_date_value(kwargs.get("date_to")),
             )
+            return self._with_alarm_source(lambda: alarm_store.query_alarms(q))
+        q = alarm_store.AlarmQuery(
+            site_text=str(kwargs.get("site_text") or "") if not site_code else "",
+            site_scope_keys={normalize_site_key(site_code)} if site_code else None,
+            category=str(kwargs.get("category") or "All"),
+            vendor=str(kwargs.get("vendor") or "All"),
+            network_type=str(kwargs.get("network_type") or "All"),
+            date_from=date_from,
+            date_to=date_to,
+            sort_by="occurred_on",
+            sort_desc=False,
+            limit=None,
+            offset=0,
+        )
+        return self._with_alarm_source(lambda: alarm_store.query_alarms(q))
+
+    @staticmethod
+    def _series_from_counts(work: pd.DataFrame, column: str, *, top_n: int | None = None) -> tuple[list[str], list[float]]:
+        if column not in work.columns:
+            return [], []
+        counts = work[column].fillna("Unknown").replace("", "Unknown").value_counts()
+        if top_n:
+            counts = counts.head(top_n)
+        return counts.index.astype(str).tolist(), counts.astype(float).tolist()
+
+    @staticmethod
+    def _duration_minutes_by(work: pd.DataFrame, column: str, *, top_n: int | None = None) -> tuple[list[str], list[float]]:
+        if column not in work.columns or "_duration_secs" not in work.columns:
+            return [], []
+        grouped = work.groupby(column, dropna=False)["_duration_secs"].sum().sort_values(ascending=False) / 60.0
+        if top_n:
+            grouped = grouped.head(top_n)
+        return grouped.index.astype(str).tolist(), grouped.astype(float).tolist()
+
+    @staticmethod
+    def _daily_counts(work: pd.DataFrame, *, category: str = "") -> tuple[list[str], list[float]]:
+        if "occurred_on" not in work.columns:
+            return [], []
+        source = work
+        if category and "alarm_category" in source.columns:
+            source = source[source["alarm_category"].astype(str).str.lower() == category.lower()]
+        days = pd.to_datetime(source["occurred_on"], errors="coerce", format="mixed").dropna().dt.date
+        counts = days.value_counts().sort_index()
+        return [str(v) for v in counts.index.tolist()], counts.astype(float).tolist()
+
+    @staticmethod
+    def _histogram_series(values: pd.Series, *, bins: int = 8) -> tuple[list[str], list[float]]:
+        numeric = pd.to_numeric(values, errors="coerce").dropna()
+        if numeric.empty:
+            return [], []
+        if numeric.nunique() == 1:
+            value = float(numeric.iloc[0])
+            return [f"{value:g}"], [float(len(numeric))]
+        counts, edges = pd.cut(numeric, bins=min(bins, max(1, numeric.nunique())), retbins=True, duplicates="drop")
+        grouped = counts.value_counts().sort_index()
+        labels = [f"{interval.left:g}-{interval.right:g}" for interval in grouped.index]
+        return labels, grouped.astype(float).tolist()
+
+    @staticmethod
+    def _box_summary_series(work: pd.DataFrame, group_col: str, value_col: str) -> tuple[list[str], list[float]]:
+        if group_col not in work.columns or value_col not in work.columns:
+            return [], []
+        numeric = pd.to_numeric(work[value_col], errors="coerce")
+        grouped = work.assign(_chart_value=numeric).dropna(subset=["_chart_value"]).groupby(group_col, dropna=False)["_chart_value"].median().sort_values(ascending=False)
+        return grouped.index.astype(str).tolist(), grouped.astype(float).tolist()
+
+    @staticmethod
+    def _scatter_series_from_columns(work: pd.DataFrame, x_col: str, y_col: str, *, label_col: str = "site_id") -> list[dict[str, Any]]:
+        if x_col not in work.columns or y_col not in work.columns:
+            return []
+        rows = []
+        for _, row in work.iterrows():
+            x_val = pd.to_numeric(pd.Series([row.get(x_col)]), errors="coerce").iloc[0]
+            y_val = pd.to_numeric(pd.Series([row.get(y_col)]), errors="coerce").iloc[0]
+            if pd.isna(x_val) or pd.isna(y_val):
+                continue
+            rows.append({
+                "label": str(row.get(label_col) or row.get("site_code") or ""),
+                "x": float(x_val),
+                "y": float(y_val),
+                "value": float(y_val),
+            })
+        return rows
+
+    @staticmethod
+    def _labels_values_from_series(series: list[dict[str, Any]]) -> tuple[list[str], list[float]]:
+        return [str(point.get("label") or "") for point in series], [float(point.get("value") or 0.0) for point in series]
+
+    def _alarm_chart_series(self, alarm_df: pd.DataFrame, graph_type: str) -> tuple[list[str], list[float], list[dict[str, Any]]]:
+        if alarm_df is None or alarm_df.empty:
+            return [], [], []
+        work = alarm_df.copy()
+        category_col = "alarm_category" if "alarm_category" in work.columns else "alarm_name"
+        if graph_type in {"alarm_category_counts", "alarm_category_share", "alarm_category_pareto", "alarm_category_treemap"}:
+            labels, values = self._series_from_counts(work, category_col)
+        elif graph_type == "alarm_daily_counts":
+            labels, values = self._daily_counts(work)
+        elif graph_type in {"alarm_volume_trend", "site_alarm_trend", "cumulative_alarm_volume"}:
+            labels, values = self._daily_counts(work)
+            if graph_type == "cumulative_alarm_volume":
+                total = 0.0
+                cumulative = []
+                for value in values:
+                    total += value
+                    cumulative.append(total)
+                values = cumulative
+        elif graph_type == "daily_power_alarm_trend":
+            labels, values = self._daily_counts(work, category="Power")
+        elif graph_type == "daily_down_alarm_trend":
+            labels, values = self._daily_counts(work, category="Down")
+        elif graph_type in {"alarm_duration_by_category", "duration_boxplot_by_category", "alarm_count_vs_duration_by_category"}:
+            labels, values = self._duration_minutes_by(work, category_col)
+        elif graph_type in {"vendor_alarm_share", "vendor_alarm_comparison", "duration_boxplot_by_vendor", "vendor_performance_radar"}:
+            labels, values = self._series_from_counts(work, "vendor")
+        elif graph_type in {"network_type_share", "network_type_vendor_comparison", "network_type_radar"}:
+            labels, values = self._series_from_counts(work, "network_type")
+        elif graph_type == "alarm_severity_share":
+            labels, values = self._series_from_counts(work, "severity")
+        elif graph_type == "alarm_clearance_rate_gauge":
+            if "cleared_on" not in work.columns or len(work) == 0:
+                labels, values = [], []
+            else:
+                cleared = pd.to_datetime(work["cleared_on"], errors="coerce", format="mixed").notna()
+                pct = float(cleared.sum()) / float(len(work)) * 100.0
+                labels, values = ["Clearance"], [pct]
+        elif graph_type == "cleared_vs_uncleared_share":
+            if "cleared_on" not in work.columns:
+                labels, values = [], []
+            else:
+                cleared = pd.to_datetime(work["cleared_on"], errors="coerce", format="mixed").notna()
+                labels, values = ["Cleared", "Uncleared"], [float(cleared.sum()), float((~cleared).sum())]
+        elif graph_type in {"top_sites_by_alarm_count", "site_alarm_pareto"}:
+            labels, values = self._series_from_counts(work, "site_id", top_n=20)
+        elif graph_type in {"top_sites_by_duration", "top_sites_by_alarm_duration", "alarm_duration_pareto", "mttr_by_site"}:
+            labels, values = self._duration_minutes_by(work, "site_id", top_n=20)
+        elif graph_type in {"top_alarm_names"}:
+            labels, values = self._series_from_counts(work, "alarm_name", top_n=20)
+        elif graph_type in {"top_alarm_ids"}:
+            labels, values = self._series_from_counts(work, "alarm_id", top_n=20)
+        elif graph_type == "uncleared_alarms_by_site":
+            if "cleared_on" in work.columns:
+                work = work[pd.to_datetime(work["cleared_on"], errors="coerce", format="mixed").isna()]
+            labels, values = self._series_from_counts(work, "site_id", top_n=20)
+        elif graph_type in {"alarm_duration_distribution", "duration_histogram", "time_to_clear_distribution"}:
+            labels, values = self._histogram_series(work.get("_duration_secs", pd.Series(dtype=float)) / 60.0)
+        elif graph_type == "alarm_count_per_site_distribution":
+            counts = work["site_id"].value_counts() if "site_id" in work.columns else pd.Series(dtype=float)
+            labels, values = self._histogram_series(counts)
+        elif graph_type in {"daily_alarms_by_category", "weekly_alarms_by_category", "stacked_alarm_category_area"}:
+            labels, values = self._series_from_counts(work, category_col)
+        elif graph_type in {"stacked_vendor_area", "vendor_by_category"}:
+            labels, values = self._series_from_counts(work, "vendor")
+        elif graph_type == "network_type_by_category":
+            labels, values = self._series_from_counts(work, "network_type")
+        elif graph_type in {"alarm_heatmap_day_hour", "daily_alarm_calendar", "daily_down_alarm_calendar"}:
+            if "occurred_on" not in work.columns:
+                labels, values = [], []
+            else:
+                times = pd.to_datetime(work["occurred_on"], errors="coerce", format="mixed").dropna()
+                if graph_type == "alarm_heatmap_day_hour":
+                    counts = times.to_frame(name="dt").assign(label=lambda df: df["dt"].dt.day_name().str[:3] + " " + df["dt"].dt.hour.astype(str).str.zfill(2)).label.value_counts().sort_index()
+                    labels, values = counts.index.astype(str).tolist(), counts.astype(float).tolist()
+                else:
+                    if graph_type == "daily_down_alarm_calendar" and "alarm_category" in work.columns:
+                        times = pd.to_datetime(work.loc[work["alarm_category"].astype(str).str.lower() == "down", "occurred_on"], errors="coerce", format="mixed").dropna()
+                    counts = times.dt.date.value_counts().sort_index()
+                    labels, values = [str(v) for v in counts.index], counts.astype(float).tolist()
+        elif graph_type in {"alarm_heatmap_site_day", "alarm_heatmap_category_hour", "vendor_alarm_heatmap_day", "network_type_alarm_heatmap"}:
+            base_col = "site_id" if graph_type == "alarm_heatmap_site_day" else category_col
+            if graph_type == "vendor_alarm_heatmap_day":
+                base_col = "vendor"
+            elif graph_type == "network_type_alarm_heatmap":
+                base_col = "network_type"
+            labels, values = self._series_from_counts(work, base_col, top_n=24)
+        elif graph_type in {"duration_vs_occurrence_time"}:
+            if "occurred_on" in work.columns and "_duration_secs" in work.columns:
+                hours = pd.to_datetime(work["occurred_on"], errors="coerce", format="mixed").dt.hour
+                scatter_df = work.assign(_hour=hours, _minutes=work["_duration_secs"] / 60.0)
+                series = self._scatter_series_from_columns(scatter_df, "_hour", "_minutes")
+                labels, values = self._labels_values_from_series(series)
+                return labels, values, series
+            labels, values = [], []
+        elif graph_type == "site_alarm_count_vs_duration":
+            if "site_id" in work.columns and "_duration_secs" in work.columns:
+                grouped = work.groupby("site_id").agg(count=("site_id", "size"), minutes=("_duration_secs", "sum")).reset_index()
+                grouped["minutes"] = grouped["minutes"] / 60.0
+                series = self._scatter_series_from_columns(grouped, "count", "minutes", label_col="site_id")
+                labels, values = self._labels_values_from_series(series)
+                return labels, values, series
+            labels, values = [], []
+        else:
+            labels, values = self._series_from_counts(work, category_col)
+        series = [{"label": str(label), "value": float(value)} for label, value in zip(labels, values, strict=False)]
+        return labels, values, series
+
+    def _backup_chart_series(self, graph_type: str, kwargs: dict[str, Any]) -> tuple[list[str], list[float], list[dict[str, Any]]]:
+        payload = self.query_backup_times(
+            site_text=str(kwargs.get("site_text") or kwargs.get("site_code") or ""),
+            category=str(kwargs.get("category") or "All"),
+            vendor=str(kwargs.get("vendor") or "All"),
+            network_type=str(kwargs.get("network_type") or "All"),
+            date_from=kwargs.get("date_from"),
+            date_to=kwargs.get("date_to"),
+            min_minutes=kwargs.get("min_minutes"),
+            limit=MAX_QUERY_LIMIT,
+            offset=0,
+        )
+        rows = payload.get("rows") if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            rows = []
+        df = pd.DataFrame(rows)
+        if df.empty:
+            return [], [], []
+        minute_col = "backup_minutes" if "backup_minutes" in df.columns else "backup_time_minutes" if "backup_time_minutes" in df.columns else "minutes"
+        if graph_type in {"backup_time_distribution", "daily_backup_failure_calendar"}:
+            labels, values = self._histogram_series(df.get(minute_col, pd.Series(dtype=float)))
+        elif graph_type in {"backup_time_trend", "power_vs_down_timeline", "power_down_incident_timeline"} and "power_occurred_on" in df.columns:
+            times = pd.to_datetime(df["power_occurred_on"], errors="coerce", format="mixed").dt.date
+            labels = [str(value) for value in times.fillna("").tolist()]
+            values = pd.to_numeric(df.get(minute_col, pd.Series(dtype=float)), errors="coerce").fillna(0).astype(float).tolist()
+        elif graph_type == "top_sites_by_backup_failure":
+            site_col = "site_id" if "site_id" in df.columns else "site_code"
+            if site_col in df.columns and minute_col in df.columns:
+                # Catalog: "Worst backup sites by low backup time". A short
+                # backup duration means the battery collapsed quickly, which
+                # is the failure case we want to surface. Rank ascending
+                # (shortest backup first).
+                grouped = (
+                    df.groupby(site_col, dropna=False)[minute_col]
+                    .min()
+                    .sort_values(ascending=True)
+                    .head(20)
+                )
+                labels = grouped.index.astype(str).tolist()
+                values = pd.to_numeric(grouped, errors="coerce").fillna(0).astype(float).tolist()
+            else:
+                labels, values = [], []
+        else:
+            site_col = "site_id" if "site_id" in df.columns else "site_code"
+            if site_col in df.columns and minute_col in df.columns:
+                grouped = df.groupby(site_col, dropna=False)[minute_col].max().sort_values(ascending=False).head(20)
+                labels, values = grouped.index.astype(str).tolist(), pd.to_numeric(grouped, errors="coerce").fillna(0).astype(float).tolist()
+            else:
+                labels, values = [], []
+        series = [{"label": str(label), "value": float(value)} for label, value in zip(labels, values, strict=False)]
+        return labels, values, series
+
+    def _bdt_chart_series(self, graph_type: str, kwargs: dict[str, Any]) -> tuple[list[str], list[float], list[dict[str, Any]]]:
+        rows = self._query_all_bdt_rows(
+            site_code=normalize_site_key(kwargs.get("site_code") or "") if kwargs.get("site_code") else "",
+            date_from=_date_value(kwargs.get("date_from")),
+            date_to=_date_value(kwargs.get("date_to")),
+        )
+        if graph_type in {"bdt_verdict_counts", "bdt_duration_trend"}:
             labels, values = self._bdt_graph_series(rows, graph_type)
         else:
+            df = pd.DataFrame(rows)
+            if df.empty:
+                labels, values = [], []
+            elif graph_type in {"bdt_verdict_share", "bdt_verdict_trend", "bdt_acceptance_rate_gauge"}:
+                labels, values = self._series_from_counts(df, "overall_verdict")
+            elif graph_type in {"bdt_discharge_distribution", "bdt_discharge_boxplot"}:
+                labels, values = self._histogram_series(df.get("discharge_minutes", pd.Series(dtype=float)))
+            elif graph_type in {"bdt_discharge_by_battery_brand", "end_voltage_boxplot_by_battery_brand", "battery_brand_radar"}:
+                labels, values = self._box_summary_series(df, "battery_brand", "discharge_minutes")
+            elif graph_type in {"bdt_end_voltage_distribution", "end_voltage_distribution"}:
+                labels, values = self._histogram_series(df.get("end_voltage", pd.Series(dtype=float)))
+            elif graph_type in {"bdt_string_count_vs_backup", "num_strings_vs_backup_time"}:
+                series = self._scatter_series_from_columns(df, "num_strings", "discharge_minutes", label_col="site_code")
+                labels, values = self._labels_values_from_series(series)
+                return labels, values, series
+            elif graph_type == "bdt_discharge_vs_end_voltage":
+                series = self._scatter_series_from_columns(df, "end_voltage", "discharge_minutes", label_col="site_code")
+                labels, values = self._labels_values_from_series(series)
+                return labels, values, series
+            else:
+                labels, values = self._series_from_counts(df, "overall_verdict")
+        series = [{"label": str(label), "value": float(value)} for label, value in zip(labels, values, strict=False)]
+        return labels, values, series
+
+    def _chart_series_for_spec(self, graph_type: str, kwargs: dict[str, Any]) -> tuple[list[str], list[float], list[dict[str, Any]]]:
+        spec = CHART_SPECS.get(graph_type)
+        if spec is None:
+            return [], [], []
+        site_code = normalize_site_key(kwargs.get("site_code") or kwargs.get("site_text") or "")
+        if spec.family == "alarm":
+            alarm_df = self._chart_alarm_df(site_code=site_code, kwargs=kwargs)
+            if graph_type in {"alarm_category_counts", "alarm_daily_counts", "alarm_duration_by_category"}:
+                labels, values = self._alarm_graph_series(alarm_df, graph_type)
+                series = [{"label": str(label), "value": float(value)} for label, value in zip(labels, values, strict=False)]
+                return labels, values, series
+            return self._alarm_chart_series(alarm_df, graph_type)
+        if spec.family == "backup":
+            return self._backup_chart_series(graph_type, kwargs)
+        if spec.family == "bdt":
+            return self._bdt_chart_series(graph_type, kwargs)
+        # PM, HT, metadata, and advanced flow charts are catalogued now and can
+        # be rendered as empty placeholders until their source-specific
+        # aggregators are expanded.
+        return [], [], []
+
+    @staticmethod
+    def _chart_axis_labels(chart_kind: str) -> tuple[str, str]:
+        if chart_kind in {"line", "histogram", "heatmap", "scatter", "calendar_heatmap", "timeline"}:
+            return "X", "Value"
+        return "Category", "Count"
+
+    def get_chart_data(self, **kwargs) -> dict[str, Any]:
+        chart_id = str(kwargs.get("chart_id") or kwargs.get("graph_type") or "").strip()
+        spec = CHART_SPECS.get(chart_id)
+        if spec is None or not spec.renderable:
+            return {"error": f"unsupported chart_id: {chart_id}"}
+
+        raw_filters = kwargs.get("filters")
+        filters = dict(raw_filters) if isinstance(raw_filters, dict) else {}
+        for key in ("site_code", "site_text", "date_from", "date_to", "category", "vendor", "network_type", "min_minutes"):
+            if key in kwargs and kwargs.get(key) not in (None, ""):
+                filters[key] = kwargs.get(key)
+
+        raw_max_points = kwargs.get("max_points")
+        try:
+            max_points = int(raw_max_points) if raw_max_points is not None else CHART_DATA_MAX_POINTS
+        except (TypeError, ValueError):
+            max_points = CHART_DATA_MAX_POINTS
+        warnings: list[str] = []
+        if max_points < 0:
+            warnings.append(f"max_points raised from {max_points} to 0.")
+            max_points = 0
+        if max_points > CHART_DATA_MAX_POINTS:
+            warnings.append(f"max_points clamped from {max_points} to {CHART_DATA_MAX_POINTS}.")
+            max_points = CHART_DATA_MAX_POINTS
+
+        title = str(kwargs.get("title") or spec.label)
+        series_kwargs = dict(filters)
+        series_kwargs["_prefer_site_slice"] = True
+        labels, values, series = self._chart_series_for_spec(chart_id, series_kwargs)
+        if not series:
+            series = [{"label": str(label), "value": _chart_number(value) or 0.0} for label, value in zip(labels, values, strict=False)]
+        series = [_normalize_chart_point(point) for point in series]
+        total_points = len(series)
+        returned_series = series[:max_points] if max_points > 0 else []
+        if total_points > len(returned_series):
+            warnings.append(f"Series truncated from {total_points} to {len(returned_series)} points.")
+
+        labels = [str(point.get("label") or "") for point in returned_series]
+        values = [_chart_number(point.get("value")) or 0.0 for point in returned_series]
+        x_label, y_label = self._chart_axis_labels(spec.chart_kind)
+        empty_state = None
+        if total_points == 0:
+            empty_state = {
+                "title": "No chart data",
+                "message": "No rows matched the selected chart and filters.",
+            }
+
+        return {
+            "chart_id": chart_id,
+            "chart_kind": spec.chart_kind,
+            "title": title,
+            "labels": labels,
+            "values": values,
+            "series": returned_series,
+            "x_axis": {"label": x_label},
+            "y_axis": {"label": y_label},
+            "warnings": warnings,
+            "data_quality": {
+                "total_points": total_points,
+                "returned_points": len(returned_series),
+                "truncated": total_points > len(returned_series),
+            },
+            "query_context": {
+                "filters": _sanitize_mcp_value(filters),
+                "max_points": max_points,
+            },
+            "empty_state": empty_state,
+        }
+
+    def render_chart_widget(self, **kwargs) -> dict[str, Any]:
+        chart_id = str(kwargs.get("chart_id") or "").strip()
+        if not chart_id:
+            return {"error": "chart_id is required"}
+        chart_kind = str(kwargs.get("chart_kind") or "bar").strip() or "bar"
+        title = str(kwargs.get("title") or chart_id)
+        labels = kwargs.get("labels") if isinstance(kwargs.get("labels"), list) else []
+        values = kwargs.get("values") if isinstance(kwargs.get("values"), list) else []
+        series = kwargs.get("series") if isinstance(kwargs.get("series"), list) else []
+        series = [_normalize_chart_point(point) for point in series]
+        if not series:
+            series = [
+                {"label": str(label), "value": _chart_number(values[index] if index < len(values) else None) or 0.0}
+                for index, label in enumerate(labels)
+            ]
+        labels = [str(point.get("label") or "") for point in series]
+        values = [_chart_number(point.get("value")) or 0.0 for point in series]
+        warnings = kwargs.get("warnings") if isinstance(kwargs.get("warnings"), list) else []
+        data_quality = kwargs.get("data_quality") if isinstance(kwargs.get("data_quality"), dict) else {}
+        query_context = kwargs.get("query_context") if isinstance(kwargs.get("query_context"), dict) else {}
+        empty_state = kwargs.get("empty_state") if isinstance(kwargs.get("empty_state"), dict) else None
+        return {
+            "chart_id": chart_id,
+            "chart_kind": chart_kind,
+            "title": title,
+            "labels": _sanitize_mcp_value(labels),
+            "values": _sanitize_mcp_value(values),
+            "series": _sanitize_mcp_value(series),
+            "x_axis": _sanitize_mcp_value(kwargs.get("x_axis") if isinstance(kwargs.get("x_axis"), dict) else {}),
+            "y_axis": _sanitize_mcp_value(kwargs.get("y_axis") if isinstance(kwargs.get("y_axis"), dict) else {}),
+            "warnings": _sanitize_mcp_value(warnings),
+            "data_quality": _sanitize_mcp_value(data_quality),
+            "query_context": _sanitize_mcp_value(query_context),
+            "empty_state": _sanitize_mcp_value(empty_state),
+            "_meta": {
+                "openai/outputTemplate": CHART_WIDGET_URI,
+                "ui": {"resourceUri": CHART_WIDGET_URI},
+            },
+        }
+
+    def generate_graph(self, **kwargs) -> dict[str, Any]:
+        graph_type = str(kwargs.get("graph_type") or "alarm_category_counts").strip()
+        spec = CHART_SPECS.get(graph_type)
+        if spec is None or not spec.renderable:
             return {"error": f"unsupported graph_type: {graph_type}"}
 
+        site_code = normalize_site_key(kwargs.get("site_code") or kwargs.get("site_text") or "")
+        title = str(kwargs.get("title") or spec.label)
+        series_kwargs = dict(kwargs)
+        series_kwargs["_prefer_site_slice"] = True
+        labels, values, series = self._chart_series_for_spec(graph_type, series_kwargs)
+        if not series:
+            series = [{"label": str(label), "value": float(value)} for label, value in zip(labels, values, strict=False)]
+
         path = _safe_export_path(self.export_dir / "charts", f"{title}_{site_code or 'all'}", "png")
-        self._draw_bar_chart(path, title, labels, values)
+        self._draw_chart(path, title, labels, values, chart_kind=spec.chart_kind, series=series)
+        image_bytes = path.read_bytes()
+        width, height = Image.open(BytesIO(image_bytes)).size
         return {
             "path": str(path),
             "graph_type": graph_type,
+            "chart_kind": spec.chart_kind,
             "site_code": site_code,
-            "points": len(values),
+            "points": len(series) if series else len(values),
             "labels": labels,
             "values": values,
+            "series": _sanitize_mcp_value(series),
+            "mime_type": "image/png",
+            "image_base64": base64.b64encode(image_bytes).decode("ascii"),
+            "width": int(width),
+            "height": int(height),
         }
 
     def get_computed_report(self, **kwargs) -> dict[str, Any]:
@@ -1562,59 +2039,30 @@ class LocalDataService:
                 result["error"] = _sanitize_mcp_value(str(payload.get("error")))
             return result
 
-        alarm_chart_types = {
-            "alarm_category_counts",
-            "alarm_daily_counts",
-            "alarm_duration_by_category",
-        }
-        bdt_chart_types = {
-            "bdt_verdict_counts",
-            "bdt_duration_trend",
-        }
-
-        if report_type in alarm_chart_types:
-            q = alarm_store.AlarmQuery(
-                site_text=site_text if not site_code else "",
-                site_scope_keys={normalize_site_key(site_code)} if site_code else None,
-                category=category,
-                vendor=vendor,
-                network_type=network_type,
-                date_from=date_from,
-                date_to=date_to,
-                sort_by="occurred_on",
-                sort_desc=False,
-                limit=None,
-                offset=0,
-            )
+        chart_spec = CHART_SPECS.get(report_type)
+        if chart_spec is not None and chart_spec.computed_report:
             try:
-                alarm_df = self._with_alarm_source(lambda: alarm_store.query_alarms(q))
+                labels, values, series = self._chart_series_for_spec(report_type, {
+                    **kwargs,
+                    "site_code": site_code,
+                    "site_text": site_text,
+                    "date_from": kwargs.get("date_from"),
+                    "date_to": kwargs.get("date_to"),
+                    "category": category,
+                    "vendor": vendor,
+                    "network_type": network_type,
+                })
             except Exception as exc:
                 return _computed_error_payload(exc, chart=True)
-            labels, values = self._alarm_graph_series(alarm_df, report_type)
-            series = [{"label": str(label), "value": _sanitize_mcp_value(value)} for label, value in zip(labels, values)]
+            if not series:
+                series = [{"label": str(label), "value": _sanitize_mcp_value(value)} for label, value in zip(labels, values, strict=False)]
+            series = [_sanitize_mcp_value(point) for point in series]
             payload = self._chart_page_payload(series, total=len(series), limit=limit, offset=offset)
             payload["report_type"] = report_type
+            payload["chart_kind"] = chart_spec.chart_kind
             payload["labels"] = _sanitize_mcp_value(payload["labels"])
             payload["values"] = _sanitize_mcp_value(payload["values"])
-            payload["series"] = [{"label": str(point["label"]), "value": _sanitize_mcp_value(point["value"])} for point in payload["series"]]
-            return payload
-
-        if report_type in bdt_chart_types:
-            try:
-                rows = self._query_all_bdt_rows(
-                    site_code=normalize_site_key(site_code) if site_code else "",
-                    date_from=date_from,
-                    date_to=date_to,
-                )
-            except Exception as exc:
-                return _computed_error_payload(exc, chart=True)
-            labels, values = self._bdt_graph_series(rows, report_type)
-            series = [{"label": str(label), "value": _sanitize_mcp_value(value)} for label, value in zip(labels, values)]
-            payload = self._chart_page_payload(series, total=len(series), limit=limit, offset=offset)
-            payload["report_type"] = report_type
-            payload["labels"] = _sanitize_mcp_value(payload["labels"])
-            payload["values"] = _sanitize_mcp_value(payload["values"])
-            payload["series"] = [{"label": str(point["label"]), "value": _sanitize_mcp_value(point["value"])} for point in payload["series"]]
+            payload["series"] = [_sanitize_mcp_value(point) for point in payload["series"]]
             return payload
 
         if report_type in {
@@ -2220,6 +2668,219 @@ class LocalDataService:
                 spacing=2,
                 align="center",
             )
+        image.save(path)
+
+    @classmethod
+    def _draw_chart(
+        cls,
+        path: Path,
+        title: str,
+        labels: list[str],
+        values: list[float],
+        *,
+        chart_kind: str,
+        series: list[dict[str, Any]] | None = None,
+    ) -> None:
+        kind = str(chart_kind or "bar").lower()
+        if kind in {"bar", "grouped_bar", "stacked_bar", "pareto", "funnel", "treemap", "radar", "sankey", "calendar_heatmap", "timeline", "box"}:
+            if kind in {"pie", "donut"}:  # defensive, handled below
+                cls._draw_pie_chart(path, title, labels, values, donut=kind == "donut")
+                return
+            if kind in {"horizontal_bar", "funnel"}:
+                cls._draw_horizontal_bar_chart(path, title, labels, values)
+                return
+            if kind in {"line", "radar", "sankey", "timeline"}:
+                cls._draw_line_chart(path, title, labels, values)
+                return
+            if kind in {"heatmap", "calendar_heatmap", "treemap"}:
+                cls._draw_heatmap_chart(path, title, labels, values)
+                return
+            if kind in {"histogram", "box"}:
+                cls._draw_bar_chart(path, title, labels, values)
+                return
+            cls._draw_bar_chart(path, title, labels, values)
+            return
+        if kind in {"pie", "donut"}:
+            cls._draw_pie_chart(path, title, labels, values, donut=kind == "donut")
+            return
+        if kind == "horizontal_bar":
+            cls._draw_horizontal_bar_chart(path, title, labels, values)
+            return
+        if kind == "line":
+            cls._draw_line_chart(path, title, labels, values)
+            return
+        if kind == "scatter":
+            cls._draw_scatter_chart(path, title, series or [])
+            return
+        if kind == "heatmap":
+            cls._draw_heatmap_chart(path, title, labels, values)
+            return
+        if kind == "gauge":
+            cls._draw_gauge_chart(path, title, values)
+            return
+        cls._draw_bar_chart(path, title, labels, values)
+
+    @classmethod
+    def _chart_canvas(cls, path: Path, title: str, *, width: int = 1200, height: int = 760):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image = Image.new("RGB", (width, height), "#10111a")
+        draw = ImageDraw.Draw(image)
+        title_font = cls._chart_font(24, bold=True)
+        title_lines = cls._wrap_chart_text(draw, title, title_font, width - 140)
+        title_text = "\n".join(title_lines)
+        bbox = draw.multiline_textbbox((0, 0), title_text, font=title_font, spacing=6)
+        draw.multiline_text(((width - (bbox[2] - bbox[0])) / 2, 24), title_text, fill="#d8def8", font=title_font, spacing=6)
+        return image, draw
+
+    @classmethod
+    def _draw_horizontal_bar_chart(cls, path: Path, title: str, labels: list[str], values: list[float]) -> None:
+        image, draw = cls._chart_canvas(path, title)
+        font = cls._chart_font(14)
+        value_font = cls._chart_font(13, bold=True)
+        if not values:
+            draw.text((104, 360), "No matching data", fill="#8f96ad", font=font)
+            image.save(path)
+            return
+        labels = labels[:20]
+        values = values[:20]
+        max_value = max(max(values), 1.0)
+        x0, y0, chart_w = 240, 112, 850
+        row_h = max(22, min(36, int(520 / max(len(values), 1))))
+        for idx, (label, value) in enumerate(zip(labels, values, strict=False)):
+            y = y0 + idx * (row_h + 6)
+            bar_w = int((float(value) / max_value) * chart_w)
+            draw.text((32, y + 3), cls._format_chart_label(label)[:26], fill="#b9c1dc", font=font)
+            draw.rectangle((x0, y, x0 + bar_w, y + row_h), fill="#7aa2ff")
+            draw.text((x0 + bar_w + 8, y + 3), f"{value:g}", fill="#d8def8", font=value_font)
+        image.save(path)
+
+    @classmethod
+    def _draw_pie_chart(cls, path: Path, title: str, labels: list[str], values: list[float], *, donut: bool = False) -> None:
+        image, draw = cls._chart_canvas(path, title)
+        font = cls._chart_font(14)
+        value_font = cls._chart_font(13, bold=True)
+        clean = [(label, float(value)) for label, value in zip(labels[:12], values[:12], strict=False) if float(value or 0) > 0]
+        if not clean:
+            draw.text((104, 360), "No matching data", fill="#8f96ad", font=font)
+            image.save(path)
+            return
+        total = sum(value for _, value in clean) or 1.0
+        colors = ["#7aa2ff", "#a6e3a1", "#f9e2af", "#f38ba8", "#cba6f7", "#89dceb", "#fab387", "#94e2d5"]
+        box = (120, 150, 620, 650)
+        start = -90.0
+        for idx, (label, value) in enumerate(clean):
+            extent = 360.0 * value / total
+            draw.pieslice(box, start, start + extent, fill=colors[idx % len(colors)])
+            start += extent
+        if donut:
+            draw.ellipse((260, 290, 480, 510), fill="#10111a")
+            pct = max(value for _, value in clean) / total * 100
+            draw.text((315, 385), f"{pct:.0f}%", fill="#d8def8", font=cls._chart_font(28, bold=True))
+        lx, ly = 700, 170
+        for idx, (label, value) in enumerate(clean):
+            y = ly + idx * 34
+            draw.rectangle((lx, y, lx + 20, y + 20), fill=colors[idx % len(colors)])
+            draw.text((lx + 32, y), f"{cls._format_chart_label(label)}  {value:g} ({value / total:.0%})", fill="#d8def8", font=value_font)
+        image.save(path)
+
+    @classmethod
+    def _draw_line_chart(cls, path: Path, title: str, labels: list[str], values: list[float]) -> None:
+        image, draw = cls._chart_canvas(path, title)
+        font = cls._chart_font(14)
+        if not values:
+            draw.text((104, 360), "No matching data", fill="#8f96ad", font=font)
+            image.save(path)
+            return
+        labels = labels[:80]
+        values = values[:80]
+        left, top, width, height = 104, 130, 1020, 460
+        draw.line((left, top, left, top + height), fill="#3a3d55", width=2)
+        draw.line((left, top + height, left + width, top + height), fill="#3a3d55", width=2)
+        max_value = max(max(values), 1.0)
+        denom = max(len(values) - 1, 1)
+        points = []
+        for idx, value in enumerate(values):
+            x = left + int(idx / denom * width)
+            y = top + height - int(float(value) / max_value * height)
+            points.append((x, y))
+        if len(points) == 1:
+            draw.ellipse((points[0][0] - 5, points[0][1] - 5, points[0][0] + 5, points[0][1] + 5), fill="#7aa2ff")
+        else:
+            draw.line(points, fill="#7aa2ff", width=4)
+            for x, y in points[::max(1, len(points) // 16)]:
+                draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill="#d8def8")
+        for idx in range(0, len(labels), max(1, len(labels) // 8)):
+            x = left + int(idx / denom * width)
+            draw.text((x - 24, top + height + 12), cls._format_chart_label(labels[idx])[:8], fill="#b9c1dc", font=font)
+        image.save(path)
+
+    @classmethod
+    def _draw_scatter_chart(cls, path: Path, title: str, series: list[dict[str, Any]]) -> None:
+        image, draw = cls._chart_canvas(path, title)
+        font = cls._chart_font(14)
+        points = []
+        for point in series[:200]:
+            try:
+                points.append((float(point.get("x")), float(point.get("y")), str(point.get("label") or "")))
+            except (TypeError, ValueError):
+                continue
+        if not points:
+            draw.text((104, 360), "No matching data", fill="#8f96ad", font=font)
+            image.save(path)
+            return
+        left, top, width, height = 104, 130, 980, 470
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        min_x, max_x = min(xs), max(xs) or 1.0
+        min_y, max_y = min(ys), max(ys) or 1.0
+        if min_x == max_x:
+            max_x += 1.0
+        if min_y == max_y:
+            max_y += 1.0
+        draw.line((left, top, left, top + height), fill="#3a3d55", width=2)
+        draw.line((left, top + height, left + width, top + height), fill="#3a3d55", width=2)
+        for x_val, y_val, _label in points:
+            x = left + int((x_val - min_x) / (max_x - min_x) * width)
+            y = top + height - int((y_val - min_y) / (max_y - min_y) * height)
+            draw.ellipse((x - 5, y - 5, x + 5, y + 5), fill="#a6e3a1")
+        image.save(path)
+
+    @classmethod
+    def _draw_heatmap_chart(cls, path: Path, title: str, labels: list[str], values: list[float]) -> None:
+        image, draw = cls._chart_canvas(path, title)
+        font = cls._chart_font(12)
+        if not values:
+            draw.text((104, 360), "No matching data", fill="#8f96ad", font=font)
+            image.save(path)
+            return
+        labels = labels[:48]
+        values = values[:48]
+        cols = min(12, max(1, len(values)))
+        cell = 68
+        start_x, start_y = 100, 140
+        max_value = max(max(values), 1.0)
+        for idx, (label, value) in enumerate(zip(labels, values, strict=False)):
+            col, row = idx % cols, idx // cols
+            intensity = float(value) / max_value
+            blue = int(80 + 175 * intensity)
+            fill = f"#{40:02x}{90:02x}{blue:02x}"
+            x = start_x + col * (cell + 8)
+            y = start_y + row * (cell + 28)
+            draw.rectangle((x, y, x + cell, y + cell), fill=fill)
+            draw.text((x + 6, y + cell + 4), cls._format_chart_label(label)[:8], fill="#b9c1dc", font=font)
+        image.save(path)
+
+    @classmethod
+    def _draw_gauge_chart(cls, path: Path, title: str, values: list[float]) -> None:
+        image, draw = cls._chart_canvas(path, title)
+        font = cls._chart_font(18, bold=True)
+        value = float(values[0]) if values else 0.0
+        pct = max(0.0, min(1.0, value / 100.0 if value > 1 else value))
+        box = (250, 190, 950, 890)
+        draw.arc(box, 180, 360, fill="#3a3d55", width=36)
+        draw.arc(box, 180, 180 + int(180 * pct), fill="#a6e3a1", width=36)
+        draw.text((535, 430), f"{pct * 100:.0f}%", fill="#d8def8", font=cls._chart_font(42, bold=True))
+        draw.text((500, 500), "Current value", fill="#b9c1dc", font=font)
         image.save(path)
 
     @staticmethod

@@ -5,7 +5,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .service import LocalDataService
+from .charts import chart_type_description, chart_type_ids
+from .service import CHART_DATA_MAX_POINTS, CHART_WIDGET_URI, LocalDataService
 
 
 def _schema(properties: dict[str, Any], *, required: list[str] | None = None) -> dict[str, Any]:
@@ -279,43 +280,104 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         }),
         "outputSchema": _output_schema(_PAGING_OUTPUT),
     },
-    "generate_graph": {
-        "description": (
-            "Generate a PNG chart from local alarm or BDT data and return the image path plus chart data."
-        ),
+    "list_chart_types": {
+        "description": "List supported chart types. For ChatGPT charts, call list_chart_types, then get_chart_data, then render_chart_widget.",
         "inputSchema": _schema({
-            "graph_type": {
-                "type": "string",
-                "enum": [
-                    "alarm_category_counts",
-                    "alarm_daily_counts",
-                    "alarm_duration_by_category",
-                    "bdt_verdict_counts",
-                    "bdt_duration_trend",
-                ],
-            },
-            "site_code": {"type": "string"},
-            "site_text": {"type": "string"},
-            "date_from": {"type": "string"},
-            "date_to": {"type": "string"},
-            "title": {"type": "string"},
-        }, required=["graph_type"]),
+            "family": {"type": "string", "description": "Optional chart family filter, such as alarm, backup, bdt, pm, or metadata."},
+            "chart_kind": {"type": "string", "description": "Optional chart kind filter, such as bar, donut, line, heatmap, or scatter."},
+            "renderable_only": {"type": "boolean", "description": "When true, return only charts that can be rendered as images."},
+        }),
         "outputSchema": _output_schema({
-            "path": {"type": "string"},
-            "graph_type": {"type": "string"},
-            "site_code": {"type": "string"},
-            "points": {"type": "integer"},
-            "labels": _STRING_LIST,
-            "values": _NUMBER_LIST,
+            "charts": _OBJECT_ROWS,
+            "count": {"type": "integer"},
             "error": {"type": "string"},
         }),
+    },
+    "get_chart_data": {
+        "description": (
+            "Return validated structured chart data without creating an image. "
+            "Preferred ChatGPT chart flow: list_chart_types -> get_chart_data -> render_chart_widget."
+        ),
+        "inputSchema": _schema({
+            "chart_id": {
+                "type": "string",
+                "enum": chart_type_ids(renderable_only=True),
+                "description": "Chart id from list_chart_types.",
+            },
+            "filters": {
+                "type": "object",
+                "description": "Optional safe chart filters such as site_code, site_text, date_from, date_to, category, vendor, network_type, and min_minutes.",
+                "additionalProperties": True,
+            },
+            "max_points": {"type": "integer", "minimum": 0, "maximum": CHART_DATA_MAX_POINTS, "xClampMaximum": True},
+            "group_by": {"type": "string", "description": "Reserved grouping hint when supported by a chart."},
+            "sort_by": {"type": "string", "description": "Reserved sort hint when supported by a chart."},
+            "sort_direction": {"type": "string", "enum": ["asc", "desc"], "description": "Reserved sort direction hint."},
+        }, required=["chart_id"]),
+        "outputSchema": _output_schema({
+            "chart_id": {"type": "string"},
+            "chart_kind": {"type": "string"},
+            "title": {"type": "string"},
+            "labels": _STRING_LIST,
+            "values": _NUMBER_LIST,
+            "series": _OBJECT_ROWS,
+            "x_axis": _OBJECT_OUTPUT,
+            "y_axis": _OBJECT_OUTPUT,
+            "warnings": _STRING_LIST,
+            "data_quality": _OBJECT_OUTPUT,
+            "query_context": _OBJECT_OUTPUT,
+            "empty_state": _OBJECT_OUTPUT,
+            "error": {"type": "string"},
+        }),
+    },
+    "render_chart_widget": {
+        "description": (
+            "Render the Apps SDK chart widget from a validated get_chart_data payload. "
+            "Call get_chart_data first, then pass its structured payload here."
+        ),
+        "inputSchema": _schema({
+            "chart_id": {"type": "string"},
+            "chart_kind": {"type": "string"},
+            "title": {"type": "string"},
+            "labels": _STRING_LIST,
+            "values": _NUMBER_LIST,
+            "series": _OBJECT_ROWS,
+            "x_axis": _OBJECT_OUTPUT,
+            "y_axis": _OBJECT_OUTPUT,
+            "warnings": _STRING_LIST,
+            "data_quality": _OBJECT_OUTPUT,
+            "query_context": _OBJECT_OUTPUT,
+            "empty_state": _OBJECT_OUTPUT,
+        }, required=["chart_id", "chart_kind", "title", "labels", "values", "series"]),
+        "outputSchema": _output_schema({
+            "chart_id": {"type": "string"},
+            "chart_kind": {"type": "string"},
+            "title": {"type": "string"},
+            "labels": _STRING_LIST,
+            "values": _NUMBER_LIST,
+            "series": _OBJECT_ROWS,
+            "x_axis": _OBJECT_OUTPUT,
+            "y_axis": _OBJECT_OUTPUT,
+            "warnings": _STRING_LIST,
+            "data_quality": _OBJECT_OUTPUT,
+            "query_context": _OBJECT_OUTPUT,
+            "empty_state": _OBJECT_OUTPUT,
+            "_meta": _OBJECT_OUTPUT,
+            "error": {"type": "string"},
+        }),
+        "_meta": {
+            "openai/outputTemplate": CHART_WIDGET_URI,
+            "ui": {"resourceUri": CHART_WIDGET_URI},
+            "openai/toolInvocation/invoking": "Rendering chart...",
+            "openai/toolInvocation/invoked": "Chart ready.",
+        },
     },
     "get_computed_report": {
         "description": "Read computed chart-like or report-like rows for backups and charts without creating files.",
         "inputSchema": _schema({
             "report_type": {
                 "type": "string",
-                "description": "Supported values: backup_times, alarm_category_counts, alarm_daily_counts, alarm_duration_by_category, bdt_verdict_counts, bdt_duration_trend, ht_meet, ht_weekly_summary, ht_consolidated_history, bdt_export, accepted_pm_report, or chart:* aliases.",
+                "description": f"Supported values: backup_times, {chart_type_description()}, ht_meet, ht_weekly_summary, ht_consolidated_history, bdt_export, accepted_pm_report, or chart:* aliases.",
             },
             "site_code": {"type": "string"},
             "site_id": {"type": "string"},
@@ -715,7 +777,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     },
 }
 
-_WRITE_TOOL_NAMES = {"export_report", "generate_graph", "get_site_dossier"}
+_WRITE_TOOL_NAMES = {"export_report", "get_site_dossier"}
+_OPENROUTER_EXCLUDED_TOOL_NAMES = {"render_chart_widget"}
 
 
 def _mcp_annotations(name: str) -> dict[str, Any]:
@@ -736,6 +799,7 @@ def tool_definitions_for_mcp() -> list[dict[str, Any]]:
             "inputSchema": schema["inputSchema"],
             "outputSchema": schema["outputSchema"],
             "annotations": _mcp_annotations(name),
+            **({"_meta": schema["_meta"]} if "_meta" in schema else {}),
         }
         for name, schema in TOOL_SCHEMAS.items()
     ]
@@ -752,6 +816,7 @@ def tool_definitions_for_openrouter() -> list[dict[str, Any]]:
             },
         }
         for name, schema in TOOL_SCHEMAS.items()
+        if name not in _OPENROUTER_EXCLUDED_TOOL_NAMES
     ]
 
 
@@ -794,9 +859,13 @@ def _validate_tool_arguments(arguments: Any, input_schema: dict[str, Any]) -> di
             if field not in properties:
                 return f"unexpected property: {field}"
 
+    required_fields = set(input_schema.get("required", []))
+
     for field, value in args.items():
         field_schema = properties.get(field, {})
         expected_type = field_schema.get("type")
+        if value is None and field not in required_fields:
+            continue
         if expected_type == "number" and isinstance(value, float) and not math.isfinite(value):
             return f"{field} must be finite"
         if expected_type == "integer" and isinstance(value, float) and math.isinf(value):

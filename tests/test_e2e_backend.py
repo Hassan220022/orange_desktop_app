@@ -264,7 +264,7 @@ class TestMcpConnectorE2E:
         assert payload["jsonrpc"] == "2.0"
         assert payload["id"] == 1
         assert payload["result"]["serverInfo"]["name"] == "alarm-viewer-local-data"
-        assert payload["result"]["capabilities"] == {"tools": {}}
+        assert payload["result"]["capabilities"] == {"tools": {}, "resources": {}}
 
     def test_mcp_tools_list_includes_chatgpt_safety_annotations(self, client, monkeypatch):
         monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
@@ -278,6 +278,15 @@ class TestMcpConnectorE2E:
 
         assert r.status_code == 200
         tools = {tool["name"]: tool for tool in r.json()["result"]["tools"]}
+        assert "generate_graph" not in tools
+        assert "list_chart_types" in tools
+        assert "get_chart_data" in tools
+        assert tools["render_chart_widget"]["_meta"] == {
+            "openai/outputTemplate": "ui://widget/chart.html",
+            "ui": {"resourceUri": "ui://widget/chart.html"},
+            "openai/toolInvocation/invoking": "Rendering chart...",
+            "openai/toolInvocation/invoked": "Chart ready.",
+        }
         assert tools["query_alarms"]["annotations"] == {"readOnlyHint": True}
         assert tools["export_report"]["annotations"] == {
             "readOnlyHint": False,
@@ -303,6 +312,97 @@ class TestMcpConnectorE2E:
 
         assert r.status_code == 400
         assert r.json()["detail"] == "MCP requests must use JSON-RPC 2.0"
+
+    def test_mcp_generate_graph_is_not_public_over_http(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post("/mcp?token=secret-token", json={
+            "jsonrpc": "2.0",
+            "id": "chart",
+            "method": "tools/call",
+            "params": {"name": "generate_graph", "arguments": {"graph_type": "alarm_category_counts"}},
+        })
+
+        assert r.status_code == 200
+        payload = r.json()["result"]
+        assert payload["isError"] is True
+        assert payload["structuredContent"] == {"error": "unknown tool: generate_graph"}
+        assert len(payload["content"]) == 1
+        assert payload["content"][0]["type"] == "text"
+
+    def test_mcp_resources_list_returns_chart_widget(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post("/mcp?token=secret-token", json={
+            "jsonrpc": "2.0",
+            "id": "resources",
+            "method": "resources/list",
+            "params": {},
+        })
+
+        assert r.status_code == 200
+        assert r.json()["result"]["resources"] == [
+            {
+                "uri": "ui://widget/chart.html",
+                "name": "chart-widget",
+                "title": "Alarm Chart Widget",
+                "mimeType": "text/html;profile=mcp-app",
+            }
+        ]
+
+
+    def test_mcp_resources_read_returns_chart_widget_html(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post("/mcp?token=secret-token", json={
+            "jsonrpc": "2.0",
+            "id": "resource",
+            "method": "resources/read",
+            "params": {"uri": "ui://widget/chart.html"},
+        })
+
+        assert r.status_code == 200
+        payload = r.json()
+        content = payload["result"]["contents"][0]
+        assert content["uri"] == "ui://widget/chart.html"
+        assert content["mimeType"] == "text/html;profile=mcp-app"
+        assert 'id="chart-root"' in content["text"]
+        assert "window.openai" in content["text"]
+        assert "ui/notifications/tool-result" in content["text"]
+
+    def test_mcp_render_chart_widget_returns_structured_data_and_ui_metadata(self, client, monkeypatch):
+        monkeypatch.setenv("ALARM_MCP_TOKEN", "secret-token")
+
+        r = client.post("/mcp?token=secret-token", json={
+            "jsonrpc": "2.0",
+            "id": "render",
+            "method": "tools/call",
+            "params": {
+                "name": "render_chart_widget",
+                "arguments": {
+                    "chart_id": "alarm_category_counts",
+                    "chart_kind": "bar",
+                    "title": "Alarm Category Counts",
+                    "labels": ["Power"],
+                    "values": [2.0],
+                    "series": [{"label": "Power", "value": 2.0}],
+                    "warnings": [],
+                    "data_quality": {"total_points": 1, "returned_points": 1, "truncated": False},
+                    "query_context": {"filters": {"site_code": "AAA001"}},
+                    "empty_state": None,
+                },
+            },
+        })
+
+        assert r.status_code == 200
+        payload = r.json()["result"]
+        assert payload["structuredContent"]["chart_id"] == "alarm_category_counts"
+        assert payload["structuredContent"]["series"] == [{"label": "Power", "value": 2.0}]
+        assert payload["_meta"] == {
+            "openai/outputTemplate": "ui://widget/chart.html",
+            "ui": {"resourceUri": "ui://widget/chart.html"},
+        }
+
 
 
 # ---------------------------------------------------------------------------

@@ -9,8 +9,10 @@ from PyQt5.QtWidgets import QApplication, QLabel, QTableWidget
 from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
 from alarm_app.ui.panels.chat_panel import (
     ChatPanel,
+    _graph_pixmap_from_result,
     _alarm_row_columns,
     _json_output_text,
+    _materialize_base64_png,
     _normalize_message_text,
     _output_paths,
     _parse_markdown_blocks,
@@ -504,6 +506,48 @@ def test_message_bubble_width_caps_on_small_and_large_panels():
     assert ChatPanel._message_bubble_width(300, "assistant") == 280
     assert ChatPanel._message_bubble_width(2000, "assistant") == 760
     assert ChatPanel._message_bubble_width(1000, "system") == 760
+
+
+def test_graph_pixmap_can_fall_back_to_base64_payload():
+    _ensure_qapp()
+    result = {
+        "path": "[local path redacted]",
+        "mime_type": "image/png",
+        "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC",
+    }
+
+    pixmap = _graph_pixmap_from_result(result)
+
+    assert not pixmap.isNull()
+
+
+def test_materialize_base64_png_writes_temp_file_for_zoom_handler():
+    result = {
+        "mime_type": "image/png",
+        "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC",
+    }
+
+    path = _materialize_base64_png(result, "alarm_category_share")
+
+    try:
+        assert path != ""
+        assert os.path.isfile(path)
+        # PNG magic header so the preview dialog can load it.
+        with open(path, "rb") as fh:
+            assert fh.read(4) == b"\x89PNG"
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def test_materialize_base64_png_returns_empty_when_no_payload():
+    assert _materialize_base64_png({}, "label") == ""
+    # Invalid base64 falls back to empty string rather than crashing the
+    # graph widget.
+    assert _materialize_base64_png({"image_base64": "not!valid!base64!"}, "label") == ""
 
 
 def test_display_graph_type_removes_underscores():

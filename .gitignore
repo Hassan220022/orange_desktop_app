@@ -63,3 +63,6 @@ web/frontend/.env.production
 
 # Stakpak local files
 .stakpak/session*
+
+# Codex CLI session logs (local review artifacts only; never commit).
+.scratch/codex-review-*.md

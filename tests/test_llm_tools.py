@@ -2,6 +2,9 @@ import base64
 import hashlib
 import json
 import operator
+import shutil
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +15,7 @@ import pandas as pd
 import alarm_app.llm_tools.openrouter_agent as openrouter_agent_mod
 import alarm_app.llm_tools.service as service_mod
 from alarm_app.data import alarm_store
+from alarm_app.llm_tools.charts import CHART_SPECS, chart_type_ids
 from alarm_app.llm_tools.mcp_server import AlarmViewerMcpServer
 from alarm_app.llm_tools.openrouter_agent import (
     CONTEXT_TOO_LARGE_MESSAGE,
@@ -731,14 +735,21 @@ def test_tool_definitions_are_available_for_mcp_and_openrouter():
     assert "get_computed_report" in mcp_names
     assert "get_computed_report" in openrouter_names
     assert "get_site_dossier" in mcp_names
-    assert "generate_graph" in mcp_names
+    assert "list_chart_types" in mcp_names
+    assert "list_chart_types" in openrouter_names
+    assert "get_chart_data" in mcp_names
+    assert "get_chart_data" in openrouter_names
+    assert "render_chart_widget" in mcp_names
+    assert "render_chart_widget" not in openrouter_names
+    assert "generate_graph" not in mcp_names
+    assert "generate_graph" not in openrouter_names
     assert "export_report" in openrouter_names
     assert "search_site_metadata" in mcp_names
     assert "query_site_metadata" in mcp_names
     assert "query_bdt_summary" in mcp_names
     assert "query_bdt_full" in mcp_names
     assert "get_site_alarm_context" in mcp_names
-    assert mcp_names == openrouter_names
+    assert openrouter_names == mcp_names - {"render_chart_widget"}
 
 
 def test_openrouter_tool_definitions_do_not_include_mcp_annotations():
@@ -778,6 +789,72 @@ def test_get_computed_report_schema_includes_expected_report_types():
     assert "ht_consolidated_history" in description
     assert "bdt_export" in description
     assert "accepted_pm_report" in description
+
+
+def test_chart_registry_drives_data_schema_and_discovery_tool():
+    graph_ids = chart_type_ids(renderable_only=True)
+    schema_ids = TOOL_SCHEMAS["get_chart_data"]["inputSchema"]["properties"]["chart_id"]["enum"]
+
+    assert schema_ids == graph_ids
+    assert "list_chart_types" in TOOL_SCHEMAS
+    assert "generate_graph" not in TOOL_SCHEMAS
+    assert "alarm_category_share" in graph_ids
+    assert "alarm_volume_trend" in graph_ids
+    assert "alarm_heatmap_day_hour" in graph_ids
+    assert "backup_time_by_site" in graph_ids
+    assert "bdt_verdict_counts" in graph_ids
+    # PM and metadata flows have no working aggregators in the service yet;
+    # they must not be advertised as renderable in the discovery surface.
+    assert "pm_status_share" not in graph_ids
+    assert "site_metadata_coverage" not in graph_ids
+    assert "alarm_to_site_flow" not in graph_ids
+    # BDT rule-failure charts are catalogued but not opted in: the service
+    # has no rule-result aggregator, so advertising them as renderable
+    # would cause them to fall through to overall_verdict counts.
+    assert "bdt_rule_failure_counts" not in graph_ids
+    # Cross-dimension split charts require a real cross-tab aggregator;
+    # the service's _alarm_chart_series only returns single-dim counts for
+    # these ids, so advertising them as renderable would produce a chart
+    # with the wrong semantics.
+    assert "vendor_by_category" not in graph_ids
+    assert "network_type_by_category" not in graph_ids
+    assert "stacked_alarm_category_area" not in graph_ids
+    assert "stacked_vendor_area" not in graph_ids
+    assert "network_type_vendor_comparison" not in graph_ids
+
+    service = LocalDataService()
+    result = dispatch_tool(service, "list_chart_types", {"family": "alarm", "renderable_only": True})
+
+    assert result["count"] >= 1
+    assert all(chart["family"] == "alarm" for chart in result["charts"])
+    assert {chart["chart_id"] for chart in result["charts"]}.issubset(set(graph_ids))
+    assert all(chart["chart_kind"] for chart in result["charts"])
+
+
+def test_chart_registry_contains_all_documented_chart_kinds():
+    kinds = {spec.chart_kind for spec in CHART_SPECS.values()}
+
+    for expected in {
+        "bar",
+        "horizontal_bar",
+        "pie",
+        "donut",
+        "line",
+        "stacked_bar",
+        "histogram",
+        "box",
+        "scatter",
+        "heatmap",
+        "calendar_heatmap",
+        "pareto",
+        "timeline",
+        "gauge",
+        "treemap",
+        "radar",
+        "sankey",
+        "funnel",
+    }:
+        assert expected in kinds
 
 
 def test_get_computed_report_schema_adds_period_and_section_fields():
@@ -2959,6 +3036,244 @@ def test_get_site_dossier_exports_full_site_workbook(tmp_path, monkeypatch):
     assert Path(result["export_path"]).exists()
 
 
+def test_get_chart_data_returns_deterministic_structured_payload(tmp_path, monkeypatch):
+    service = LocalDataService(export_dir=tmp_path / "exports")
+    alarm_df = pd.DataFrame([
+        {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-01"},
+        {"site_id": "AAA001", "alarm_category": "Down", "occurred_on": "2026-04-02"},
+        {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-03"},
+    ])
+    monkeypatch.setattr(service, "_with_alarm_source", lambda fn: alarm_df)
+
+    result = service.get_chart_data(
+        chart_id="alarm_category_counts",
+        filters={"site_code": "AAA001"},
+        max_points=1,
+    )
+
+    assert result["chart_id"] == "alarm_category_counts"
+    assert result["chart_kind"] == "bar"
+    assert result["title"] == "Alarm Category Counts"
+    assert result["labels"] == ["Power"]
+    assert result["values"] == [2.0]
+    assert result["series"] == [{"label": "Power", "value": 2.0}]
+    assert result["x_axis"] == {"label": "Category"}
+    assert result["y_axis"] == {"label": "Count"}
+    assert result["warnings"] == ["Series truncated from 2 to 1 points."]
+    assert result["data_quality"] == {"total_points": 2, "returned_points": 1, "truncated": True}
+    assert result["query_context"]["filters"] == {"site_code": "AAA001"}
+    assert result["empty_state"] is None
+    assert "image_base64" not in result
+    assert "path" not in result
+
+
+def test_get_chart_data_forwards_alarm_filters_in_prefer_site_slice_path(tmp_path, monkeypatch):
+    """Regression: site-scoped chart path must honor category / vendor / network_type filters."""
+    service = LocalDataService(export_dir=tmp_path / "exports")
+    alarm_df = pd.DataFrame([
+        {"site_id": "AAA001", "alarm_category": "Power", "vendor": "Huawei", "network_type": "4G"},
+        {"site_id": "AAA001", "alarm_category": "Down", "vendor": "Nokia", "network_type": "3G"},
+    ])
+    captured: list = []
+
+    def fake_alarm_source(fn):
+        # Run the closure (which builds an AlarmQuery and calls query_alarms),
+        # capturing the query kwargs the lambda handed to query_alarms.
+        from llm_tools import service as service_module
+        original_query = service_module.alarm_store.query_alarms
+
+        def recording_query_alarms(q):
+            captured.append({
+                "site_scope_keys": q.site_scope_keys,
+                "category": q.category,
+                "vendor": q.vendor,
+                "network_type": q.network_type,
+            })
+            return alarm_df
+
+        service_module.alarm_store.query_alarms = recording_query_alarms
+        try:
+            return fn()
+        finally:
+            service_module.alarm_store.query_alarms = original_query
+
+    monkeypatch.setattr(service, "_with_alarm_source", fake_alarm_source)
+
+    result = service.get_chart_data(
+        chart_id="alarm_category_counts",
+        filters={"site_code": "AAA001", "category": "Power", "vendor": "Huawei", "network_type": "4G"},
+    )
+
+    assert captured, "expected at least one AlarmQuery to be built"
+    query_kwargs = captured[-1]
+    assert query_kwargs["site_scope_keys"] == {"AAA001"}
+    assert query_kwargs["category"] == "Power"
+    assert query_kwargs["vendor"] == "Huawei"
+    assert query_kwargs["network_type"] == "4G"
+    assert result["query_context"]["filters"] == {
+        "site_code": "AAA001",
+        "category": "Power",
+        "vendor": "Huawei",
+        "network_type": "4G",
+    }
+
+
+def test_get_chart_data_clamps_max_points_and_reports_empty_state(tmp_path, monkeypatch):
+    service = LocalDataService(export_dir=tmp_path / "exports")
+    monkeypatch.setattr(service, "_alarm_rows_for_sites", lambda site_keys, date_from=None, date_to=None, **kwargs: pd.DataFrame())
+
+    result = service.get_chart_data(
+        chart_id="alarm_category_counts",
+        filters={"site_code": "AAA001"},
+        max_points=9999,
+    )
+
+    assert result["labels"] == []
+    assert result["values"] == []
+    assert result["series"] == []
+    assert result["warnings"] == ["max_points clamped from 9999 to 500."]
+    assert result["data_quality"] == {"total_points": 0, "returned_points": 0, "truncated": False}
+    assert result["empty_state"] == {
+        "title": "No chart data",
+        "message": "No rows matched the selected chart and filters.",
+    }
+
+
+def test_render_chart_widget_returns_apps_sdk_metadata():
+    service = LocalDataService()
+    payload = {
+        "chart_id": "alarm_category_counts",
+        "chart_kind": "bar",
+        "title": "Alarm Category Counts",
+        "labels": ["Power"],
+        "values": [2.0],
+        "series": [{"label": "Power", "value": 2.0}],
+        "x_axis": {"label": "Category"},
+        "y_axis": {"label": "Count"},
+        "warnings": [],
+        "data_quality": {"total_points": 1, "returned_points": 1, "truncated": False},
+        "query_context": {"filters": {"site_code": "AAA001"}},
+        "empty_state": None,
+    }
+
+    result = service.render_chart_widget(**payload)
+
+    assert result["chart_id"] == payload["chart_id"]
+    assert result["series"] == payload["series"]
+    assert result["_meta"] == {
+        "openai/outputTemplate": "ui://widget/chart.html",
+        "ui": {"resourceUri": "ui://widget/chart.html"},
+    }
+
+
+def test_mcp_server_exposes_chart_widget_resource_and_render_meta():
+    class _Service:
+        def render_chart_widget(self, **kwargs):
+            return {
+                **kwargs,
+                "_meta": {
+                    "openai/outputTemplate": "ui://widget/chart.html",
+                    "ui": {"resourceUri": "ui://widget/chart.html"},
+                },
+            }
+
+    server = AlarmViewerMcpServer(service=_Service())
+
+    initialized = server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    assert initialized["result"]["capabilities"]["resources"] == {}
+
+    listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "resources/list", "params": {}})
+    resources = listed["result"]["resources"]
+    assert resources == [
+        {
+            "uri": "ui://widget/chart.html",
+            "name": "chart-widget",
+            "title": "Alarm Chart Widget",
+            "mimeType": "text/html;profile=mcp-app",
+        }
+    ]
+
+    read = server.handle({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "resources/read",
+        "params": {"uri": "ui://widget/chart.html"},
+    })
+    content = read["result"]["contents"][0]
+    assert content["uri"] == "ui://widget/chart.html"
+    assert content["mimeType"] == "text/html;profile=mcp-app"
+    assert "window.openai" in content["text"]
+    assert "ui/notifications/tool-result" in content["text"]
+    assert 'id="chart-root"' in content["text"]
+    assert content["_meta"] == {"ui": {"prefersBorder": True}}
+
+    called = server.handle({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "render_chart_widget",
+            "arguments": {
+                "chart_id": "alarm_category_counts",
+                "chart_kind": "bar",
+                "title": "Alarm Category Counts",
+                "labels": ["Power"],
+                "values": [1],
+                "series": [{"label": "Power", "value": 1}],
+            },
+        },
+    })
+    assert called["result"]["_meta"] == {
+        "openai/outputTemplate": "ui://widget/chart.html",
+        "ui": {"resourceUri": "ui://widget/chart.html"},
+    }
+    assert called["result"]["structuredContent"]["chart_id"] == "alarm_category_counts"
+
+
+def test_mcp_server_returns_resource_error_when_widget_build_missing(tmp_path, monkeypatch):
+    missing_widget = tmp_path / "missing" / "chart.html"
+    monkeypatch.setattr("alarm_app.llm_tools.mcp_server._WIDGET_HTML_PATH", missing_widget)
+    server = AlarmViewerMcpServer(service=LocalDataService())
+
+    response = server.handle({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "resources/read",
+        "params": {"uri": "ui://widget/chart.html"},
+    })
+
+    assert response["error"]["code"] == -32002
+    assert "chart widget build artifact missing" in response["error"]["message"]
+    assert "chart_widget.ts" not in response["error"]["message"]
+    # Must not leak the local filesystem path of the build artifact.
+    assert str(missing_widget) not in response["error"]["message"]
+    assert missing_widget.name not in response["error"]["message"]
+
+
+def test_chart_widget_package_builds(tmp_path):
+    package_path = Path(__file__).resolve().parents[1] / "mcp_app" / "chart_widget" / "package.json"
+    widget_dir = package_path.parent
+    temp_widget_dir = tmp_path / "chart_widget"
+    dist_path = temp_widget_dir / "dist" / "chart.html"
+
+    assert package_path.exists()
+    shutil.copytree(widget_dir, temp_widget_dir)
+    dist_path.unlink(missing_ok=True)
+    subprocess.run([sys.executable, "build.py"], cwd=temp_widget_dir, check=True)
+
+    html = dist_path.read_text(encoding="utf-8")
+    assert 'id="chart-root"' in html
+    assert "ui/notifications/tool-result" in html
+    assert "type ChartPoint" not in html
+    assert "declare global" not in html
+    assert " as HTMLElement" not in html
+    # The donut/pie renderer must scale dash arrays to a 0-100 pathLength
+    # so 0-100 percentages render as proportional slices. Without it
+    # stroke-dasharray="25 75" gets interpreted in raw SVG units against
+    # the actual circumference and produces striped / repeated arcs.
+    assert "pathLength" in html
+
+
 def test_generate_graph_writes_png_from_alarm_data(tmp_path, monkeypatch):
     service = LocalDataService(export_dir=tmp_path / "exports")
     alarm_df = pd.DataFrame([
@@ -2966,13 +3281,127 @@ def test_generate_graph_writes_png_from_alarm_data(tmp_path, monkeypatch):
         {"site_id": "AAA001", "alarm_category": "Down", "occurred_on": "2026-04-02"},
         {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-03"},
     ])
-    monkeypatch.setattr(service, "_alarm_rows_for_sites", lambda site_keys, date_from=None, date_to=None: alarm_df)
+    monkeypatch.setattr(service, "_with_alarm_source", lambda fn: alarm_df)
 
     result = service.generate_graph(graph_type="alarm_category_counts", site_code="AAA001")
 
     assert result["points"] == 2
+    assert result["chart_kind"] == "bar"
+    assert result["mime_type"] == "image/png"
+    assert result["width"] > 0
+    assert result["height"] > 0
+    assert base64.b64decode(result["image_base64"]).startswith(b"\x89PNG")
+    assert result["series"] == [{"label": "Power", "value": 2.0}, {"label": "Down", "value": 1.0}]
     assert Path(result["path"]).exists()
     assert Path(result["path"]).suffix == ".png"
+
+
+def test_generate_graph_clearance_rate_gauge_returns_percentage(tmp_path, monkeypatch):
+    service = LocalDataService(export_dir=tmp_path / "exports")
+    alarm_df = pd.DataFrame([
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 02:00:00"},
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 03:00:00"},
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 04:00:00"},
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 05:00:00"},
+        {"site_id": "AAA001", "cleared_on": None},
+    ])
+    monkeypatch.setattr(service, "_with_alarm_source", lambda fn: alarm_df)
+
+    result = service.generate_graph(graph_type="alarm_clearance_rate_gauge")
+
+    assert result["chart_kind"] == "gauge"
+    assert result["labels"] == ["Clearance"]
+    assert result["values"] == [80.0]
+    assert result["series"] == [{"label": "Clearance", "value": 80.0}]
+
+
+def test_generate_graph_cleared_vs_uncleared_share_returns_counts(tmp_path, monkeypatch):
+    service = LocalDataService(export_dir=tmp_path / "exports")
+    alarm_df = pd.DataFrame([
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 02:00:00"},
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 03:00:00"},
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 04:00:00"},
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 05:00:00"},
+        {"site_id": "AAA001", "cleared_on": None},
+    ])
+    monkeypatch.setattr(service, "_with_alarm_source", lambda fn: alarm_df)
+
+    result = service.generate_graph(graph_type="cleared_vs_uncleared_share")
+
+    assert result["chart_kind"] == "donut"
+    assert result["labels"] == ["Cleared", "Uncleared"]
+    assert result["values"] == [4.0, 1.0]
+
+
+def test_generate_graph_top_sites_by_backup_failure_ranks_lowest_first(monkeypatch):
+    service = LocalDataService()
+    payload = {
+        "rows": [
+            {"site_id": "AAA001", "backup_minutes": 60.0},
+            {"site_id": "AAA002", "backup_minutes": 2.0},
+            {"site_id": "AAA003", "backup_minutes": 30.0},
+        ]
+    }
+    monkeypatch.setattr(service, "query_backup_times", lambda **kwargs: payload)
+
+    labels, values, series = service._backup_chart_series("top_sites_by_backup_failure", {})
+
+    # Catalog: "Worst backup sites by low backup time" - shortest first.
+    assert labels == ["AAA002", "AAA003", "AAA001"]
+    assert values == [2.0, 30.0, 60.0]
+    assert [row["label"] for row in series] == ["AAA002", "AAA003", "AAA001"]
+
+
+def test_generate_graph_top_sites_by_duration_keeps_descending_default(monkeypatch):
+    service = LocalDataService()
+    payload = {
+        "rows": [
+            {"site_id": "AAA001", "backup_minutes": 60.0},
+            {"site_id": "AAA002", "backup_minutes": 2.0},
+            {"site_id": "AAA003", "backup_minutes": 30.0},
+        ]
+    }
+    monkeypatch.setattr(service, "query_backup_times", lambda **kwargs: payload)
+
+    labels, values, _ = service._backup_chart_series("top_sites_by_duration", {})
+
+    assert labels == ["AAA001", "AAA003", "AAA002"]
+    assert values == [60.0, 30.0, 2.0]
+
+
+def test_generate_graph_supports_non_bar_chart_kinds(tmp_path, monkeypatch):
+    service = LocalDataService(export_dir=tmp_path / "exports")
+    alarm_df = pd.DataFrame([
+        {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-01 03:00:00"},
+        {"site_id": "AAA001", "alarm_category": "Down", "occurred_on": "2026-04-01 04:00:00"},
+        {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-02 04:00:00"},
+    ])
+    monkeypatch.setattr(service, "_with_alarm_source", lambda fn: alarm_df)
+
+    pie = service.generate_graph(graph_type="alarm_category_share", site_code="AAA001")
+    heatmap = service.generate_graph(graph_type="alarm_heatmap_day_hour", site_code="AAA001")
+
+    assert pie["chart_kind"] == "donut"
+    assert base64.b64decode(pie["image_base64"]).startswith(b"\x89PNG")
+    assert heatmap["chart_kind"] == "heatmap"
+    assert heatmap["points"] == 3
+    assert base64.b64decode(heatmap["image_base64"]).startswith(b"\x89PNG")
+
+
+def test_mcp_generate_graph_is_not_exposed_as_public_tool():
+    server = AlarmViewerMcpServer(service=LocalDataService())
+
+    response = server.handle({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "generate_graph", "arguments": {"graph_type": "alarm_category_counts"}},
+    })
+
+    content = response["result"]["content"]
+    assert len(content) == 1
+    assert response["result"]["isError"] is True
+    assert response["result"]["structuredContent"] == {"error": "unknown tool: generate_graph"}
 
 
 def test_alarm_source_selection_skips_empty_primary_dict_results(tmp_path, monkeypatch):
