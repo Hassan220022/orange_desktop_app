@@ -2,6 +2,9 @@ import base64
 import hashlib
 import json
 import operator
+import shutil
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
@@ -732,14 +735,21 @@ def test_tool_definitions_are_available_for_mcp_and_openrouter():
     assert "get_computed_report" in mcp_names
     assert "get_computed_report" in openrouter_names
     assert "get_site_dossier" in mcp_names
-    assert "generate_graph" in mcp_names
+    assert "list_chart_types" in mcp_names
+    assert "list_chart_types" in openrouter_names
+    assert "get_chart_data" in mcp_names
+    assert "get_chart_data" in openrouter_names
+    assert "render_chart_widget" in mcp_names
+    assert "render_chart_widget" not in openrouter_names
+    assert "generate_graph" not in mcp_names
+    assert "generate_graph" not in openrouter_names
     assert "export_report" in openrouter_names
     assert "search_site_metadata" in mcp_names
     assert "query_site_metadata" in mcp_names
     assert "query_bdt_summary" in mcp_names
     assert "query_bdt_full" in mcp_names
     assert "get_site_alarm_context" in mcp_names
-    assert mcp_names == openrouter_names
+    assert openrouter_names == mcp_names - {"render_chart_widget"}
 
 
 def test_openrouter_tool_definitions_do_not_include_mcp_annotations():
@@ -781,12 +791,13 @@ def test_get_computed_report_schema_includes_expected_report_types():
     assert "accepted_pm_report" in description
 
 
-def test_chart_registry_drives_graph_schema_and_discovery_tool():
+def test_chart_registry_drives_data_schema_and_discovery_tool():
     graph_ids = chart_type_ids(renderable_only=True)
-    schema_ids = TOOL_SCHEMAS["generate_graph"]["inputSchema"]["properties"]["graph_type"]["enum"]
+    schema_ids = TOOL_SCHEMAS["get_chart_data"]["inputSchema"]["properties"]["chart_id"]["enum"]
 
     assert schema_ids == graph_ids
     assert "list_chart_types" in TOOL_SCHEMAS
+    assert "generate_graph" not in TOOL_SCHEMAS
     assert "alarm_category_share" in graph_ids
     assert "alarm_volume_trend" in graph_ids
     assert "alarm_heatmap_day_hour" in graph_ids
@@ -3007,6 +3018,185 @@ def test_get_site_dossier_exports_full_site_workbook(tmp_path, monkeypatch):
     assert Path(result["export_path"]).exists()
 
 
+def test_get_chart_data_returns_deterministic_structured_payload(tmp_path, monkeypatch):
+    service = LocalDataService(export_dir=tmp_path / "exports")
+    alarm_df = pd.DataFrame([
+        {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-01"},
+        {"site_id": "AAA001", "alarm_category": "Down", "occurred_on": "2026-04-02"},
+        {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-03"},
+    ])
+    monkeypatch.setattr(service, "_alarm_rows_for_sites", lambda site_keys, date_from=None, date_to=None, **kwargs: alarm_df)
+
+    result = service.get_chart_data(
+        chart_id="alarm_category_counts",
+        filters={"site_code": "AAA001"},
+        max_points=1,
+    )
+
+    assert result["chart_id"] == "alarm_category_counts"
+    assert result["chart_kind"] == "bar"
+    assert result["title"] == "Alarm Category Counts"
+    assert result["labels"] == ["Power"]
+    assert result["values"] == [2.0]
+    assert result["series"] == [{"label": "Power", "value": 2.0}]
+    assert result["x_axis"] == {"label": "Category"}
+    assert result["y_axis"] == {"label": "Count"}
+    assert result["warnings"] == ["Series truncated from 2 to 1 points."]
+    assert result["data_quality"] == {"total_points": 2, "returned_points": 1, "truncated": True}
+    assert result["query_context"]["filters"] == {"site_code": "AAA001"}
+    assert result["empty_state"] is None
+    assert "image_base64" not in result
+    assert "path" not in result
+
+
+def test_get_chart_data_clamps_max_points_and_reports_empty_state(tmp_path, monkeypatch):
+    service = LocalDataService(export_dir=tmp_path / "exports")
+    monkeypatch.setattr(service, "_alarm_rows_for_sites", lambda site_keys, date_from=None, date_to=None, **kwargs: pd.DataFrame())
+
+    result = service.get_chart_data(
+        chart_id="alarm_category_counts",
+        filters={"site_code": "AAA001"},
+        max_points=9999,
+    )
+
+    assert result["labels"] == []
+    assert result["values"] == []
+    assert result["series"] == []
+    assert result["warnings"] == ["max_points clamped from 9999 to 500."]
+    assert result["data_quality"] == {"total_points": 0, "returned_points": 0, "truncated": False}
+    assert result["empty_state"] == {
+        "title": "No chart data",
+        "message": "No rows matched the selected chart and filters.",
+    }
+
+
+def test_render_chart_widget_returns_apps_sdk_metadata():
+    service = LocalDataService()
+    payload = {
+        "chart_id": "alarm_category_counts",
+        "chart_kind": "bar",
+        "title": "Alarm Category Counts",
+        "labels": ["Power"],
+        "values": [2.0],
+        "series": [{"label": "Power", "value": 2.0}],
+        "x_axis": {"label": "Category"},
+        "y_axis": {"label": "Count"},
+        "warnings": [],
+        "data_quality": {"total_points": 1, "returned_points": 1, "truncated": False},
+        "query_context": {"filters": {"site_code": "AAA001"}},
+        "empty_state": None,
+    }
+
+    result = service.render_chart_widget(**payload)
+
+    assert result["chart_id"] == payload["chart_id"]
+    assert result["series"] == payload["series"]
+    assert result["_meta"] == {
+        "openai/outputTemplate": "ui://widget/chart.html",
+        "ui": {"resourceUri": "ui://widget/chart.html"},
+    }
+
+
+def test_mcp_server_exposes_chart_widget_resource_and_render_meta():
+    class _Service:
+        def render_chart_widget(self, **kwargs):
+            return {
+                **kwargs,
+                "_meta": {
+                    "openai/outputTemplate": "ui://widget/chart.html",
+                    "ui": {"resourceUri": "ui://widget/chart.html"},
+                },
+            }
+
+    server = AlarmViewerMcpServer(service=_Service())
+
+    initialized = server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    assert initialized["result"]["capabilities"]["resources"] == {}
+
+    listed = server.handle({"jsonrpc": "2.0", "id": 2, "method": "resources/list", "params": {}})
+    resources = listed["result"]["resources"]
+    assert resources == [
+        {
+            "uri": "ui://widget/chart.html",
+            "name": "chart-widget",
+            "title": "Alarm Chart Widget",
+            "mimeType": "text/html;profile=mcp-app",
+        }
+    ]
+
+    read = server.handle({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "resources/read",
+        "params": {"uri": "ui://widget/chart.html"},
+    })
+    content = read["result"]["contents"][0]
+    assert content["uri"] == "ui://widget/chart.html"
+    assert content["mimeType"] == "text/html;profile=mcp-app"
+    assert "window.openai" in content["text"]
+    assert "ui/notifications/tool-result" in content["text"]
+    assert 'id="chart-root"' in content["text"]
+    assert content["_meta"] == {"ui": {"prefersBorder": True}}
+
+    called = server.handle({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "render_chart_widget",
+            "arguments": {
+                "chart_id": "alarm_category_counts",
+                "chart_kind": "bar",
+                "title": "Alarm Category Counts",
+                "labels": ["Power"],
+                "values": [1],
+                "series": [{"label": "Power", "value": 1}],
+            },
+        },
+    })
+    assert called["result"]["_meta"] == {
+        "openai/outputTemplate": "ui://widget/chart.html",
+        "ui": {"resourceUri": "ui://widget/chart.html"},
+    }
+    assert called["result"]["structuredContent"]["chart_id"] == "alarm_category_counts"
+
+
+def test_mcp_server_returns_resource_error_when_widget_build_missing(tmp_path, monkeypatch):
+    missing_widget = tmp_path / "missing" / "chart.html"
+    monkeypatch.setattr("alarm_app.llm_tools.mcp_server._WIDGET_HTML_PATH", missing_widget)
+    server = AlarmViewerMcpServer(service=LocalDataService())
+
+    response = server.handle({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "resources/read",
+        "params": {"uri": "ui://widget/chart.html"},
+    })
+
+    assert response["error"]["code"] == -32002
+    assert "chart widget build artifact missing" in response["error"]["message"]
+    assert "chart_widget.ts" not in response["error"]["message"]
+
+
+def test_chart_widget_package_builds(tmp_path):
+    package_path = Path(__file__).resolve().parents[1] / "mcp_app" / "chart_widget" / "package.json"
+    widget_dir = package_path.parent
+    temp_widget_dir = tmp_path / "chart_widget"
+    dist_path = temp_widget_dir / "dist" / "chart.html"
+
+    assert package_path.exists()
+    shutil.copytree(widget_dir, temp_widget_dir)
+    dist_path.unlink(missing_ok=True)
+    subprocess.run([sys.executable, "build.py"], cwd=temp_widget_dir, check=True)
+
+    html = dist_path.read_text(encoding="utf-8")
+    assert 'id="chart-root"' in html
+    assert "ui/notifications/tool-result" in html
+    assert "type ChartPoint" not in html
+    assert "declare global" not in html
+    assert " as HTMLElement" not in html
+
+
 def test_generate_graph_writes_png_from_alarm_data(tmp_path, monkeypatch):
     service = LocalDataService(export_dir=tmp_path / "exports")
     alarm_df = pd.DataFrame([
@@ -3048,26 +3238,8 @@ def test_generate_graph_supports_non_bar_chart_kinds(tmp_path, monkeypatch):
     assert base64.b64decode(heatmap["image_base64"]).startswith(b"\x89PNG")
 
 
-def test_mcp_generate_graph_includes_image_content(tmp_path):
-    image_bytes = TINY_PNG_BYTES
-
-    class _Service:
-        def generate_graph(self, **kwargs):
-            return {
-                "path": str(tmp_path / "chart.png"),
-                "graph_type": kwargs["graph_type"],
-                "chart_kind": "bar",
-                "mime_type": "image/png",
-                "image_base64": base64.b64encode(image_bytes).decode("ascii"),
-                "width": 1,
-                "height": 1,
-                "points": 1,
-                "labels": ["Power"],
-                "values": [1.0],
-                "series": [{"label": "Power", "value": 1.0}],
-            }
-
-    server = AlarmViewerMcpServer(service=_Service())
+def test_mcp_generate_graph_is_not_exposed_as_public_tool():
+    server = AlarmViewerMcpServer(service=LocalDataService())
 
     response = server.handle({
         "jsonrpc": "2.0",
@@ -3077,14 +3249,9 @@ def test_mcp_generate_graph_includes_image_content(tmp_path):
     })
 
     content = response["result"]["content"]
-    assert content[0]["type"] == "text"
-    assert content[1] == {
-        "type": "image",
-        "data": base64.b64encode(image_bytes).decode("ascii"),
-        "mimeType": "image/png",
-    }
-    assert response["result"]["structuredContent"]["path"] == "[local path redacted]"
-    assert response["result"]["structuredContent"]["image_base64"] == base64.b64encode(image_bytes).decode("ascii")
+    assert len(content) == 1
+    assert response["result"]["isError"] is True
+    assert response["result"]["structuredContent"] == {"error": "unknown tool: generate_graph"}
 
 
 def test_alarm_source_selection_skips_empty_primary_dict_results(tmp_path, monkeypatch):

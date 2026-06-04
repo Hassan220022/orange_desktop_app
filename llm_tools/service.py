@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import re
 from dataclasses import asdict, is_dataclass, replace
 from datetime import date, datetime, timedelta, timezone
@@ -101,6 +102,9 @@ EXPORT_DIR = Path.home() / ".alarm_viewer" / "exports"
 ALLOWED_UPLOAD_SUFFIXES = {".csv", ".xls", ".xlsx"}
 MCP_DEFAULT_PAGE_LIMIT = 500
 MCP_MAX_PAGE_LIMIT = 500
+CHART_WIDGET_URI = "ui://widget/chart.html"
+CHART_WIDGET_MIME_TYPE = "text/html;profile=mcp-app"
+CHART_DATA_MAX_POINTS = 500
 _FIELD_ALIASES = {
     "site_name": ("site_name", "sitename", "name"),
     "area": ("area", "orange_area", "orangearea"),
@@ -229,6 +233,40 @@ def _sanitize_mcp_value(value: Any) -> Any:
             return _LOCAL_PATH_REDACTED
         return _sanitize_local_paths_in_text(value)
     return _jsonable(value)
+
+
+def _chart_number(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return number
+
+
+def _normalize_chart_point(point: Any) -> dict[str, Any]:
+    if not isinstance(point, dict):
+        point = {"label": str(point), "value": 0.0}
+    normalized = _sanitize_mcp_value(point)
+    if not isinstance(normalized, dict):
+        return {"label": str(normalized), "value": 0.0}
+    for numeric_key in ("value", "x", "y"):
+        if numeric_key in normalized:
+            number = _chart_number(normalized.get(numeric_key))
+            if number is None:
+                normalized.pop(numeric_key, None)
+            else:
+                normalized[numeric_key] = number
+    if "label" not in normalized or normalized.get("label") is None:
+        normalized["label"] = str(normalized.get("x") or "")
+    else:
+        normalized["label"] = str(normalized.get("label"))
+    if "value" not in normalized:
+        normalized["value"] = _chart_number(normalized.get("y")) or 0.0
+    return normalized
 
 
 def _max_timestamp(*values: Any) -> Any:
@@ -1727,6 +1765,121 @@ class LocalDataService:
         # be rendered as empty placeholders until their source-specific
         # aggregators are expanded.
         return [], [], []
+
+    @staticmethod
+    def _chart_axis_labels(chart_kind: str) -> tuple[str, str]:
+        if chart_kind in {"line", "histogram", "heatmap", "scatter", "calendar_heatmap", "timeline"}:
+            return "X", "Value"
+        return "Category", "Count"
+
+    def get_chart_data(self, **kwargs) -> dict[str, Any]:
+        chart_id = str(kwargs.get("chart_id") or kwargs.get("graph_type") or "").strip()
+        spec = CHART_SPECS.get(chart_id)
+        if spec is None or not spec.renderable:
+            return {"error": f"unsupported chart_id: {chart_id}"}
+
+        raw_filters = kwargs.get("filters")
+        filters = dict(raw_filters) if isinstance(raw_filters, dict) else {}
+        for key in ("site_code", "site_text", "date_from", "date_to", "category", "vendor", "network_type", "min_minutes"):
+            if key in kwargs and kwargs.get(key) not in (None, ""):
+                filters[key] = kwargs.get(key)
+
+        raw_max_points = kwargs.get("max_points")
+        try:
+            max_points = int(raw_max_points) if raw_max_points is not None else CHART_DATA_MAX_POINTS
+        except (TypeError, ValueError):
+            max_points = CHART_DATA_MAX_POINTS
+        warnings: list[str] = []
+        if max_points < 0:
+            warnings.append(f"max_points raised from {max_points} to 0.")
+            max_points = 0
+        if max_points > CHART_DATA_MAX_POINTS:
+            warnings.append(f"max_points clamped from {max_points} to {CHART_DATA_MAX_POINTS}.")
+            max_points = CHART_DATA_MAX_POINTS
+
+        title = str(kwargs.get("title") or spec.label)
+        series_kwargs = dict(filters)
+        series_kwargs["_prefer_site_slice"] = True
+        labels, values, series = self._chart_series_for_spec(chart_id, series_kwargs)
+        if not series:
+            series = [{"label": str(label), "value": _chart_number(value) or 0.0} for label, value in zip(labels, values, strict=False)]
+        series = [_normalize_chart_point(point) for point in series]
+        total_points = len(series)
+        returned_series = series[:max_points] if max_points > 0 else []
+        if total_points > len(returned_series):
+            warnings.append(f"Series truncated from {total_points} to {len(returned_series)} points.")
+
+        labels = [str(point.get("label") or "") for point in returned_series]
+        values = [_chart_number(point.get("value")) or 0.0 for point in returned_series]
+        x_label, y_label = self._chart_axis_labels(spec.chart_kind)
+        empty_state = None
+        if total_points == 0:
+            empty_state = {
+                "title": "No chart data",
+                "message": "No rows matched the selected chart and filters.",
+            }
+
+        return {
+            "chart_id": chart_id,
+            "chart_kind": spec.chart_kind,
+            "title": title,
+            "labels": labels,
+            "values": values,
+            "series": returned_series,
+            "x_axis": {"label": x_label},
+            "y_axis": {"label": y_label},
+            "warnings": warnings,
+            "data_quality": {
+                "total_points": total_points,
+                "returned_points": len(returned_series),
+                "truncated": total_points > len(returned_series),
+            },
+            "query_context": {
+                "filters": _sanitize_mcp_value(filters),
+                "max_points": max_points,
+            },
+            "empty_state": empty_state,
+        }
+
+    def render_chart_widget(self, **kwargs) -> dict[str, Any]:
+        chart_id = str(kwargs.get("chart_id") or "").strip()
+        if not chart_id:
+            return {"error": "chart_id is required"}
+        chart_kind = str(kwargs.get("chart_kind") or "bar").strip() or "bar"
+        title = str(kwargs.get("title") or chart_id)
+        labels = kwargs.get("labels") if isinstance(kwargs.get("labels"), list) else []
+        values = kwargs.get("values") if isinstance(kwargs.get("values"), list) else []
+        series = kwargs.get("series") if isinstance(kwargs.get("series"), list) else []
+        series = [_normalize_chart_point(point) for point in series]
+        if not series:
+            series = [
+                {"label": str(label), "value": _chart_number(values[index] if index < len(values) else None) or 0.0}
+                for index, label in enumerate(labels)
+            ]
+        labels = [str(point.get("label") or "") for point in series]
+        values = [_chart_number(point.get("value")) or 0.0 for point in series]
+        warnings = kwargs.get("warnings") if isinstance(kwargs.get("warnings"), list) else []
+        data_quality = kwargs.get("data_quality") if isinstance(kwargs.get("data_quality"), dict) else {}
+        query_context = kwargs.get("query_context") if isinstance(kwargs.get("query_context"), dict) else {}
+        empty_state = kwargs.get("empty_state") if isinstance(kwargs.get("empty_state"), dict) else None
+        return {
+            "chart_id": chart_id,
+            "chart_kind": chart_kind,
+            "title": title,
+            "labels": _sanitize_mcp_value(labels),
+            "values": _sanitize_mcp_value(values),
+            "series": _sanitize_mcp_value(series),
+            "x_axis": _sanitize_mcp_value(kwargs.get("x_axis") if isinstance(kwargs.get("x_axis"), dict) else {}),
+            "y_axis": _sanitize_mcp_value(kwargs.get("y_axis") if isinstance(kwargs.get("y_axis"), dict) else {}),
+            "warnings": _sanitize_mcp_value(warnings),
+            "data_quality": _sanitize_mcp_value(data_quality),
+            "query_context": _sanitize_mcp_value(query_context),
+            "empty_state": _sanitize_mcp_value(empty_state),
+            "_meta": {
+                "openai/outputTemplate": CHART_WIDGET_URI,
+                "ui": {"resourceUri": CHART_WIDGET_URI},
+            },
+        }
 
     def generate_graph(self, **kwargs) -> dict[str, Any]:
         graph_type = str(kwargs.get("graph_type") or "alarm_category_counts").strip()

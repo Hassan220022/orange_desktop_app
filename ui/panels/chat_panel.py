@@ -1404,8 +1404,9 @@ class ChatPanel(QWidget):
             "Use site_alarm_report for uploaded VIP/site lists, accepted_pm_report for uploaded Accepted PM lists, and bdt_export for BDT validation workbook exports.",
             "Use get_site_dossier when the user asks for everything about one site: all alarms, BDT tests, rule details, photos, and discharge content.",
             "Use list_chart_types when the user asks what charts are available or asks vaguely for the best chart type.",
-            "Use generate_graph when the user wants a graph/chart/trend image in chat; it returns PNG image data and structured chart data.",
-            "Use get_computed_report when the user wants chart data, labels, values, or series without creating an image file.",
+            "Use get_chart_data when the user wants chart-ready labels, values, or series; server-side PNG chart generation is not exposed as a chat tool.",
+            "Use render_chart_widget only when an Apps SDK client needs to render a validated get_chart_data payload.",
+            "Use get_computed_report when the user wants report-like chart data without presentation metadata.",
             "Use query_backup_times when the user asks for backup time, backup duration, or battery hold-up between Power and Down alarms.",
         ]
         attrs = self.__dict__
@@ -1637,6 +1638,9 @@ class ChatPanel(QWidget):
             "get_photo_metadata": "Photo Metadata",
             "get_site_dossier": "Site Dossier",
             "get_site_full_context": "Site Full Context",
+            "list_chart_types": "Chart Types",
+            "get_chart_data": "Chart Data",
+            "render_chart_widget": "Chart Widget",
             "generate_graph": "Generated Graph",
             "read_photo_blob": "Photo Blob",
             "export_report": "Export Report",
