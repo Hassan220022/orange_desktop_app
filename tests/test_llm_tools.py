@@ -812,6 +812,15 @@ def test_chart_registry_drives_data_schema_and_discovery_tool():
     # has no rule-result aggregator, so advertising them as renderable
     # would cause them to fall through to overall_verdict counts.
     assert "bdt_rule_failure_counts" not in graph_ids
+    # Cross-dimension split charts require a real cross-tab aggregator;
+    # the service's _alarm_chart_series only returns single-dim counts for
+    # these ids, so advertising them as renderable would produce a chart
+    # with the wrong semantics.
+    assert "vendor_by_category" not in graph_ids
+    assert "network_type_by_category" not in graph_ids
+    assert "stacked_alarm_category_area" not in graph_ids
+    assert "stacked_vendor_area" not in graph_ids
+    assert "network_type_vendor_comparison" not in graph_ids
 
     service = LocalDataService()
     result = dispatch_tool(service, "list_chart_types", {"family": "alarm", "renderable_only": True})
