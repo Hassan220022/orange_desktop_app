@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 
 import pandas as pd
@@ -438,3 +439,174 @@ def test_load_alarm_page_fetches_count_page_stats_and_facets(monkeypatch):
     assert stats["avg_dur"].text == "01:01:01"
     assert viewer._ui.cb_vnd.items == ["All", "Huawei", "Nokia"]
     assert viewer._sbar.messages[-1][0] == "Loaded page"
+
+
+# ── "Clear cached data" feature ──────────────────────────────
+# User request: "I need the user to be able to clear the cashed alarms and
+# bdt's cause sometime I addes some features and the cashed doesn't get
+# updated !! aka don't fully rescan !!"
+# Clarification: "do you know that clearing cache mean clean database as
+# well !!"
+
+
+def _make_minimal_viewer(monkeypatch) -> SimpleNamespace:
+    """Build a minimal viewer stub for testing _clear_caches() in
+    isolation. The stub has the attributes and methods the production
+    method touches."""
+    model = _ModelStub()
+    stats = {key: _StatsLabel() for key in ("total", "power", "down", "door", "sites", "avg_dur")}
+
+    viewer = SimpleNamespace(
+        _ui=SimpleNamespace(lbl_loaded=_Label()),
+        _sbar=_StatusBar(),
+        _lbl_count=_Label(),
+        _stats=stats,
+        _model=model,
+        _page_size=500,
+        _page_offset=0,
+        _page_total_rows=0,
+        _alarm_query_active=False,
+        _col_filters={},
+        _full_df=pd.DataFrame(),
+        _bdt_results=[],
+        _bdt_by_site={},
+        _reviewed_bdt_keys=set(),
+        _bdt_validation_panel=None,
+        _bdt_workspace_panel=None,
+        _refresh_stats=lambda df: None,
+    )
+    # Bind the production _clear_caches() so we can call it on the stub.
+    # We use AlarmViewer._clear_caches as an unbound function and pass
+    # the stub as ``self`` explicitly.
+    viewer._clear_caches = lambda: AlarmViewer._clear_caches(viewer)
+    return viewer
+
+def test_viewer_has_clear_caches_method():
+    """Regression: viewer must expose a _clear_caches() method (called by
+    the left-panel 'Clear cached data' button)."""
+    assert hasattr(AlarmViewer, "_clear_caches"), (
+        "viewer._clear_caches must exist for the 'Clear cached data' button"
+    )
+
+
+def test_viewer_clear_caches_resets_pagination_and_in_memory_state(monkeypatch):
+    """Calling _clear_caches() must reset _full_df, _page_offset,
+    _bdt_results, _bdt_by_site, _page_total_rows, and the alarm model."""
+    from unittest.mock import MagicMock, patch
+    from PyQt5.QtWidgets import QMessageBox
+
+    viewer = _make_minimal_viewer(monkeypatch)
+    viewer._full_df = pd.DataFrame({"site_id": ["A", "B"]})
+    viewer._page_offset = 100
+    viewer._page_total_rows = 250
+    viewer._bdt_results = [MagicMock()]
+    viewer._bdt_by_site = {"X": [MagicMock()]}
+    viewer._reviewed_bdt_keys = {"X"}
+
+    # Stub the QMessageBox.question to auto-accept (Yes)
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *a, **k: QMessageBox.Yes),
+    )
+    # Stub the success QMessageBox.information
+    monkeypatch.setattr(
+        QMessageBox, "information",
+        staticmethod(lambda *a, **k: QMessageBox.Ok),
+    )
+    # Stub the clear_all_caches call. The function was imported via
+    # `from services.persistence.alarm_cache import clear_all_caches`
+    # at the top of viewer.py, so we patch it in the SAME module
+    # instance the function object lives in.
+    _patch_clear_all_caches(monkeypatch, lambda: {
+        "alarm_duckdb_files": 1,
+        "bdt_history_files": 3,
+        "alarm_records": 100,
+        "bdt_tests": 10,
+        "bdt_photos": 5,
+        "blob_assets": 200,
+        "pm_validation_runs": 5,
+        "pm_rule_results": 50,
+        "bdt_summary_catalog": 1,
+    })
+
+    # The BDT validation panel exists on AlarmViewer, so the clear must
+    # also tell it to reset. Stub the BDT panel here.
+    fake_bdt_panel = MagicMock()
+    viewer._bdt_validation_panel = fake_bdt_panel
+    viewer._bdt_workspace_panel = None  # not present in this stub
+
+    viewer._clear_caches()
+
+    # In-memory state reset
+    assert viewer._full_df.empty
+    assert viewer._page_offset == 0
+    assert viewer._page_total_rows == 0
+    assert viewer._bdt_results == []
+    assert viewer._bdt_by_site == {}
+    assert viewer._reviewed_bdt_keys == set()
+
+    # BDT panel reset
+    fake_bdt_panel.set_results.assert_called_once_with([])
+
+    # Status message contains the cleared count
+    assert any("Cleared cached data" in m for m, _ in viewer._sbar.messages)
+
+
+def test_viewer_clear_caches_cancels_when_user_says_no(monkeypatch):
+    """If the user clicks 'No' in the confirm dialog, _clear_caches()
+    must NOT touch any persistent state and must NOT call
+    clear_all_caches()."""
+    from unittest.mock import MagicMock, patch
+    from PyQt5.QtWidgets import QMessageBox
+
+    viewer = _make_minimal_viewer(monkeypatch)
+    viewer._full_df = pd.DataFrame({"site_id": ["A"]})
+    viewer._page_offset = 50
+
+    monkeypatch.setattr(
+        QMessageBox, "question",
+        staticmethod(lambda *a, **k: QMessageBox.No),
+    )
+
+    called = []
+    _patch_clear_all_caches(monkeypatch, lambda: called.append(True) or {})
+
+    fake_bdt_panel = MagicMock()
+    viewer._bdt_validation_panel = fake_bdt_panel
+
+    viewer._clear_caches()
+
+    # Nothing was changed
+    assert not viewer._full_df.empty
+    assert viewer._page_offset == 50
+    # clear_all_caches was NOT called
+    assert called == []
+    # BDT panel was NOT touched
+    fake_bdt_panel.set_results.assert_not_called()
+    # Status bar shows cancellation
+    assert any("cancelled" in m for m, _ in viewer._sbar.messages)
+
+
+def _patch_clear_all_caches(monkeypatch, replacement):
+    """Patch `clear_all_caches` on whichever module instance the
+    AlarmViewer production code actually looks it up on.
+
+    The conftest installs `alarm_app` as a `sys.modules` shim, so
+    `from alarm_app.ui.viewer import AlarmViewer` and the top-level
+    `from ui.viewer import ...` style can coexist as two different
+    module instances.  We find the one whose globals contain a
+    `clear_all_caches` attribute (set by the
+    `from services.persistence.alarm_cache import clear_all_caches`
+    import in viewer.py) and patch that.
+    """
+    import importlib
+    for mod_name in ("alarm_app.ui.viewer", "ui.viewer"):
+        mod = importlib.import_module(mod_name)
+        if hasattr(mod, "clear_all_caches"):
+            monkeypatch.setattr(mod, "clear_all_caches", replacement)
+            return mod
+    raise RuntimeError(
+        "Could not find a viewer module with `clear_all_caches` bound; "
+        "expected the import in services/persistence/alarm_cache.py to "
+        "be reachable from one of: alarm_app.ui.viewer, ui.viewer"
+    )

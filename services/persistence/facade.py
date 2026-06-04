@@ -125,6 +125,7 @@ class _CacheFacade:
     load_dataframe = staticmethod(alarm_cache.load_dataframe)
     has_dataframe = staticmethod(alarm_cache.has_alarm_cache)
     clear = staticmethod(alarm_cache.clear_cache)
+    clear_all = staticmethod(alarm_cache.clear_all_caches)
 
 
 # ---------------------------------------------------------------------------

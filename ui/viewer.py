@@ -64,6 +64,7 @@ try:
     )
     from alarm_app.data.sync import LocalSyncWorker
     from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorManager
+    from alarm_app.services.persistence.alarm_cache import clear_all_caches
     from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
     from alarm_app.ui.bridge import UIBridge
     from alarm_app.ui.dialogs import (
@@ -106,6 +107,7 @@ except ImportError:
     )
     from data.sync import LocalSyncWorker
     from runtime.chatgpt_connector import ChatGPTConnectorManager
+    from services.persistence.alarm_cache import clear_all_caches
     from styles import STYLE_DARK, STYLE_LIGHT
     from ui.bridge import UIBridge
     from ui.dialogs import (
@@ -2296,6 +2298,112 @@ class AlarmViewer(QMainWindow):
             self._refresh_stats(df)
             self._refresh_in_memory_count_label(df)
         self._sbar.showMessage("Filters cleared")
+
+    def _clear_caches(self) -> None:
+        """Wipe all derived caches (alarms.duckdb, alarm_records, BDT tests,
+        BDT photos, BDT validation runs/rule results, BDT summary catalog,
+        BDT history JSON) and reset the in-memory viewer state.
+
+        Use this when new features / rules have been added and the cached
+        derived data does not reflect them — the next "Load Selected Files"
+        (or DB mode) will do a full re-derive from source.
+
+        Preserves:
+          * ``uploaded_files`` — SHA-256 dedup index (force re-hash avoided)
+          * ``ui_state`` — UI preferences (theme, last directory, page size, …)
+          * ``site_metadata_catalog`` — site catalog
+          * ``pm_rule_catalog`` / ``pm_rule_parameter_sets`` — rule defs
+          * ``sync_outbox`` / ``sync_checkpoints`` — sync queue state
+          * ``review_events`` — daily-review audit log
+          * Photo files under ``~/.alarm_viewer/blobs/`` — re-linked by
+            SHA-256 dedup on the next BDT workbook load
+        """
+        # 1) Confirm — this is destructive; no automatic recovery
+        confirm = QMessageBox.question(
+            self,
+            "Clear cached data?",
+            "This will wipe the alarm cache and BDT data so the next "
+            "Load Selected Files does a full re-derive from source files.\n\n"
+            "PRESERVED: source files, uploaded-files dedup index, UI "
+            "preferences, site catalog, validation rule definitions, "
+            "sync queue, daily-review history, photo files.\n\n"
+            "Proceed?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            self._sbar.showMessage("Clear cached data — cancelled", 5000)
+            return
+
+        # 2) Nuke the caches via the persistence layer
+        try:
+            summary = clear_all_caches()
+            _log.info("clear_all_caches summary: %s", summary)
+        except Exception as exc:
+            _log.error("clear_all_caches failed: %s", exc, exc_info=True)
+            QMessageBox.critical(
+                self, "Clear Cached Data Failed",
+                f"Could not clear cached data:\n\n{exc}\n\n"
+                "See the application log for details.")
+            return
+
+        # 3) Reset in-memory alarm state
+        self._full_df = pd.DataFrame()
+        self._page_offset = 0
+        self._page_total_rows = 0
+        self._alarm_query_active = False
+        self._col_filters.clear()
+        self._model.clear()  # wipes the table
+
+        # 4) Reset in-memory BDT state and invalidate BDT panel caches
+        self._bdt_results = []
+        self._bdt_by_site = {}
+        self._reviewed_bdt_keys = set()
+        if hasattr(self, "_bdt_validation_panel") and self._bdt_validation_panel is not None:
+            try:
+                self._bdt_validation_panel.set_results([])
+            except Exception:
+                _log.warning("Could not reset BDT validation panel", exc_info=True)
+
+        # 5) Reset BDT workspace panel's in-memory BDT file list (if any)
+        bdt_ws = getattr(self, "_bdt_workspace_panel", None)
+        if bdt_ws is not None and hasattr(bdt_ws, "invalidate_caches"):
+            try:
+                bdt_ws.invalidate_caches()
+            except Exception:
+                _log.warning("Could not invalidate BDT workspace caches", exc_info=True)
+
+        # 6) Reset status / labels
+        lbl_count = getattr(self, "_lbl_count", None)
+        if lbl_count is not None:
+            lbl_count.setText("Cache cleared — click Load Selected Files to re-derive")
+        if hasattr(self, "_ui") and getattr(self._ui, "lbl_loaded", None) is not None:
+            self._ui.lbl_loaded.setText("Cache cleared")
+            self._ui.lbl_loaded.setStyleSheet("color:#f9e2af; font-size:11px;")
+
+        # 7) Reset stats panel to zeros
+        empty = pd.DataFrame()
+        self._refresh_stats(empty)
+
+        # 8) Status message + alert
+        cleared_lines = []
+        for k, v in summary.items():
+            if v == -1:
+                cleared_lines.append(f"  {k}: ERROR")
+            else:
+                cleared_lines.append(f"  {k}: {v:,}")
+        msg = (
+            f"Cleared cached data — {sum(max(v, 0) for v in summary.values()):,} "
+            f"rows / files removed. Next 'Load Selected Files' will rebuild "
+            f"from source files."
+        )
+        _log.info("Cache cleared:\n%s", "\n".join(cleared_lines))
+        self._sbar.showMessage(msg, 10000)
+        QMessageBox.information(
+            self, "Cached Data Cleared",
+            f"Cache cleared. Use 'Load Selected Files' to re-derive from "
+            f"the source alarm and BDT workbooks.\n\n"
+            f"Summary:\n" + "\n".join(cleared_lines))
 
     def _show_backup_times(self):
         if self._has_query_backed_alarm_data():

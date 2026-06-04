@@ -181,3 +181,265 @@ def test_clear_cache_swallows_oserror(tmp_path, monkeypatch):
     )
     alarm_cache.clear_cache()  # should silently pass
 
+
+# ── clear_all_caches ──────────────────────────────────────────
+# Wipes BOTH the DuckDB alarm cache AND the SQLite derived tables
+# (alarm_records, bdt_tests, bdt_photos, blob_assets, pm_validation_runs,
+# pm_rule_results, bdt_summary_catalog) plus the per-site BDT history JSON
+# files. See "Clear cached data" feature — user request:
+# "do you know that clearing cache mean clean database as well".
+
+
+@pytest.fixture
+def clear_all_caches_home(tmp_path, monkeypatch):
+    """Per-test HOME for clear_all_caches tests.
+
+    The persistence engine's ``STATE_DIR`` is a module-level reference in
+    ``services.persistence.engine`` that the engine singleton binds at
+    first use, so monkeypatching only ``alarm_cache.STATE_DIR`` is not
+    enough.  This fixture rebinds STATE_DIR on every module that holds a
+    reference and resets the engine singleton so each test gets a fresh
+    SQLite file.
+    """
+    from services.persistence import engine as engine_mod
+
+    monkeypatch.setattr(alarm_cache, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(engine_mod, "STATE_DIR", tmp_path)
+    monkeypatch.setattr(engine_mod, "_app_engine", None)
+    monkeypatch.setattr(engine_mod, "_app_session_factory", None)
+    return tmp_path
+
+
+def _seed_clearable_tables(session, *, salt: str = "") -> None:
+    """Populate every clearable table with at least one row so we can
+    assert they get wiped. ``salt`` is used to prefix the file_sha256 /
+    row_hash / blob sha256 so multiple tests can run in the same
+    process without hitting the UNIQUE constraints."""
+    from datetime import date as _date
+    import hashlib
+
+    from services.persistence.models import (
+        AlarmRecord, BDTTest, BDTPhoto, BlobAsset,
+        PMRuleCatalog, PMRuleResult, PMValidationRun, UploadedFile,
+    )
+
+    def _h(prefix: str, length: int = 64) -> str:
+        return hashlib.sha256(f"{prefix}{salt}".encode()).hexdigest()[:length]
+
+    # uploaded_files is PRESERVED but is referenced by FK — need a row.
+    uf = UploadedFile(
+        file_sha256=_h("uf"),
+        original_path=f"/tmp/{salt}.xlsx",
+        original_name=f"{salt}.xlsx",
+        file_size=10,
+        source_kind="huawei_alarm",
+    )
+    session.add(uf)
+    session.flush()
+    session.add(AlarmRecord(row_hash=_h("ar"), file_id=uf.id))
+    session.add(BDTTest(site_code=f"0167DE{salt[:3]}", test_date=_date(2026, 4, 1), file_id=uf.id))
+    session.flush()
+    bdt = session.query(BDTTest).first()
+    session.add(BDTPhoto(bdt_test_id=bdt.id, slot_index=0))
+    session.add(BlobAsset(sha256=_h("blob"), file_size=100, local_path="/tmp/x"))
+    session.add(PMValidationRun(
+        bdt_test_id=bdt.id, overall_verdict="PASS",
+        alarm_input_sha256=_h("pm"), validator_code_ref="y",
+    ))
+    session.flush()
+    vr = session.query(PMValidationRun).first()
+    rule = session.query(PMRuleCatalog).first()
+    if rule is not None:
+        session.add(PMRuleResult(validation_run_id=vr.id, rule_id=rule.id, verdict="OK"))
+    session.commit()
+
+
+def test_clear_all_caches_returns_expected_keys(tmp_path, monkeypatch):
+    """clear_all_caches returns a summary dict with one entry per target
+    (DuckDB files, BDT history files, and each SQLite table)."""
+    monkeypatch.setattr(alarm_cache, "STATE_DIR", tmp_path)
+
+    summary = alarm_cache.clear_all_caches()
+
+    expected = {
+        "alarm_duckdb_files",
+        "bdt_history_files",
+        "alarm_records",
+        "bdt_tests",
+        "bdt_photos",
+        "blob_assets",
+        "pm_validation_runs",
+        "pm_rule_results",
+        "bdt_summary_catalog",
+    }
+    assert set(summary.keys()) == expected
+    for k, v in summary.items():
+        assert v >= 0, f"clear_all_caches: {k} failed (value={v})"
+
+
+def test_clear_all_caches_removes_duckdb_files(tmp_path, monkeypatch):
+    """The DuckDB alarm cache files (primary + fallback) are removed."""
+    monkeypatch.setattr(alarm_cache, "STATE_DIR", tmp_path)
+
+    df = pd.DataFrame({"site_id": ["A"], "alarm_id": ["X"]})
+    alarm_cache.save_dataframe(df)
+    assert alarm_cache.has_alarm_cache() is True
+
+    summary = alarm_cache.clear_all_caches()
+    assert summary["alarm_duckdb_files"] >= 1
+    assert alarm_cache.has_alarm_cache() is False
+
+
+def test_clear_all_caches_wipes_clearable_tables(clear_all_caches_home):
+    """Every clearable SQLite table is wiped; preserved tables keep their rows."""
+    from services.persistence.engine import init_db
+    from services.persistence.models import (
+        AlarmRecord, BDTTest, BDTPhoto, BlobAsset,
+        PMRuleResult, PMValidationRun, UploadedFile, PMRuleCatalog,
+    )
+
+    init_db(alarm_cache._get_app_engine_for_test(), include_alarm_records=True)
+    session = alarm_cache._get_shared_session_for_test()
+    _seed_clearable_tables(session, salt="wipe")
+    session.close()
+
+    # Sanity: rows exist
+    session = alarm_cache._get_shared_session_for_test()
+    assert session.query(AlarmRecord).count() == 1
+    assert session.query(BDTTest).count() == 1
+    assert session.query(BDTPhoto).count() == 1
+    assert session.query(BlobAsset).count() == 1
+    assert session.query(PMValidationRun).count() == 1
+    assert session.query(PMRuleResult).count() == 1
+    # Preserved tables have rows from the seed
+    uploaded_before = session.query(UploadedFile).count()
+    rules_before = session.query(PMRuleCatalog).count()
+    assert uploaded_before >= 1
+    assert rules_before >= 1
+    session.close()
+
+    summary = alarm_cache.clear_all_caches()
+
+    session = alarm_cache._get_shared_session_for_test()
+    assert session.query(AlarmRecord).count() == 0
+    assert session.query(BDTTest).count() == 0
+    assert session.query(BDTPhoto).count() == 0
+    assert session.query(BlobAsset).count() == 0
+    assert session.query(PMValidationRun).count() == 0
+    assert session.query(PMRuleResult).count() == 0
+    # Preserved: dedup index + rule defs untouched
+    assert session.query(UploadedFile).count() == uploaded_before
+    assert session.query(PMRuleCatalog).count() == rules_before
+    session.close()
+
+    assert summary["alarm_records"] == 1
+    assert summary["bdt_tests"] == 1
+    assert summary["bdt_photos"] == 1
+    assert summary["blob_assets"] == 1
+    assert summary["pm_validation_runs"] == 1
+    assert summary["pm_rule_results"] == 1
+
+
+def test_clear_all_caches_respects_fk_order(clear_all_caches_home):
+    """clear_all_caches handles FK constraints: bdt_photos and pm_validation_runs
+    are children of bdt_tests and must be removed BEFORE bdt_tests, otherwise
+    SQLite (PRAGMA foreign_keys=ON) raises IntegrityError."""
+    from services.persistence.engine import init_db
+    from services.persistence.models import BDTTest, BDTPhoto, PMValidationRun, UploadedFile
+
+    init_db(alarm_cache._get_app_engine_for_test(), include_alarm_records=True)
+    session = alarm_cache._get_shared_session_for_test()
+    _seed_clearable_tables(session, salt="fkorder")
+    session.close()
+
+    # If FK order is wrong, this raises IntegrityError
+    summary = alarm_cache.clear_all_caches()
+
+    assert summary["bdt_tests"] == 1
+    assert summary["bdt_photos"] == 1
+    assert summary["pm_validation_runs"] == 1
+    # No errors recorded (value of -1 is the error marker)
+    for k, v in summary.items():
+        assert v != -1, f"{k} raised during clear_all_caches"
+
+
+def test_clear_all_caches_removes_bdt_history_files(tmp_path, monkeypatch):
+    """Per-site BDT history JSON files are removed."""
+    from bdt import history as bdt_history
+    history_dir = tmp_path / "bdt_history"
+    history_dir.mkdir()
+    site_dir = history_dir / "0167DE"
+    site_dir.mkdir()
+    (site_dir / "2026-01-11.json").write_text("{}")
+    (site_dir / "2026-04-15.json").write_text("{}")
+    (history_dir / "_pm_runs").mkdir()
+    (history_dir / "_pm_runs" / "abc.jsonl").write_text("{}")
+
+    monkeypatch.setattr(bdt_history, "HISTORY_DIR", history_dir)
+
+    summary = alarm_cache.clear_all_caches()
+    assert summary["bdt_history_files"] == 3
+    # Directory still exists, but is empty
+    assert history_dir.exists()
+    remaining = list(history_dir.rglob("*"))
+    # Only the empty subdirs remain (no files)
+    assert all(not p.is_file() for p in remaining)
+
+
+def test_clear_all_caches_handles_missing_bdt_history_dir(tmp_path, monkeypatch):
+    """If the BDT history dir does not exist (clean install), the call still
+    succeeds and reports 0 files removed."""
+    from bdt import history as bdt_history
+    history_dir = tmp_path / "no_such_dir"
+    monkeypatch.setattr(bdt_history, "HISTORY_DIR", history_dir)
+
+    summary = alarm_cache.clear_all_caches()
+    assert summary["bdt_history_files"] == 0
+
+
+def test_clear_all_caches_survives_individual_table_failure(clear_all_caches_home, monkeypatch):
+    """If one table's DELETE raises (e.g. transient DB error), the other
+    tables are still cleared and the failure is recorded as -1 in the
+    summary so the caller can surface it to the user."""
+    from services.persistence import engine as engine_mod
+    from services.persistence.engine import init_db
+    from services.persistence.models import BDTTest
+
+    init_db(alarm_cache._get_app_engine_for_test(), include_alarm_records=True)
+    session = alarm_cache._get_shared_session_for_test()
+    _seed_clearable_tables(session, salt="flaky")
+    session.close()
+
+    # Wrap session.query() so that querying the BDTTest model raises an
+    # exception. The other models still work normally.
+    from sqlalchemy.exc import OperationalError
+
+    boom = OperationalError("simulated", {}, Exception("simulated DB failure"))
+    real_get_shared_session = engine_mod.get_shared_session
+
+    def flaky_query_session():
+        s = real_get_shared_session()
+        real_query = s.query
+
+        def flaky_query(*args, **kwargs):
+            if args and args[0] is BDTTest:
+                raise boom
+            return real_query(*args, **kwargs)
+
+        s.query = flaky_query
+        return s
+
+    # Patch at the source — the clear function does `from .engine import
+    # get_shared_session` inside the function body, so we patch the
+    # attribute on the engine module itself.
+    monkeypatch.setattr(engine_mod, "get_shared_session", flaky_query_session)
+
+    summary = alarm_cache.clear_all_caches()
+    # The simulated failure on bdt_tests is recorded as -1
+    assert summary["bdt_tests"] == -1
+    # The other tables cleared successfully
+    assert summary["alarm_records"] == 1
+    # The DuckDB and BDT history entries are still reported
+    assert "alarm_duckdb_files" in summary
+    assert "bdt_history_files" in summary
+

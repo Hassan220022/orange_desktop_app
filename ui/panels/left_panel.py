@@ -105,6 +105,20 @@ class LeftPanel(QWidget):
 
         lay.addWidget(self.btn_load)
 
+        self.btn_clear_caches = QPushButton("Clear cached data")
+        self.btn_clear_caches.setObjectName("btn_clear_caches")
+        self.btn_clear_caches.setProperty("compact", True)
+        self.btn_clear_caches.setToolTip(
+            "Wipe the alarm cache and BDT data so the next Load Selected "
+            "Files does a full re-derive. Useful after adding new rules or "
+            "features that are not reflected in the cached data."
+        )
+        if hasattr(viewer, "_clear_caches"):
+            self.btn_clear_caches.clicked.connect(viewer._clear_caches)
+        else:  # pragma: no cover — viewer is always supplied in production
+            self.btn_clear_caches.setEnabled(False)
+        lay.addWidget(self.btn_clear_caches)
+
         self.lbl_loaded = QLabel("")
         self.lbl_loaded.setAlignment(Qt.AlignCenter)
         self.lbl_loaded.setStyleSheet(
