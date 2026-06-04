@@ -3025,7 +3025,7 @@ def test_get_chart_data_returns_deterministic_structured_payload(tmp_path, monke
         {"site_id": "AAA001", "alarm_category": "Down", "occurred_on": "2026-04-02"},
         {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-03"},
     ])
-    monkeypatch.setattr(service, "_alarm_rows_for_sites", lambda site_keys, date_from=None, date_to=None, **kwargs: alarm_df)
+    monkeypatch.setattr(service, "_with_alarm_source", lambda fn: alarm_df)
 
     result = service.get_chart_data(
         chart_id="alarm_category_counts",
@@ -3047,6 +3047,57 @@ def test_get_chart_data_returns_deterministic_structured_payload(tmp_path, monke
     assert result["empty_state"] is None
     assert "image_base64" not in result
     assert "path" not in result
+
+
+def test_get_chart_data_forwards_alarm_filters_in_prefer_site_slice_path(tmp_path, monkeypatch):
+    """Regression: site-scoped chart path must honor category / vendor / network_type filters."""
+    service = LocalDataService(export_dir=tmp_path / "exports")
+    alarm_df = pd.DataFrame([
+        {"site_id": "AAA001", "alarm_category": "Power", "vendor": "Huawei", "network_type": "4G"},
+        {"site_id": "AAA001", "alarm_category": "Down", "vendor": "Nokia", "network_type": "3G"},
+    ])
+    captured: list = []
+
+    def fake_alarm_source(fn):
+        # Run the closure (which builds an AlarmQuery and calls query_alarms),
+        # capturing the query kwargs the lambda handed to query_alarms.
+        from llm_tools import service as service_module
+        original_query = service_module.alarm_store.query_alarms
+
+        def recording_query_alarms(q):
+            captured.append({
+                "site_scope_keys": q.site_scope_keys,
+                "category": q.category,
+                "vendor": q.vendor,
+                "network_type": q.network_type,
+            })
+            return alarm_df
+
+        service_module.alarm_store.query_alarms = recording_query_alarms
+        try:
+            return fn()
+        finally:
+            service_module.alarm_store.query_alarms = original_query
+
+    monkeypatch.setattr(service, "_with_alarm_source", fake_alarm_source)
+
+    result = service.get_chart_data(
+        chart_id="alarm_category_counts",
+        filters={"site_code": "AAA001", "category": "Power", "vendor": "Huawei", "network_type": "4G"},
+    )
+
+    assert captured, "expected at least one AlarmQuery to be built"
+    query_kwargs = captured[-1]
+    assert query_kwargs["site_scope_keys"] == {"AAA001"}
+    assert query_kwargs["category"] == "Power"
+    assert query_kwargs["vendor"] == "Huawei"
+    assert query_kwargs["network_type"] == "4G"
+    assert result["query_context"]["filters"] == {
+        "site_code": "AAA001",
+        "category": "Power",
+        "vendor": "Huawei",
+        "network_type": "4G",
+    }
 
 
 def test_get_chart_data_clamps_max_points_and_reports_empty_state(tmp_path, monkeypatch):
@@ -3204,7 +3255,7 @@ def test_generate_graph_writes_png_from_alarm_data(tmp_path, monkeypatch):
         {"site_id": "AAA001", "alarm_category": "Down", "occurred_on": "2026-04-02"},
         {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-03"},
     ])
-    monkeypatch.setattr(service, "_alarm_rows_for_sites", lambda site_keys, date_from=None, date_to=None, **kwargs: alarm_df)
+    monkeypatch.setattr(service, "_with_alarm_source", lambda fn: alarm_df)
 
     result = service.generate_graph(graph_type="alarm_category_counts", site_code="AAA001")
 
@@ -3226,7 +3277,7 @@ def test_generate_graph_supports_non_bar_chart_kinds(tmp_path, monkeypatch):
         {"site_id": "AAA001", "alarm_category": "Down", "occurred_on": "2026-04-01 04:00:00"},
         {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-02 04:00:00"},
     ])
-    monkeypatch.setattr(service, "_alarm_rows_for_sites", lambda site_keys, date_from=None, date_to=None, **kwargs: alarm_df)
+    monkeypatch.setattr(service, "_with_alarm_source", lambda fn: alarm_df)
 
     pie = service.generate_graph(graph_type="alarm_category_share", site_code="AAA001")
     heatmap = service.generate_graph(graph_type="alarm_heatmap_day_hour", site_code="AAA001")

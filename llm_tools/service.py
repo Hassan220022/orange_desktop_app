@@ -1489,7 +1489,20 @@ class LocalDataService:
         date_from = _date_value(kwargs.get("date_from"))
         date_to = _date_value(kwargs.get("date_to"))
         if site_code and kwargs.get("_prefer_site_slice"):
-            return self._alarm_rows_for_sites({site_code}, date_from=date_from, date_to=date_to)
+            q = alarm_store.AlarmQuery(
+                site_text="",
+                site_scope_keys={normalize_site_key(site_code)},
+                category=str(kwargs.get("category") or "All"),
+                vendor=str(kwargs.get("vendor") or "All"),
+                network_type=str(kwargs.get("network_type") or "All"),
+                date_from=date_from,
+                date_to=date_to,
+                sort_by="occurred_on",
+                sort_desc=False,
+                limit=None,
+                offset=0,
+            )
+            return self._with_alarm_source(lambda: alarm_store.query_alarms(q))
         q = alarm_store.AlarmQuery(
             site_text=str(kwargs.get("site_text") or "") if not site_code else "",
             site_scope_keys={normalize_site_key(site_code)} if site_code else None,
