@@ -1,4 +1,4 @@
-"""Database engine and session management."""
+"""SQLAlchemy engine and session factory for the persistence layer."""
 
 import logging
 from pathlib import Path
@@ -8,10 +8,21 @@ from sqlalchemy import create_engine as _create_engine
 from sqlalchemy import event
 from sqlalchemy.orm import Session, sessionmaker
 
+from .exceptions import EngineCreationError
+
 _log = logging.getLogger(__name__)
 
-STATE_DIR = Path.home() / ".alarm_viewer"
-DB_PATH = STATE_DIR / "alarm_viewer.db"
+STATE_DIR: Path = Path.home() / ".alarm_viewer"
+
+
+def _default_db_path() -> Path:
+    """Resolve the default DB path from the current STATE_DIR.
+
+    Recomputed at call time so that tests that monkeypatch STATE_DIR see
+    the new value. Module-level constants bind at import time, so we cannot
+    use a module-level DB_PATH.
+    """
+    return STATE_DIR / "alarm_viewer.db"
 
 _app_engine = None
 _app_session_factory = None
@@ -50,33 +61,38 @@ def init_app_db():
 
 
 def create_engine(url: str | None = None):
-    """Create a SQLAlchemy engine. Defaults to local SQLite."""
-    if url is None:
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        url = f"sqlite:///{DB_PATH}"
+    """Create a SQLAlchemy engine. Defaults to local SQLite.
 
-    engine_kwargs: dict[str, Any] = {"echo": False}
-    if url.startswith("sqlite"):
-        # Allow concurrent desktop/background writers a chance to finish instead
-        # of immediately failing with "database is locked".
-        engine_kwargs["connect_args"] = {"timeout": 30}
+    Raises EngineCreationError if the engine cannot be created.
+    """
+    try:
+        if url is None:
+            db_path = _default_db_path()
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            url = f"sqlite:///{db_path}"
 
-    engine = _create_engine(url, **engine_kwargs)
+        engine_kwargs: dict[str, Any] = {"echo": False}
+        if url.startswith("sqlite"):
+            engine_kwargs["connect_args"] = {"timeout": 30}
 
-    url_type = "sqlite" if url.startswith("sqlite") else "postgres"
-    _log.info("Engine created: type=%s", url_type)
+        engine = _create_engine(url, **engine_kwargs)
 
-    if url.startswith("sqlite"):
-        @event.listens_for(engine, "connect")
-        def _set_sqlite_pragma(dbapi_conn, connection_record):
-            cursor = dbapi_conn.cursor()
-            cursor.execute("PRAGMA journal_mode=WAL")
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.execute("PRAGMA busy_timeout=30000")
-            cursor.close()
-            _log.debug("SQLite pragmas set: WAL mode, foreign keys enabled, busy timeout")
+        url_type = "sqlite" if url.startswith("sqlite") else "postgres"
+        _log.info("Engine created: type=%s", url_type)
 
-    return engine
+        if url.startswith("sqlite"):
+            @event.listens_for(engine, "connect")
+            def _set_sqlite_pragma(dbapi_conn, connection_record):
+                cursor = dbapi_conn.cursor()
+                cursor.execute("PRAGMA journal_mode=WAL")
+                cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=30000")
+                cursor.close()
+                _log.debug("SQLite pragmas set: WAL mode, foreign keys enabled, busy timeout")
+
+        return engine
+    except Exception as exc:
+        raise EngineCreationError(f"Failed to create engine at {url!r}") from exc
 
 
 def _ensure_optional_columns(engine) -> None:

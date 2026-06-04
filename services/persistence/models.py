@@ -1,4 +1,8 @@
-"""SQLAlchemy ORM models — all tables for alarm_viewer."""
+"""SQLAlchemy ORM models — all tables for alarm_viewer.
+
+Port of v1 db/models.py. No logic changes; only import paths are
+re-relative (no more alarm_app.db.models vs db.models try/except).
+"""
 
 from sqlalchemy import (
     BigInteger,

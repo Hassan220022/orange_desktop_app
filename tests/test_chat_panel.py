@@ -730,7 +730,9 @@ def test_show_alarm_results_in_viewer_applies_exact_alarm_filters():
     assert viewer._ui.d_to.value == "2026-04-30"
     assert viewer._both_pd_active is False
     assert viewer._col_filters == {}
-    assert viewer._page_size == 10
+    # Pagination size is user-controlled; the chat panel must NOT mutate it
+    # (it persists to state and the next launch would otherwise show only N rows).
+    assert viewer._page_size == 500
     assert viewer._page_offset == 3
     assert viewer._table.horizontalHeader().sort == (2, 1)
     assert calls == {
@@ -804,9 +806,59 @@ def test_show_alarm_results_in_viewer_uses_backup_time_site_ids():
     assert viewer._ui.d_to.value == "2026-04-30"
     assert viewer._both_pd_active is False
     assert viewer._col_filters == {}
-    assert viewer._page_size == 2
+    # Pagination size is user-controlled; chat panel must not mutate it.
+    assert viewer._page_size == 500
     assert viewer._page_offset == 0
     assert calls == {
         "offset": 0,
         "status_message": "Assistant results shown in Alarms",
     }
+
+
+def test_show_alarm_results_in_viewer_does_not_mutate_page_size():
+    """Regression: chat panel must NOT overwrite viewer._page_size.
+
+    A query result of (e.g.) 1 row would set _page_size=1, which then
+    persisted to ui_state and was restored on every subsequent launch,
+    leaving the alarms table showing exactly one row per page even though
+    the DuckDB cache had 3M+ rows.
+    """
+    panel = ChatPanel.__new__(ChatPanel)
+    viewer = type("Viewer", (), {})()
+    viewer._workspace = None
+    viewer._set_workspace_view = lambda index: None
+    viewer._ui = SimpleNamespace(
+        edit_site=type("Edit", (), {"setText": lambda self, value: None})(),
+        cb_cat=_FakeCombo(["All", "Power", "Down"]),
+        cb_net=_FakeCombo(["All", "4G", "5G"]),
+        cb_vnd=_FakeCombo(["All", "HUAWEI", "Nokia"]),
+        chk_mindur=_FakeToggle(),
+        edit_days=type("Days", (), {"clear": lambda self: None})(),
+        chk_date=_FakeToggle(),
+        chk_date_range=_FakeToggle(),
+        chk_date_days=_FakeToggle(),
+        d_from=_FakeDateEdit(),
+        d_to=_FakeDateEdit(),
+    )
+    viewer._both_pd_active = False
+    viewer._col_filters = {}
+    viewer._btn_both = type("Btn", (), {"setStyleSheet": lambda self, value: None})()
+    viewer._page_size = 500
+    viewer._page_offset = 0
+    viewer._table = _FakeTable(["site_id", "alarm_name", "occurred_on"])
+    viewer._current_alarm_columns = lambda: ["site_id", "alarm_name", "occurred_on"]
+    viewer._load_alarm_page = lambda *, offset, status_message=None: True
+    panel._viewer = viewer
+
+    # A query that returns only ONE row must not shrink the user's page size.
+    event = {
+        "name": "query_alarms",
+        "args": {"site_text": "AAA001", "limit": 1, "offset": 0},
+        "result": {"rows": [{"site_id": "AAA001"}], "row_count": 1},
+    }
+
+    panel._show_alarm_results_in_viewer(event)
+
+    assert viewer._page_size == 500, (
+        f"chat panel must not overwrite _page_size (got {viewer._page_size!r})"
+    )

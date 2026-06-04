@@ -17,6 +17,23 @@ from PyQt5.QtWidgets import (
 )
 
 
+ALARM_SOURCE_TOOLTIPS = {
+    "directory": (
+        "Directory mode: reads selected CSV/XLSX alarm files from the folder, "
+        "rebuilds derived alarm fields, and saves/replaces the alarm DuckDB cache "
+        "after a successful load."
+    ),
+    "db": (
+        "DB mode: reads only the saved DuckDB alarm cache. It is fast and does not write "
+        "or rescan directory files. Use Clear cached data or Directory mode when rules changed."
+    ),
+    "both": (
+        "Both mode: reads saved DuckDB first, parses selected directory files, merges and "
+        "deduplicates the rows, then saves the merged/re-derived alarm cache."
+    ),
+}
+
+
 class LeftPanel(QWidget):
     """Sidebar containing the directory browser, file list, and stats."""
 
@@ -100,10 +117,38 @@ class LeftPanel(QWidget):
         self.cmb_alarm_source.addItem("Directory", "directory")
         self.cmb_alarm_source.addItem("DB", "db")
         self.cmb_alarm_source.addItem("Both (Verify)", "both")
+        self.cmb_alarm_source.setToolTip(
+            "Choose where alarm rows come from and whether this load updates the local cache."
+        )
+        for i in range(self.cmb_alarm_source.count()):
+            mode = str(self.cmb_alarm_source.itemData(i) or "")
+            self.cmb_alarm_source.setItemData(i, ALARM_SOURCE_TOOLTIPS.get(mode, ""), Qt.ToolTipRole)
         self.cmb_alarm_source.currentIndexChanged.connect(viewer._on_alarm_source_changed)
         lay.addWidget(self.cmb_alarm_source)
 
         lay.addWidget(self.btn_load)
+
+        self.btn_cancel_load = QPushButton("Cancel Load")
+        self.btn_cancel_load.setObjectName("btn_clear")
+        self.btn_cancel_load.setProperty("compact", True)
+        self.btn_cancel_load.setEnabled(False)
+        self.btn_cancel_load.setVisible(False)
+        if hasattr(viewer, "_cancel_alarm_load"):
+            self.btn_cancel_load.clicked.connect(viewer._cancel_alarm_load)
+        lay.addWidget(self.btn_cancel_load)
+
+        self.btn_clear_alarm_caches = QPushButton("Clear alarm cache")
+        self.btn_clear_alarm_caches.setObjectName("btn_clear")
+        self.btn_clear_alarm_caches.setProperty("compact", True)
+        self.btn_clear_alarm_caches.setToolTip(
+            "Wipe only the alarm cache (DuckDB files and SQLite alarm_records). "
+            "BDT validation results, BDT history, and source files are preserved."
+        )
+        if hasattr(viewer, "_clear_alarm_caches"):
+            self.btn_clear_alarm_caches.clicked.connect(viewer._clear_alarm_caches)
+        else:  # pragma: no cover - viewer is always supplied in production
+            self.btn_clear_alarm_caches.setEnabled(False)
+        lay.addWidget(self.btn_clear_alarm_caches)
 
         self.lbl_loaded = QLabel("")
         self.lbl_loaded.setAlignment(Qt.AlignCenter)

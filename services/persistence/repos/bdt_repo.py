@@ -7,13 +7,13 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 try:
-    from alarm_app.db.hashing import compute_bdt_content_hash
-    from alarm_app.db.models import BDTPhoto, BDTTest
-    from alarm_app.db.retry import safe_flush
+    from ..hashing import compute_bdt_content_hash
+    from ..models import BDTPhoto, BDTTest
+    from ..retry import safe_flush
 except ImportError:
-    from db.hashing import compute_bdt_content_hash
-    from db.models import BDTPhoto, BDTTest
-    from db.retry import safe_flush
+    from ..hashing import compute_bdt_content_hash
+    from ..models import BDTPhoto, BDTTest
+    from ..retry import safe_flush
 
 _log = logging.getLogger(__name__)
 

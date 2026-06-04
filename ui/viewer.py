@@ -64,6 +64,11 @@ try:
     )
     from alarm_app.data.sync import LocalSyncWorker
     from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorManager
+    from alarm_app.services.persistence.alarm_cache import (
+        clear_all_caches,
+        clear_alarm_caches,
+        clear_bdt_caches,
+    )
     from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
     from alarm_app.ui.bridge import UIBridge
     from alarm_app.ui.dialogs import (
@@ -106,6 +111,11 @@ except ImportError:
     )
     from data.sync import LocalSyncWorker
     from runtime.chatgpt_connector import ChatGPTConnectorManager
+    from services.persistence.alarm_cache import (
+        clear_all_caches,
+        clear_alarm_caches,
+        clear_bdt_caches,
+    )
     from styles import STYLE_DARK, STYLE_LIGHT
     from ui.bridge import UIBridge
     from ui.dialogs import (
@@ -795,11 +805,15 @@ class AlarmViewer(QMainWindow):
 
     def _iter_background_threads(self):
         panel_bdt_thread = getattr(self._bdt_validation_panel, "_bdt_thread", None)
+        panel_photo_thread = None
+        if panel_bdt_thread is not None:
+            panel_photo_thread = getattr(panel_bdt_thread, "_photo_thread", None)
         for thread in (
             getattr(self, "_loader", None),
             getattr(self, "_restore_thread", None),
             getattr(self, "_bt_thread", None),
             panel_bdt_thread,
+            panel_photo_thread,
         ):
             if thread is not None:
                 yield thread
@@ -1991,6 +2005,7 @@ class AlarmViewer(QMainWindow):
         self._prog.setValue(0)
         self._sbar.showMessage(f"Loading {len(selected)} file(s) …")
         self._loader = LoaderThread(selected)
+        self._set_alarm_load_running(True)
         self._loader.progress.connect(
             lambda v, m: (
                 self._prog.setValue(v),
@@ -1998,7 +2013,29 @@ class AlarmViewer(QMainWindow):
             ))
         self._loader.finished.connect(self._on_loaded)
         self._loader.error.connect(self._on_error)
+        if hasattr(self._loader, "cancelled"):
+            self._loader.cancelled.connect(self._on_load_cancelled)
         self._loader.start()
+
+    def _set_alarm_load_running(self, running: bool) -> None:
+        self._ui.btn_load.setEnabled(not running)
+        btn_cancel = getattr(self._ui, "btn_cancel_load", None)
+        if btn_cancel is not None:
+            btn_cancel.setVisible(running)
+            btn_cancel.setEnabled(running)
+
+    def _cancel_alarm_load(self) -> None:
+        loader = getattr(self, "_loader", None)
+        if loader is not None and loader.isRunning():
+            if hasattr(loader, "cancel"):
+                loader.cancel()
+            self._sbar.showMessage("Cancelling alarm load …")
+
+    def _on_load_cancelled(self, msg: str):
+        self._set_alarm_load_running(False)
+        self._prog.setVisible(False)
+        self._prog.setValue(0)
+        self._sbar.showMessage(msg)
 
     def _on_loaded(self, df: pd.DataFrame, msg: str):
         if getattr(self, "_pending_alarm_load_mode", "directory") == "both":
@@ -2020,7 +2057,10 @@ class AlarmViewer(QMainWindow):
         self._apply_loaded_alarm_dataframe(df, msg)
 
     def _on_error(self, msg: str):
-        self._ui.btn_load.setEnabled(True)
+        if hasattr(self, "_set_alarm_load_running"):
+            self._set_alarm_load_running(False)
+        else:
+            self._ui.btn_load.setEnabled(True)
         self._prog.setVisible(False)
         QMessageBox.critical(self, "Load Error", msg)
         self._sbar.showMessage(f"Error: {msg}")
@@ -2039,10 +2079,15 @@ class AlarmViewer(QMainWindow):
         for col in ("occurred_on", "cleared_on"):
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors="coerce", format="mixed")
-        alarm_ids = state.load_alarm_ids()
-        df = classify_by_alarm_id(df, alarm_ids)
-        df = compute_site_down_flag(df)
-        self._ui.btn_load.setEnabled(True)
+        prepared_cols = {"alarm_category", "site_down_flag", "duration", "_duration_secs"}
+        if not prepared_cols.issubset(df.columns):
+            alarm_ids = state.load_alarm_ids()
+            df = classify_by_alarm_id(df, alarm_ids)
+            df = compute_site_down_flag(df)
+        if hasattr(self, "_set_alarm_load_running"):
+            self._set_alarm_load_running(False)
+        else:
+            self._ui.btn_load.setEnabled(True)
         self._prog.setVisible(False)
         self._sbar.showMessage(msg)
         self._ui.lbl_loaded.setText(
@@ -2296,6 +2341,229 @@ class AlarmViewer(QMainWindow):
             self._refresh_stats(df)
             self._refresh_in_memory_count_label(df)
         self._sbar.showMessage("Filters cleared")
+
+    def _running_background_threads(self) -> list:
+        running_threads = []
+        iter_threads = getattr(self, "_iter_background_threads", lambda: [])
+        for thread in iter_threads():
+            try:
+                if thread.isRunning():
+                    running_threads.append(thread)
+            except Exception:
+                pass
+        return running_threads
+
+    def _block_cache_clear_if_background_work_running(self, scope_label: str) -> bool:
+        if not AlarmViewer._running_background_threads(self):
+            return False
+        QMessageBox.information(
+            self,
+            "Background Work Running",
+            f"Wait for background work to finish or cancel it before clearing {scope_label}.",
+        )
+        self._sbar.showMessage(
+            f"Clear {scope_label} blocked while background work is running",
+            5000,
+        )
+        return True
+
+    @staticmethod
+    def _format_clear_summary(summary: dict[str, int]) -> list[str]:
+        cleared_lines = []
+        for key, value in summary.items():
+            if value == -1:
+                cleared_lines.append(f"  {key}: ERROR")
+            else:
+                cleared_lines.append(f"  {key}: {value:,}")
+        return cleared_lines
+
+    @staticmethod
+    def _clear_summary_total(summary: dict[str, int]) -> int:
+        return sum(max(value, 0) for value in summary.values())
+
+    def _reset_alarm_cache_state(self) -> None:
+        self._full_df = pd.DataFrame()
+        self._page_offset = 0
+        self._page_total_rows = 0
+        self._alarm_query_active = False
+        self._col_filters.clear()
+        self._model.clear()
+
+        lbl_count = getattr(self, "_lbl_count", None)
+        if lbl_count is not None:
+            lbl_count.setText("Alarm cache cleared — click Load Selected Files to re-derive")
+        if hasattr(self, "_ui") and getattr(self._ui, "lbl_loaded", None) is not None:
+            self._ui.lbl_loaded.setText("Alarm cache cleared")
+            self._ui.lbl_loaded.setStyleSheet("color:#f9e2af; font-size:11px;")
+        self._refresh_stats(pd.DataFrame())
+
+    def _reset_bdt_cache_state(self) -> None:
+        self._bdt_results = []
+        self._bdt_by_site = {}
+        self._reviewed_bdt_keys = set()
+        if hasattr(self, "_bdt_validation_panel") and self._bdt_validation_panel is not None:
+            try:
+                self._bdt_validation_panel.set_results([])
+            except Exception:
+                _log.warning("Could not reset BDT validation panel", exc_info=True)
+
+        bdt_ws = getattr(self, "_bdt_workspace_panel", None)
+        if bdt_ws is not None and hasattr(bdt_ws, "invalidate_caches"):
+            try:
+                bdt_ws.invalidate_caches()
+            except Exception:
+                _log.warning("Could not invalidate BDT workspace caches", exc_info=True)
+
+    def _clear_alarm_caches(self) -> None:
+        """Wipe alarm-derived caches and reset alarm UI state only."""
+        if AlarmViewer._block_cache_clear_if_background_work_running(self, "alarm cache"):
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Clear alarm cache?",
+            "This will wipe only the alarm cache: DuckDB alarm files and "
+            "SQLite alarm_records.\n\n"
+            "PRESERVED: BDT validation results, BDT history, BDT summary "
+            "catalog, BDT photo/blob metadata, source files, uploaded-files "
+            "dedup index, UI preferences, site catalog, validation rule "
+            "definitions, sync queue, daily-review history, photo files.\n\n"
+            "Proceed?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            self._sbar.showMessage("Clear alarm cache - cancelled", 5000)
+            return
+
+        try:
+            summary = clear_alarm_caches()
+            _log.info("clear_alarm_caches summary: %s", summary)
+        except Exception as exc:
+            _log.error("clear_alarm_caches failed: %s", exc, exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Clear Alarm Cache Failed",
+                f"Could not clear alarm cache:\n\n{exc}\n\nSee the application log for details.",
+            )
+            return
+
+        AlarmViewer._reset_alarm_cache_state(self)
+        cleared_lines = AlarmViewer._format_clear_summary(summary)
+        total = AlarmViewer._clear_summary_total(summary)
+        message = (
+            f"Cleared alarm cache - {total:,} rows / files removed. "
+            "Next alarm load will rebuild from source files."
+        )
+        _log.info("Alarm cache cleared:\n%s", "\n".join(cleared_lines))
+        self._sbar.showMessage(message, 10000)
+        QMessageBox.information(
+            self,
+            "Alarm Cache Cleared",
+            "Alarm cache cleared. Use 'Load Selected Files' to re-derive alarms "
+            "from source files.\n\nSummary:\n" + "\n".join(cleared_lines),
+        )
+
+    def _clear_bdt_caches(self) -> None:
+        """Wipe BDT-derived caches and reset BDT UI state only."""
+        if AlarmViewer._block_cache_clear_if_background_work_running(self, "BDT cache"):
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Clear BDT cache?",
+            "This will wipe only BDT-derived cached data: parsed BDT tests, "
+            "photo/blob metadata, validation runs, rule results, imported BDT "
+            "summary rows, and BDT history files.\n\n"
+            "PRESERVED: alarm cache, loaded alarm rows, source files, "
+            "uploaded-files dedup index, UI preferences, site catalog, "
+            "validation rule definitions, sync queue, daily-review history, "
+            "and photo files.\n\n"
+            "Proceed?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            self._sbar.showMessage("Clear BDT cache - cancelled", 5000)
+            return
+
+        try:
+            summary = clear_bdt_caches()
+            _log.info("clear_bdt_caches summary: %s", summary)
+        except Exception as exc:
+            _log.error("clear_bdt_caches failed: %s", exc, exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Clear BDT Cache Failed",
+                f"Could not clear BDT cache:\n\n{exc}\n\nSee the application log for details.",
+            )
+            return
+
+        AlarmViewer._reset_bdt_cache_state(self)
+        cleared_lines = AlarmViewer._format_clear_summary(summary)
+        total = AlarmViewer._clear_summary_total(summary)
+        message = (
+            f"Cleared BDT cache - {total:,} rows / files removed. "
+            "Next BDT validation will rebuild from source workbooks."
+        )
+        _log.info("BDT cache cleared:\n%s", "\n".join(cleared_lines))
+        self._sbar.showMessage(message, 10000)
+        QMessageBox.information(
+            self,
+            "BDT Cache Cleared",
+            "BDT cache cleared. Validate BDT files again to re-derive results "
+            "from source workbooks.\n\nSummary:\n" + "\n".join(cleared_lines),
+        )
+
+    def _clear_caches(self) -> None:
+        """Compatibility path for wiping all derived alarm and BDT caches."""
+        if AlarmViewer._block_cache_clear_if_background_work_running(self, "cached data"):
+            return
+
+        confirm = QMessageBox.question(
+            self,
+            "Clear cached data?",
+            "This will wipe the alarm cache and BDT data so the next "
+            "Load Selected Files does a full re-derive from source files.\n\n"
+            "PRESERVED: source files, uploaded-files dedup index, UI "
+            "preferences, site catalog, validation rule definitions, "
+            "sync queue, daily-review history, photo files.\n\n"
+            "Proceed?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            self._sbar.showMessage("Clear cached data - cancelled", 5000)
+            return
+
+        try:
+            summary = clear_all_caches()
+            _log.info("clear_all_caches summary: %s", summary)
+        except Exception as exc:
+            _log.error("clear_all_caches failed: %s", exc, exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Clear Cached Data Failed",
+                f"Could not clear cached data:\n\n{exc}\n\nSee the application log for details.",
+            )
+            return
+
+        AlarmViewer._reset_alarm_cache_state(self)
+        AlarmViewer._reset_bdt_cache_state(self)
+        cleared_lines = AlarmViewer._format_clear_summary(summary)
+        total = AlarmViewer._clear_summary_total(summary)
+        message = (
+            f"Cleared cached data - {total:,} rows / files removed. Next "
+            "'Load Selected Files' will rebuild from source files."
+        )
+        _log.info("Cache cleared:\n%s", "\n".join(cleared_lines))
+        self._sbar.showMessage(message, 10000)
+        QMessageBox.information(
+            self,
+            "Cached Data Cleared",
+            "Cache cleared. Use 'Load Selected Files' to re-derive from the "
+            "source alarm and BDT workbooks.\n\nSummary:\n" + "\n".join(cleared_lines),
+        )
 
     def _show_backup_times(self):
         if self._has_query_backed_alarm_data():

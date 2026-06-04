@@ -2,6 +2,9 @@
 .venv/
 .venv_build/
 
+# ── Import Linter cache ──────────────────────────────────────
+.import_linter_cache/
+
 # ── Python cache & compiled files ────────────────────────────
 __pycache__/
 *.py[cod]

@@ -233,6 +233,7 @@ def _build_bdt_dict(bdt_data, verdict: str | None = None) -> dict:
         "after_reconnect_ampere": getattr(bdt_data, "after_reconnect_ampere", None),
         "discharge_readings": getattr(bdt_data, "discharge_readings", []),
         "string_discharge_readings": getattr(bdt_data, "string_discharge_readings", []),
+        "summary_data": getattr(bdt_data, "summary_data", {}),
         # Layout metadata for multi-layout support
         "core_layout": getattr(bdt_data, "core_layout", ""),
         "photo_layout_id": getattr(bdt_data, "photo_layout_id", ""),
@@ -533,6 +534,9 @@ def save_validation_run(
     run_uuid = str(uuid5(NAMESPACE_URL, idempotency_key))
 
     overall_verdict = str(getattr(validation_result, "overall", "") or "")
+    insight = getattr(validation_result, "battery_backup_insight", {}) or {}
+    if not isinstance(insight, dict):
+        insight = {}
     bdt_dict = _build_bdt_dict(bdt_data)
 
     try:
@@ -558,6 +562,7 @@ def save_validation_run(
             overall_verdict=overall_verdict,
             rule_results=rule_results,
             params=params or {},
+            insight=insight,
         )
     finally:
         session.close()
@@ -674,6 +679,9 @@ def save_validation_batch(
                         idempotency_key = _canonical_json_sha256(idempotency_material)
                         run_uuid = str(uuid5(NAMESPACE_URL, idempotency_key))
                         overall_verdict = str(getattr(validation_result, "overall", "") or "")
+                        insight = getattr(validation_result, "battery_backup_insight", {}) or {}
+                        if not isinstance(insight, dict):
+                            insight = {}
 
                         pm_run = _save_pm_run(
                             session,
@@ -683,6 +691,7 @@ def save_validation_batch(
                             overall_verdict=overall_verdict,
                             rule_results=rule_results,
                             params=params,
+                            insight=insight,
                             autocommit=False,
                             catalog_map=catalog_map,
                             parameter_set_id=parameter_set_id,

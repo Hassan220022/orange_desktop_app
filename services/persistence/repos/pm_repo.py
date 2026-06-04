@@ -9,24 +9,24 @@ from sqlalchemy.orm import Session
 _log = logging.getLogger(__name__)
 try:
     from alarm_app.constants import BDT_RULE_NAME_BY_CODE
-    from alarm_app.db.hashing import compute_canonical_json_sha256
-    from alarm_app.db.models import (
+    from ..hashing import compute_canonical_json_sha256
+    from ..models import (
         PMParameterSet,
         PMRuleCatalog,
         PMRuleResult,
         PMValidationRun,
     )
-    from alarm_app.db.retry import safe_flush
+    from ..retry import safe_flush
 except ImportError:
     from constants import BDT_RULE_NAME_BY_CODE
-    from db.hashing import compute_canonical_json_sha256
-    from db.models import (
+    from ..hashing import compute_canonical_json_sha256
+    from ..models import (
         PMParameterSet,
         PMRuleCatalog,
         PMRuleResult,
         PMValidationRun,
     )
-    from db.retry import safe_flush
+    from ..retry import safe_flush
 
 
 def get_or_create_rule_catalog(session: Session) -> dict[str, int]:
@@ -55,9 +55,9 @@ def seed_rule_versions(session: Session, code_ref: str = "alarm_app.bdt.validato
     from datetime import datetime
 
     try:
-        from alarm_app.db.models import PMRuleVersion
+        from ..models import PMRuleVersion
     except ImportError:
-        from db.models import PMRuleVersion
+        from ..models import PMRuleVersion
 
     catalog = get_or_create_rule_catalog(session)
 
@@ -201,9 +201,9 @@ def load_all_validation_results(session: Session) -> list:
     except ImportError:
         from bdt.validator import RuleResult, ValidationResult
     try:
-        from alarm_app.db.models import BDTPhoto, BDTTest, UploadedFile
+        from ..models import BDTPhoto, BDTTest, UploadedFile
     except ImportError:
-        from db.models import BDTPhoto, BDTTest, UploadedFile
+        from ..models import BDTPhoto, BDTTest, UploadedFile
 
     from sqlalchemy.orm import selectinload
 
@@ -383,9 +383,9 @@ def load_validation_history(session: Session, site_code: str,
                             limit: int = 50) -> list[dict]:
     """Load recent validation runs for a site."""
     try:
-        from alarm_app.db.models import BDTTest
+        from ..models import BDTTest
     except ImportError:
-        from db.models import BDTTest
+        from ..models import BDTTest
 
     from sqlalchemy.orm import selectinload
 

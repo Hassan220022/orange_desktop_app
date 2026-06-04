@@ -1795,10 +1795,12 @@ class ChatPanel(QWidget):
         if hasattr(viewer, "_btn_both"):
             viewer._btn_both.setStyleSheet("")
 
-        page_size = max(1, min(500, int(args.get("limit") or result.get("row_count") or len(rows) or 1)))
+        # NOTE: do NOT touch viewer._page_size here. The viewer's pagination
+        # size is user-controlled and persisted to state; if the chat tool
+        # overwrites it (e.g. with `limit=1` for a single-alarm lookup), the
+        # next session restores that 1 and the user sees only one alarm per
+        # page. See regression: "alarms is only showing one alarm on each page".
         offset = max(0, int(args.get("offset") or 0))
-        if hasattr(viewer, "_page_size"):
-            viewer._page_size = page_size
         if hasattr(viewer, "_page_offset"):
             viewer._page_offset = offset
         if hasattr(viewer, "_table") and hasattr(viewer, "_current_alarm_columns"):

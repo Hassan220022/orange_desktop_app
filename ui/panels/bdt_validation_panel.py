@@ -31,6 +31,22 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+BDT_SOURCE_TOOLTIPS = {
+    "directory": (
+        "Directory mode: reads selected BDT Excel files from the folder, runs validation, "
+        "and saves BDT tests and PM validation runs to SQLite after validation finishes."
+    ),
+    "db": (
+        "DB mode: reads only saved BDT validation results from SQLite. It is fast and "
+        "does not write or revalidate BDT Excel files."
+    ),
+    "both": (
+        "Both mode: loads saved SQLite validation results first, validates selected BDT "
+        "Excel files, compares/merges the view, and saves new validation history to SQLite."
+    ),
+}
+
+
 try:
     from alarm_app.bdt.export import build_bdt_export_sheets
     from alarm_app.bdt.parser import BDTData
@@ -132,6 +148,12 @@ class BdtValidationPanel(QWidget):
         self.cmb_bdt_source.addItem("Directory", "directory")
         self.cmb_bdt_source.addItem("DB", "db")
         self.cmb_bdt_source.addItem("Both (Verify)", "both")
+        self.cmb_bdt_source.setToolTip(
+            "Choose where BDT validation results come from and whether validation updates SQLite."
+        )
+        for i in range(self.cmb_bdt_source.count()):
+            mode = str(self.cmb_bdt_source.itemData(i) or "")
+            self.cmb_bdt_source.setItemData(i, BDT_SOURCE_TOOLTIPS.get(mode, ""), Qt.ToolTipRole)
         self.cmb_bdt_source.setVisible(False)
 
         header_row = QHBoxLayout()
@@ -260,6 +282,14 @@ class BdtValidationPanel(QWidget):
         bot.addStretch()
         lay.addLayout(bot)
 
+        self.btn_cancel_validation = QPushButton("Cancel Validation")
+        self.btn_cancel_validation.setObjectName("btn_clear")
+        self._mark_compact(self.btn_cancel_validation)
+        self.btn_cancel_validation.setVisible(False)
+        self.btn_cancel_validation.setEnabled(False)
+        self.btn_cancel_validation.clicked.connect(self._cancel_validation)
+        bot.addWidget(self.btn_cancel_validation)
+
         self.btn_pm_accept_report = QPushButton("Accepted PM Report")
         self.btn_pm_accept_report.setVisible(False)
         self.btn_bdt_export = QPushButton("Export Results XLSX")
@@ -345,6 +375,14 @@ class BdtValidationPanel(QWidget):
     # ------------------------------------------------------------------
     def _run_validation(self):
         viewer = self._viewer
+        current_thread = getattr(self, "_bdt_thread", None)
+        try:
+            if current_thread is not None and current_thread.isRunning():
+                viewer._sbar.showMessage("BDT validation already running")
+                return
+        except Exception:
+            pass
+
         source_mode = self._current_source_mode()
         viewer._sbar.showMessage("Opening BDT validation overview…")
         health_pct_value = self.spn_health.value()
@@ -450,15 +488,56 @@ class BdtValidationPanel(QWidget):
             skip_photos=viewer._skip_photos,
             tolerances=tolerances,
         )
+        self._set_validation_running(True)
         self._bdt_thread.progress.connect(
             lambda v, m: (viewer._prog.setValue(v),
                           viewer._sbar.showMessage(m)))
         self._bdt_thread.finished.connect(self._on_validation_done)
         self._bdt_thread.error.connect(self._on_validation_error)
+        if hasattr(self._bdt_thread, "cancelled"):
+            self._bdt_thread.cancelled.connect(self._on_validation_cancelled)
+        if hasattr(self._bdt_thread, "photo_persistence_finished"):
+            self._bdt_thread.photo_persistence_finished.connect(self._on_photo_persistence_done)
+        if hasattr(self._bdt_thread, "photo_persistence_error"):
+            self._bdt_thread.photo_persistence_error.connect(self._on_photo_persistence_error)
         self._bdt_thread.start()
+
+    def _set_validation_running(self, running: bool) -> None:
+        btn = getattr(self, "btn_cancel_validation", None)
+        if btn is not None:
+            btn.setVisible(running)
+            btn.setEnabled(running)
+        for name in ("btn_parameters", "btn_rule_guide", "btn_bdt_export", "btn_pm_accept_report", "btn_bdt_report"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                try:
+                    widget.setEnabled(not running)
+                except Exception:
+                    pass
+
+    def _cancel_validation(self) -> None:
+        thread = getattr(self, "_bdt_thread", None)
+        if thread is not None and thread.isRunning():
+            if hasattr(thread, "cancel"):
+                thread.cancel()
+            self._viewer._sbar.showMessage("Cancelling BDT validation …")
+
+    def _on_validation_cancelled(self, msg: str):
+        self._set_validation_running(False)
+        self._viewer._prog.setVisible(False)
+        self._viewer._prog.setValue(0)
+        self._viewer._sbar.showMessage(msg)
+
+    def _on_photo_persistence_done(self, stored: int):
+        if stored:
+            self._viewer._sbar.showMessage(f"Stored {stored} BDT photo(s)", 3500)
+
+    def _on_photo_persistence_error(self, msg: str):
+        self._viewer._sbar.showMessage("BDT photo persistence failed", 5000)
 
     def _on_validation_done(self, results, by_site):
         viewer = self._viewer
+        self._set_validation_running(False)
         if getattr(self, "_pending_bdt_source_mode", "directory") == "both":
             results = self._merge_results(self._db_seed_results, results)
             by_site = self._build_site_map(results)
@@ -472,6 +551,7 @@ class BdtValidationPanel(QWidget):
             f"Validated {len(self._viewer._bdt_results)} BDT file(s)")
 
     def _on_validation_error(self, msg):
+        self._set_validation_running(False)
         self._viewer._prog.setVisible(False)
         QMessageBox.critical(self, "Validation Error", msg)
         self._viewer._sbar.showMessage("Validation failed")

@@ -1,0 +1,89 @@
+; Import Linter configuration — enforces architectural boundaries for v2.
+;
+; Layer order (top = highest, may import downward):
+;     services -> adapters -> qml -> ui -> db -> data -> core
+;
+; services is the only place allowed to talk to sqlalchemy/duckdb.
+
+[importlinter]
+root_packages =
+    services
+    ui
+    db
+    data
+    core
+include_external_packages = True
+
+[importlinter:contract:1]
+; Loose declaration of the layered architecture.  (adapters) and (qml) are
+; marked optional because those packages have not been created yet — they
+; belong to later v2 sub-projects.  Re-introduce them without parentheses
+; when the packages exist on disk.
+;
+; ``ignore_imports`` lists the v1 boundaries that predate this contract.
+; Every entry is a v1 module that imports across a layer that the v2
+; architecture wants to keep clean.  When v1 is deleted at cutover, drop
+; the corresponding ``ignore_imports`` entry — a violation will re-surface
+; if any new code tries the same crossing.
+name = Layered architecture (loose ordering)
+type = layers
+layers =
+    services
+    (adapters)
+    (qml)
+    ui
+    db
+    data
+    core
+ignore_imports =
+    data.bootstrap -> db.models
+    data.state -> db.models
+    data.state -> db.engine
+    data.state -> db.repos.alarm_repo
+    data.state -> db.repos.state_repo
+    data.state -> db.repos.sync_repo
+    data.sync_monitor -> db.models
+    data.catalog_store -> db.repos.catalog_repo
+    data.catalog_import -> db.engine
+    data.catalog_import -> db.repos.catalog_repo
+    core.temp_alarm -> data.alarm_store
+    core.backup_time -> data.alarm_store
+    core.battery_backup_insights -> data.catalog_store
+
+[importlinter:contract:2]
+; services must not import from the UI / QML / adapter layers.
+; (adapters) and (qml) cannot be listed here yet because import-linter
+; requires forbidden modules to exist on disk; they will be added to this
+; contract once those packages are introduced in later v2 sub-projects.
+name = Services must not import from UI / adapters / QML
+type = forbidden
+source_modules =
+    services
+forbidden_modules =
+    ui
+
+[importlinter:contract:3]
+; Only services.persistence may import SQLAlchemy or DuckDB.  Every other
+; top-level package is forbidden from importing them.  We enumerate each
+; layer explicitly because import-linter has no exempt_modules field;
+; services.persistence is omitted from source_modules so it is allowed to
+; import freely.
+;
+; ``data`` and ``db`` are v1 packages scheduled for deletion at cutover
+; and still import sqlalchemy/duckdb directly, so they are excluded from
+; the source_modules list.  When those packages are removed, the v2
+; modules (``ui``, ``core``) re-take their place and the contract becomes
+; strict for the entire codebase.
+;
+; ``allow_indirect_imports = true`` is also set so transitive v1 chains
+; don't pollute the v2 modules with false positives during the
+; incremental migration.
+name = Only services.persistence may import SQLAlchemy / DuckDB
+type = forbidden
+source_modules =
+    ui
+    core
+forbidden_modules =
+    sqlalchemy
+    duckdb
+allow_indirect_imports = true
