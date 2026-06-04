@@ -29,7 +29,9 @@ def chart_widget_resource() -> dict[str, Any]:
 
 def chart_widget_html() -> str:
     if not _WIDGET_HTML_PATH.exists():
-        raise FileNotFoundError(f"chart widget build artifact missing: {_WIDGET_HTML_PATH}")
+        # Do not include the absolute path: it leaks local host layout to
+        # any MCP client (ChatGPT, connectors) that reads the error.
+        raise FileNotFoundError("chart widget build artifact missing; run mcp_app/chart_widget/build.py")
     return _WIDGET_HTML_PATH.read_text(encoding="utf-8")
 
 

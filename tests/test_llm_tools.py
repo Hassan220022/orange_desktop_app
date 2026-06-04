@@ -803,6 +803,11 @@ def test_chart_registry_drives_data_schema_and_discovery_tool():
     assert "alarm_heatmap_day_hour" in graph_ids
     assert "backup_time_by_site" in graph_ids
     assert "bdt_rule_failure_counts" in graph_ids
+    # PM and metadata flows have no working aggregators in the service yet;
+    # they must not be advertised as renderable in the discovery surface.
+    assert "pm_status_share" not in graph_ids
+    assert "site_metadata_coverage" not in graph_ids
+    assert "alarm_to_site_flow" not in graph_ids
 
     service = LocalDataService()
     result = dispatch_tool(service, "list_chart_types", {"family": "alarm", "renderable_only": True})
@@ -3227,6 +3232,9 @@ def test_mcp_server_returns_resource_error_when_widget_build_missing(tmp_path, m
     assert response["error"]["code"] == -32002
     assert "chart widget build artifact missing" in response["error"]["message"]
     assert "chart_widget.ts" not in response["error"]["message"]
+    # Must not leak the local filesystem path of the build artifact.
+    assert str(missing_widget) not in response["error"]["message"]
+    assert missing_widget.name not in response["error"]["message"]
 
 
 def test_chart_widget_package_builds(tmp_path):
