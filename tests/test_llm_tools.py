@@ -3270,6 +3270,79 @@ def test_generate_graph_writes_png_from_alarm_data(tmp_path, monkeypatch):
     assert Path(result["path"]).suffix == ".png"
 
 
+def test_generate_graph_clearance_rate_gauge_returns_percentage(tmp_path, monkeypatch):
+    service = LocalDataService(export_dir=tmp_path / "exports")
+    alarm_df = pd.DataFrame([
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 02:00:00"},
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 03:00:00"},
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 04:00:00"},
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 05:00:00"},
+        {"site_id": "AAA001", "cleared_on": None},
+    ])
+    monkeypatch.setattr(service, "_with_alarm_source", lambda fn: alarm_df)
+
+    result = service.generate_graph(graph_type="alarm_clearance_rate_gauge")
+
+    assert result["chart_kind"] == "gauge"
+    assert result["labels"] == ["Clearance"]
+    assert result["values"] == [80.0]
+    assert result["series"] == [{"label": "Clearance", "value": 80.0}]
+
+
+def test_generate_graph_cleared_vs_uncleared_share_returns_counts(tmp_path, monkeypatch):
+    service = LocalDataService(export_dir=tmp_path / "exports")
+    alarm_df = pd.DataFrame([
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 02:00:00"},
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 03:00:00"},
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 04:00:00"},
+        {"site_id": "AAA001", "cleared_on": "2026-04-01 05:00:00"},
+        {"site_id": "AAA001", "cleared_on": None},
+    ])
+    monkeypatch.setattr(service, "_with_alarm_source", lambda fn: alarm_df)
+
+    result = service.generate_graph(graph_type="cleared_vs_uncleared_share")
+
+    assert result["chart_kind"] == "donut"
+    assert result["labels"] == ["Cleared", "Uncleared"]
+    assert result["values"] == [4.0, 1.0]
+
+
+def test_generate_graph_top_sites_by_backup_failure_ranks_lowest_first(monkeypatch):
+    service = LocalDataService()
+    payload = {
+        "rows": [
+            {"site_id": "AAA001", "backup_minutes": 60.0},
+            {"site_id": "AAA002", "backup_minutes": 2.0},
+            {"site_id": "AAA003", "backup_minutes": 30.0},
+        ]
+    }
+    monkeypatch.setattr(service, "query_backup_times", lambda **kwargs: payload)
+
+    labels, values, series = service._backup_chart_series("top_sites_by_backup_failure", {})
+
+    # Catalog: "Worst backup sites by low backup time" - shortest first.
+    assert labels == ["AAA002", "AAA003", "AAA001"]
+    assert values == [2.0, 30.0, 60.0]
+    assert [row["label"] for row in series] == ["AAA002", "AAA003", "AAA001"]
+
+
+def test_generate_graph_top_sites_by_duration_keeps_descending_default(monkeypatch):
+    service = LocalDataService()
+    payload = {
+        "rows": [
+            {"site_id": "AAA001", "backup_minutes": 60.0},
+            {"site_id": "AAA002", "backup_minutes": 2.0},
+            {"site_id": "AAA003", "backup_minutes": 30.0},
+        ]
+    }
+    monkeypatch.setattr(service, "query_backup_times", lambda **kwargs: payload)
+
+    labels, values, _ = service._backup_chart_series("top_sites_by_duration", {})
+
+    assert labels == ["AAA001", "AAA003", "AAA002"]
+    assert values == [60.0, 30.0, 2.0]
+
+
 def test_generate_graph_supports_non_bar_chart_kinds(tmp_path, monkeypatch):
     service = LocalDataService(export_dir=tmp_path / "exports")
     alarm_df = pd.DataFrame([

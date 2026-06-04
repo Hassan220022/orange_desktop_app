@@ -1620,7 +1620,14 @@ class LocalDataService:
             labels, values = self._series_from_counts(work, "network_type")
         elif graph_type == "alarm_severity_share":
             labels, values = self._series_from_counts(work, "severity")
-        elif graph_type in {"cleared_vs_uncleared_share", "alarm_clearance_rate_gauge"}:
+        elif graph_type == "alarm_clearance_rate_gauge":
+            if "cleared_on" not in work.columns or len(work) == 0:
+                labels, values = [], []
+            else:
+                cleared = pd.to_datetime(work["cleared_on"], errors="coerce", format="mixed").notna()
+                pct = float(cleared.sum()) / float(len(work)) * 100.0
+                labels, values = ["Clearance"], [pct]
+        elif graph_type == "cleared_vs_uncleared_share":
             if "cleared_on" not in work.columns:
                 labels, values = [], []
             else:
@@ -1715,6 +1722,23 @@ class LocalDataService:
             times = pd.to_datetime(df["power_occurred_on"], errors="coerce", format="mixed").dt.date
             labels = [str(value) for value in times.fillna("").tolist()]
             values = pd.to_numeric(df.get(minute_col, pd.Series(dtype=float)), errors="coerce").fillna(0).astype(float).tolist()
+        elif graph_type == "top_sites_by_backup_failure":
+            site_col = "site_id" if "site_id" in df.columns else "site_code"
+            if site_col in df.columns and minute_col in df.columns:
+                # Catalog: "Worst backup sites by low backup time". A short
+                # backup duration means the battery collapsed quickly, which
+                # is the failure case we want to surface. Rank ascending
+                # (shortest backup first).
+                grouped = (
+                    df.groupby(site_col, dropna=False)[minute_col]
+                    .min()
+                    .sort_values(ascending=True)
+                    .head(20)
+                )
+                labels = grouped.index.astype(str).tolist()
+                values = pd.to_numeric(grouped, errors="coerce").fillna(0).astype(float).tolist()
+            else:
+                labels, values = [], []
         else:
             site_col = "site_id" if "site_id" in df.columns else "site_code"
             if site_col in df.columns and minute_col in df.columns:
