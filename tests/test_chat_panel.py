@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import QApplication, QLabel, QTableWidget
 from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
 from alarm_app.ui.panels.chat_panel import (
     ChatPanel,
+    _graph_pixmap_from_result,
     _alarm_row_columns,
     _json_output_text,
     _normalize_message_text,
@@ -504,6 +505,19 @@ def test_message_bubble_width_caps_on_small_and_large_panels():
     assert ChatPanel._message_bubble_width(300, "assistant") == 280
     assert ChatPanel._message_bubble_width(2000, "assistant") == 760
     assert ChatPanel._message_bubble_width(1000, "system") == 760
+
+
+def test_graph_pixmap_can_fall_back_to_base64_payload():
+    _ensure_qapp()
+    result = {
+        "path": "[local path redacted]",
+        "mime_type": "image/png",
+        "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC",
+    }
+
+    pixmap = _graph_pixmap_from_result(result)
+
+    assert not pixmap.isNull()
 
 
 def test_display_graph_type_removes_underscores():

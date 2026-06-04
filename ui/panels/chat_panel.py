@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import html
 import json
 import re
@@ -367,6 +368,22 @@ def _build_upload_context_lines(uploads: list[dict[str, str]]) -> list[str]:
         lines.append(f"{idx}. id={upload['id']} name={_safe_upload_display_name(upload.get('name'))}")
     lines.append("When using an uploaded file, pass its id as source_file_id.")
     return lines
+
+
+def _graph_pixmap_from_result(result: dict) -> QPixmap:
+    path = str(result.get("path") or "")
+    pixmap = QPixmap(path)
+    if not pixmap.isNull():
+        return pixmap
+    encoded = str(result.get("image_base64") or result.get("base64") or "")
+    if not encoded:
+        return pixmap
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except Exception:
+        return pixmap
+    pixmap.loadFromData(payload, str(result.get("mime_type") or "image/png").encode("ascii", errors="ignore"))
+    return pixmap
 
 
 def _output_paths(value: object) -> list[str]:
@@ -1386,7 +1403,9 @@ class ChatPanel(QWidget):
             "Supported export_report report_type values include alarms, bdt_results, photo_manifest, site_alarm_report, accepted_pm_report, and bdt_export.",
             "Use site_alarm_report for uploaded VIP/site lists, accepted_pm_report for uploaded Accepted PM lists, and bdt_export for BDT validation workbook exports.",
             "Use get_site_dossier when the user asks for everything about one site: all alarms, BDT tests, rule details, photos, and discharge content.",
-            "Use generate_graph when the user asks for graphs/charts/trends; it creates a PNG chart from local data.",
+            "Use list_chart_types when the user asks what charts are available or asks vaguely for the best chart type.",
+            "Use generate_graph when the user wants a graph/chart/trend image in chat; it returns PNG image data and structured chart data.",
+            "Use get_computed_report when the user wants chart data, labels, values, or series without creating an image file.",
             "Use query_backup_times when the user asks for backup time, backup duration, or battery hold-up between Power and Down alarms.",
         ]
         attrs = self.__dict__
@@ -2010,7 +2029,7 @@ class ChatPanel(QWidget):
             "points": result.get("points"),
         }))
         path = str(result.get("path") or "")
-        pixmap = QPixmap(path)
+        pixmap = _graph_pixmap_from_result(result)
         if not pixmap.isNull():
             btn_zoom = _make_assistant_button("Zoom Image")
             btn_zoom.clicked.connect(lambda _checked=False, p=path: self._open_image_preview(p, title=Path(p).name))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from .charts import chart_type_description, chart_type_ids
 from .service import LocalDataService
 
 
@@ -279,6 +280,19 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         }),
         "outputSchema": _output_schema(_PAGING_OUTPUT),
     },
+    "list_chart_types": {
+        "description": "List supported chart types for AI/MCP graph generation and computed chart reports.",
+        "inputSchema": _schema({
+            "family": {"type": "string", "description": "Optional chart family filter, such as alarm, backup, bdt, pm, or metadata."},
+            "chart_kind": {"type": "string", "description": "Optional chart kind filter, such as bar, donut, line, heatmap, or scatter."},
+            "renderable_only": {"type": "boolean", "description": "When true, return only charts that can be rendered as images."},
+        }),
+        "outputSchema": _output_schema({
+            "charts": _OBJECT_ROWS,
+            "count": {"type": "integer"},
+            "error": {"type": "string"},
+        }),
+    },
     "generate_graph": {
         "description": (
             "Generate a PNG chart from local alarm or BDT data and return the image path plus chart data."
@@ -286,13 +300,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "inputSchema": _schema({
             "graph_type": {
                 "type": "string",
-                "enum": [
-                    "alarm_category_counts",
-                    "alarm_daily_counts",
-                    "alarm_duration_by_category",
-                    "bdt_verdict_counts",
-                    "bdt_duration_trend",
-                ],
+                "enum": chart_type_ids(renderable_only=True),
             },
             "site_code": {"type": "string"},
             "site_text": {"type": "string"},
@@ -305,8 +313,24 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "graph_type": {"type": "string"},
             "site_code": {"type": "string"},
             "points": {"type": "integer"},
+            "chart_kind": {"type": "string"},
+            "mime_type": {"type": "string"},
+            "image_base64": {"type": "string"},
+            "width": {"type": "integer"},
+            "height": {"type": "integer"},
             "labels": _STRING_LIST,
             "values": _NUMBER_LIST,
+            "series": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "value": {"type": "number"},
+                    },
+                    "additionalProperties": True,
+                },
+            },
             "error": {"type": "string"},
         }),
     },
@@ -315,7 +339,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         "inputSchema": _schema({
             "report_type": {
                 "type": "string",
-                "description": "Supported values: backup_times, alarm_category_counts, alarm_daily_counts, alarm_duration_by_category, bdt_verdict_counts, bdt_duration_trend, ht_meet, ht_weekly_summary, ht_consolidated_history, bdt_export, accepted_pm_report, or chart:* aliases.",
+                "description": f"Supported values: backup_times, {chart_type_description()}, ht_meet, ht_weekly_summary, ht_consolidated_history, bdt_export, accepted_pm_report, or chart:* aliases.",
             },
             "site_code": {"type": "string"},
             "site_id": {"type": "string"},

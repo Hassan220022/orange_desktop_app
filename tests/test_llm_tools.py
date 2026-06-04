@@ -12,6 +12,7 @@ import pandas as pd
 import alarm_app.llm_tools.openrouter_agent as openrouter_agent_mod
 import alarm_app.llm_tools.service as service_mod
 from alarm_app.data import alarm_store
+from alarm_app.llm_tools.charts import CHART_SPECS, chart_type_ids
 from alarm_app.llm_tools.mcp_server import AlarmViewerMcpServer
 from alarm_app.llm_tools.openrouter_agent import (
     CONTEXT_TOO_LARGE_MESSAGE,
@@ -778,6 +779,53 @@ def test_get_computed_report_schema_includes_expected_report_types():
     assert "ht_consolidated_history" in description
     assert "bdt_export" in description
     assert "accepted_pm_report" in description
+
+
+def test_chart_registry_drives_graph_schema_and_discovery_tool():
+    graph_ids = chart_type_ids(renderable_only=True)
+    schema_ids = TOOL_SCHEMAS["generate_graph"]["inputSchema"]["properties"]["graph_type"]["enum"]
+
+    assert schema_ids == graph_ids
+    assert "list_chart_types" in TOOL_SCHEMAS
+    assert "alarm_category_share" in graph_ids
+    assert "alarm_volume_trend" in graph_ids
+    assert "alarm_heatmap_day_hour" in graph_ids
+    assert "backup_time_by_site" in graph_ids
+    assert "bdt_rule_failure_counts" in graph_ids
+
+    service = LocalDataService()
+    result = dispatch_tool(service, "list_chart_types", {"family": "alarm", "renderable_only": True})
+
+    assert result["count"] >= 1
+    assert all(chart["family"] == "alarm" for chart in result["charts"])
+    assert {chart["chart_id"] for chart in result["charts"]}.issubset(set(graph_ids))
+    assert all(chart["chart_kind"] for chart in result["charts"])
+
+
+def test_chart_registry_contains_all_documented_chart_kinds():
+    kinds = {spec.chart_kind for spec in CHART_SPECS.values()}
+
+    for expected in {
+        "bar",
+        "horizontal_bar",
+        "pie",
+        "donut",
+        "line",
+        "stacked_bar",
+        "histogram",
+        "box",
+        "scatter",
+        "heatmap",
+        "calendar_heatmap",
+        "pareto",
+        "timeline",
+        "gauge",
+        "treemap",
+        "radar",
+        "sankey",
+        "funnel",
+    }:
+        assert expected in kinds
 
 
 def test_get_computed_report_schema_adds_period_and_section_fields():
@@ -2966,13 +3014,77 @@ def test_generate_graph_writes_png_from_alarm_data(tmp_path, monkeypatch):
         {"site_id": "AAA001", "alarm_category": "Down", "occurred_on": "2026-04-02"},
         {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-03"},
     ])
-    monkeypatch.setattr(service, "_alarm_rows_for_sites", lambda site_keys, date_from=None, date_to=None: alarm_df)
+    monkeypatch.setattr(service, "_alarm_rows_for_sites", lambda site_keys, date_from=None, date_to=None, **kwargs: alarm_df)
 
     result = service.generate_graph(graph_type="alarm_category_counts", site_code="AAA001")
 
     assert result["points"] == 2
+    assert result["chart_kind"] == "bar"
+    assert result["mime_type"] == "image/png"
+    assert result["width"] > 0
+    assert result["height"] > 0
+    assert base64.b64decode(result["image_base64"]).startswith(b"\x89PNG")
+    assert result["series"] == [{"label": "Power", "value": 2.0}, {"label": "Down", "value": 1.0}]
     assert Path(result["path"]).exists()
     assert Path(result["path"]).suffix == ".png"
+
+
+def test_generate_graph_supports_non_bar_chart_kinds(tmp_path, monkeypatch):
+    service = LocalDataService(export_dir=tmp_path / "exports")
+    alarm_df = pd.DataFrame([
+        {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-01 03:00:00"},
+        {"site_id": "AAA001", "alarm_category": "Down", "occurred_on": "2026-04-01 04:00:00"},
+        {"site_id": "AAA001", "alarm_category": "Power", "occurred_on": "2026-04-02 04:00:00"},
+    ])
+    monkeypatch.setattr(service, "_alarm_rows_for_sites", lambda site_keys, date_from=None, date_to=None, **kwargs: alarm_df)
+
+    pie = service.generate_graph(graph_type="alarm_category_share", site_code="AAA001")
+    heatmap = service.generate_graph(graph_type="alarm_heatmap_day_hour", site_code="AAA001")
+
+    assert pie["chart_kind"] == "donut"
+    assert base64.b64decode(pie["image_base64"]).startswith(b"\x89PNG")
+    assert heatmap["chart_kind"] == "heatmap"
+    assert heatmap["points"] == 3
+    assert base64.b64decode(heatmap["image_base64"]).startswith(b"\x89PNG")
+
+
+def test_mcp_generate_graph_includes_image_content(tmp_path):
+    image_bytes = TINY_PNG_BYTES
+
+    class _Service:
+        def generate_graph(self, **kwargs):
+            return {
+                "path": str(tmp_path / "chart.png"),
+                "graph_type": kwargs["graph_type"],
+                "chart_kind": "bar",
+                "mime_type": "image/png",
+                "image_base64": base64.b64encode(image_bytes).decode("ascii"),
+                "width": 1,
+                "height": 1,
+                "points": 1,
+                "labels": ["Power"],
+                "values": [1.0],
+                "series": [{"label": "Power", "value": 1.0}],
+            }
+
+    server = AlarmViewerMcpServer(service=_Service())
+
+    response = server.handle({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "generate_graph", "arguments": {"graph_type": "alarm_category_counts"}},
+    })
+
+    content = response["result"]["content"]
+    assert content[0]["type"] == "text"
+    assert content[1] == {
+        "type": "image",
+        "data": base64.b64encode(image_bytes).decode("ascii"),
+        "mimeType": "image/png",
+    }
+    assert response["result"]["structuredContent"]["path"] == "[local path redacted]"
+    assert response["result"]["structuredContent"]["image_base64"] == base64.b64encode(image_bytes).decode("ascii")
 
 
 def test_alarm_source_selection_skips_empty_primary_dict_results(tmp_path, monkeypatch):

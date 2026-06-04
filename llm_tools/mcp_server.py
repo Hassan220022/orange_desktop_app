@@ -51,13 +51,26 @@ class AlarmViewerMcpServer:
             arguments = params.get("arguments") if "arguments" in params else {}
             result = dispatch_tool(self.service, name, arguments)
             safe_result = _model_safe_tool_result(result)
+            content = [
+                {
+                    "type": "text",
+                    "text": json.dumps(safe_result, default=str, ensure_ascii=False),
+                }
+            ]
+            if (
+                name == "generate_graph"
+                and isinstance(result, dict)
+                and isinstance(result.get("image_base64"), str)
+                and isinstance(result.get("mime_type"), str)
+                and not result.get("error")
+            ):
+                content.append({
+                    "type": "image",
+                    "data": result["image_base64"],
+                    "mimeType": result["mime_type"],
+                })
             return _response(request_id, {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(safe_result, default=str, ensure_ascii=False),
-                    }
-                ],
+                "content": content,
                 "structuredContent": safe_result,
                 "isError": isinstance(result, dict) and "error" in result,
             })
