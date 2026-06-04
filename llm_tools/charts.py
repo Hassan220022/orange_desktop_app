@@ -96,10 +96,19 @@ _CHARTS: tuple[ChartSpec, ...] = (
     ChartSpec("daily_backup_failure_calendar", "Daily Backup Failure Calendar", "calendar_heatmap", "backup", "Backup failures by calendar day.", renderable=True, computed_report=True),
 
     # BDT charts with verified aggregators.
-    ChartSpec("bdt_rule_failure_counts", "BDT Rule Failure Counts", "horizontal_bar", "bdt", "Most failed BDT validation rules.", renderable=True, computed_report=True),
-    ChartSpec("bdt_rule_failure_by_site", "BDT Rule Failure By Site", "horizontal_bar", "bdt", "Sites failing the most BDT rules.", renderable=True, computed_report=True),
-    ChartSpec("bdt_failure_heatmap_rule_site", "BDT Failure Heatmap Rule Site", "heatmap", "bdt", "BDT rule failures by site.", renderable=True, computed_report=True),
-    ChartSpec("bdt_rule_failure_pareto", "BDT Rule Failure Pareto", "pareto", "bdt", "BDT rules ranked by failure impact.", renderable=True, computed_report=True),
+    ChartSpec("bdt_verdict_counts", "BDT Verdict Counts", "bar", "bdt", "Count BDT validation verdicts.", renderable=True, computed_report=True),
+    ChartSpec("bdt_duration_trend", "BDT Duration Trend", "bar", "bdt", "BDT discharge minutes by test date.", renderable=True, computed_report=True),
+    ChartSpec("bdt_verdict_share", "BDT Verdict Share", "donut", "bdt", "Share of BDT verdicts.", renderable=True, computed_report=True),
+    ChartSpec("bdt_verdict_trend", "BDT Verdict Trend", "stacked_bar", "bdt", "BDT verdicts over time.", renderable=True, computed_report=True),
+
+    # BDT rule-failure charts. Catalogued for discoverability but NOT
+    # opted in: _bdt_chart_series has no rule-result aggregator, so these
+    # would otherwise fall through to the overall_verdict count and report
+    # wrong data. Keep them off until a real rule-aggregation branch exists.
+    ChartSpec("bdt_rule_failure_counts", "BDT Rule Failure Counts", "horizontal_bar", "bdt", "Most failed BDT validation rules."),
+    ChartSpec("bdt_rule_failure_by_site", "BDT Rule Failure By Site", "horizontal_bar", "bdt", "Sites failing the most BDT rules."),
+    ChartSpec("bdt_failure_heatmap_rule_site", "BDT Failure Heatmap Rule Site", "heatmap", "bdt", "BDT rule failures by site."),
+    ChartSpec("bdt_rule_failure_pareto", "BDT Rule Failure Pareto", "pareto", "bdt", "BDT rules ranked by failure impact."),
 
     # PM/HT/site metadata and advanced charts.
     ChartSpec("pm_status_share", "PM Status Share", "donut", "pm", "PM status share."),

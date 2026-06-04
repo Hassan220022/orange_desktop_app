@@ -802,12 +802,16 @@ def test_chart_registry_drives_data_schema_and_discovery_tool():
     assert "alarm_volume_trend" in graph_ids
     assert "alarm_heatmap_day_hour" in graph_ids
     assert "backup_time_by_site" in graph_ids
-    assert "bdt_rule_failure_counts" in graph_ids
+    assert "bdt_verdict_counts" in graph_ids
     # PM and metadata flows have no working aggregators in the service yet;
     # they must not be advertised as renderable in the discovery surface.
     assert "pm_status_share" not in graph_ids
     assert "site_metadata_coverage" not in graph_ids
     assert "alarm_to_site_flow" not in graph_ids
+    # BDT rule-failure charts are catalogued but not opted in: the service
+    # has no rule-result aggregator, so advertising them as renderable
+    # would cause them to fall through to overall_verdict counts.
+    assert "bdt_rule_failure_counts" not in graph_ids
 
     service = LocalDataService()
     result = dispatch_tool(service, "list_chart_types", {"family": "alarm", "renderable_only": True})
@@ -3254,6 +3258,11 @@ def test_chart_widget_package_builds(tmp_path):
     assert "type ChartPoint" not in html
     assert "declare global" not in html
     assert " as HTMLElement" not in html
+    # The donut/pie renderer must scale dash arrays to a 0-100 pathLength
+    # so 0-100 percentages render as proportional slices. Without it
+    # stroke-dasharray="25 75" gets interpreted in raw SVG units against
+    # the actual circumference and produces striped / repeated arcs.
+    assert "pathLength" in html
 
 
 def test_generate_graph_writes_png_from_alarm_data(tmp_path, monkeypatch):

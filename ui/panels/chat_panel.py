@@ -6,6 +6,7 @@ import base64
 import html
 import json
 import re
+import tempfile
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -384,6 +385,26 @@ def _graph_pixmap_from_result(result: dict) -> QPixmap:
         return pixmap
     pixmap.loadFromData(payload, str(result.get("mime_type") or "image/png").encode("ascii", errors="ignore"))
     return pixmap
+
+
+def _materialize_base64_png(result: dict, label: str) -> str:
+    """Write a result's inline base64 image to a temp PNG so preview/zoom
+    handlers have a real file path to load. Returns "" on failure.
+    """
+    encoded = str(result.get("image_base64") or result.get("base64") or "")
+    if not encoded:
+        return ""
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except Exception:
+        return ""
+    safe_label = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(label or "chart"))[:48]
+    path = Path(tempfile.gettempdir()) / f"alarm_viewer_graph_{safe_label}_{id(result) & 0xFFFFF}.png"
+    try:
+        path.write_bytes(payload)
+    except OSError:
+        return ""
+    return str(path)
 
 
 def _output_paths(value: object) -> list[str]:
@@ -2035,18 +2056,26 @@ class ChatPanel(QWidget):
         path = str(result.get("path") or "")
         pixmap = _graph_pixmap_from_result(result)
         if not pixmap.isNull():
-            btn_zoom = _make_assistant_button("Zoom Image")
-            btn_zoom.clicked.connect(lambda _checked=False, p=path: self._open_image_preview(p, title=Path(p).name))
-            preview_width = self._graph_preview_width()
-            preview = QLabel()
-            preview.setObjectName("tool_body")
-            preview.setAlignment(Qt.AlignCenter)
-            preview.setMaximumWidth(preview_width)
-            preview.setPixmap(pixmap.scaledToWidth(preview_width, Qt.SmoothTransformation))
-            preview.setCursor(Qt.PointingHandCursor)
-            preview.mousePressEvent = lambda event, p=path: self._open_image_preview(p, title=Path(p).name)
-            lay.addWidget(preview)
-            lay.addWidget(btn_zoom, 0, Qt.AlignLeft)
+            # If the result has only an inline base64 image (e.g. when the
+            # export path was redacted), materialize it to a temp file so the
+            # zoom button and click handlers can pass a real path to the
+            # preview dialog. Without this the user sees the thumbnail but
+            # "Zoom Image" fails with "Image Missing".
+            if not path or not Path(path).is_file():
+                path = _materialize_base64_png(result, str(result.get("graph_type") or "chart"))
+            if path:
+                btn_zoom = _make_assistant_button("Zoom Image")
+                btn_zoom.clicked.connect(lambda _checked=False, p=path: self._open_image_preview(p, title=Path(p).name))
+                preview_width = self._graph_preview_width()
+                preview = QLabel()
+                preview.setObjectName("tool_body")
+                preview.setAlignment(Qt.AlignCenter)
+                preview.setMaximumWidth(preview_width)
+                preview.setPixmap(pixmap.scaledToWidth(preview_width, Qt.SmoothTransformation))
+                preview.setCursor(Qt.PointingHandCursor)
+                preview.mousePressEvent = lambda event, p=path: self._open_image_preview(p, title=Path(p).name)
+                lay.addWidget(preview)
+                lay.addWidget(btn_zoom, 0, Qt.AlignLeft)
         return frame
 
     def _data_sources_widget(self, result: dict) -> QWidget:
