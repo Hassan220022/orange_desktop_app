@@ -51,9 +51,9 @@ try:
     from alarm_app.bdt.export import build_bdt_export_sheets
     from alarm_app.bdt.parser import BDTData
     from alarm_app.bdt.validator import (
-        BDTTolerances,
         BDT_TOLERANCE_PROFILE_VERSION,
         BDT_TOLERANCE_PROFILE_VERSION_KEY,
+        BDTTolerances,
         ValidationResult,
         bdt_battery_status,
     )
@@ -78,9 +78,9 @@ except ImportError:
     from bdt.export import build_bdt_export_sheets
     from bdt.parser import BDTData
     from bdt.validator import (
-        BDTTolerances,
         BDT_TOLERANCE_PROFILE_VERSION,
         BDT_TOLERANCE_PROFILE_VERSION_KEY,
+        BDTTolerances,
         ValidationResult,
         bdt_battery_status,
     )
@@ -744,7 +744,8 @@ class BdtValidationPanel(QWidget):
                 item = QTableWidgetItem(str(val))
                 item.setTextAlignment(Qt.AlignCenter)
                 if col_name == "Verdict" or col_name.startswith("R"):
-                    item.setForeground(colors.get(val, QColor("#cdd6f4")))
+                    color_key = "Accepted" if str(val).startswith("Accepted (component check") else val
+                    item.setForeground(colors.get(color_key, QColor("#cdd6f4")))
                 elif col_name in {"Insight Status", "Insight Severity"}:
                     severity = str(row_map.get("Insight Severity", "") or "").lower()
                     item.setForeground(insight_colors.get(severity, QColor("#cdd6f4")))
@@ -784,11 +785,15 @@ class BdtValidationPanel(QWidget):
         insight = getattr(res, "battery_backup_insight", None) or {}
         if not isinstance(insight, dict):
             insight = {}
+        validation_context = getattr(res, "validation_context", None) or {}
+        display_overall = ""
+        if isinstance(validation_context, dict):
+            display_overall = str(validation_context.get("display_overall") or "")
         row_map = {
             "File": getattr(res, "filename", "") or "--",
             "Site Code": getattr(res, "site_code", "") or "--",
             "Test Date": getattr(res, "test_date", "") or "--",
-            "Verdict": getattr(res, "overall", "") or "--",
+            "Verdict": display_overall or getattr(res, "overall", "") or "--",
             "Insight Status": insight.get("insight_status") or "--",
             "Insight Severity": insight.get("severity") or "--",
             "Battery Status": bdt_battery_status(getattr(res, "bdt_data", None)),

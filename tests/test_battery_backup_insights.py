@@ -4,6 +4,7 @@ from alarm_app.bdt.validator import RuleResult, ValidationResult
 from alarm_app.core.battery_backup_insights import (
     attach_battery_backup_insight,
     build_battery_backup_insight,
+    resolve_network_battery_context,
 )
 
 
@@ -52,6 +53,71 @@ def test_build_battery_backup_insight_flags_network_bdt_mismatch():
     assert insight["snapshot_freshness"]["network_summary_date"] == "2026-02-01"
     assert insight["snapshot_freshness"]["bdt_test_date"] == "2026-03-01"
     assert "older than the BDT test date" in insight["snapshot_freshness"]["warnings"][0]
+
+
+def test_resolve_network_battery_context_detects_strong_no_backup_triggers():
+    cases = [
+        ({"backup_status": "ZERO BACKUP"}, "ZERO BACKUP"),
+        ({"batt_reason": "Battery stolen"}, "STOLEN"),
+        ({"backup_status": "removed battery"}, "REMOVED"),
+        ({"no_of_strings": 0}, "No of Strings"),
+        ({"backup_minutes": 9.9}, "below"),
+    ]
+
+    for row, expected_reason in cases:
+        context = resolve_network_battery_context([row], min_backup_minutes=10.0)
+
+        assert context.has_network_summary is True
+        assert context.no_usable_backup is True
+        assert any(expected_reason.lower() in reason.lower() for reason in context.reasons)
+
+
+def test_resolve_network_battery_context_treats_missing_battery_type_as_unknown():
+    context = resolve_network_battery_context(
+        [{"battery_type": "", "installed_battery_type": "", "backup_minutes": 10.0, "no_of_strings": 1}],
+        min_backup_minutes=10.0,
+    )
+
+    assert context.has_network_summary is True
+    assert context.no_usable_backup is False
+    assert context.reasons == []
+
+
+def test_resolve_network_battery_context_backup_threshold_boundary():
+    below = resolve_network_battery_context([{"backup_minutes": 9.99}], min_backup_minutes=10.0)
+    at_threshold = resolve_network_battery_context([{"backup_minutes": 10.0}], min_backup_minutes=10.0)
+    above = resolve_network_battery_context([{"backup_minutes": 10.01}], min_backup_minutes=10.0)
+
+    assert below.no_usable_backup is True
+    assert at_threshold.no_usable_backup is False
+    assert above.no_usable_backup is False
+
+
+def test_build_battery_backup_insight_keeps_weak_positive_backup_declared():
+    insight = build_battery_backup_insight(
+        site_row={"site_id": "0167DE", "site_name": "Critical Site"},
+        network_rows=[{
+            "site_id": "0167DE",
+            "battery_type": "Narada",
+            "backup_status": "Good",
+            "backup_minutes": 60,
+            "no_of_strings": 2,
+            "vip": "VIP",
+        }],
+        bdt_payload={
+            "bdt_summary": {"rows": [{}], "returned": 1, "total": 1},
+            "bdt_tests": {"rows": [{"battery_brand": "Narada", "discharge_minutes": 60}], "returned": 1, "total": 1},
+            "validation_runs": {"rows": [{"overall_verdict": "Accepted"}], "returned": 1, "total": 1},
+            "rule_results": {"rows": [], "returned": 0, "total": 0},
+            "photos": {"rows": [{}], "returned": 1, "total": 1},
+        },
+        min_backup_minutes=90,
+    )
+
+    assert insight["network_summary"]["battery_declared"] is True
+    assert insight["insight_status"] == "Critical Site With Weak Backup"
+    assert "weak_measured_backup" in insight["insight_flags"]
+    assert "no_usable_battery_declared" not in insight["insight_flags"]
 
 
 def test_attach_battery_backup_insight_adds_runtime_bdt_validation_context():

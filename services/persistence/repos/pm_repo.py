@@ -360,6 +360,9 @@ def load_all_validation_results(session: Session) -> list:
                     insight = loaded_insight
             except (json.JSONDecodeError, TypeError):
                 pass
+        validation_context = {}
+        if isinstance(insight.get("validation_context"), dict):
+            validation_context = insight["validation_context"]
 
         vr = ValidationResult(
             filename=(
@@ -372,6 +375,7 @@ def load_all_validation_results(session: Session) -> list:
             rules=rule_results,
             bdt_data=bdt_data,
             battery_backup_insight=insight,
+            validation_context=validation_context,
         )
         results.append(vr)
 

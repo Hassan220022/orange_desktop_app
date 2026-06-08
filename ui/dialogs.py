@@ -953,15 +953,26 @@ _TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
     },
     {
         "key": "power_timing_min",
-        "label": "R2 power-alarm timing window",
+        "label": "R2 power-alarm timing/duration tolerance",
         "suffix": " min",
         "decimals": 0,
         "step": 1.0,
         "minimum": 0.0,
         "maximum": 240.0,
-        "help_template": "How many minutes the power-cut alarm can be off from the test start time "
-                         "and still match. Currently {value} min — bigger values forgive "
-                         "clock differences between the site and the alarm system.",
+        "help_template": "How many minutes the power-cut alarm start time, end time, and discharge "
+                         "duration can be off and still match. Currently {value} min — bigger values "
+                         "forgive clock differences between the site and the alarm system.",
+    },
+    {
+        "key": "min_backup_minutes_for_battery_rules",
+        "label": "Minimum Network Summary backup minutes required before battery-dependent BDT rules apply",
+        "suffix": " min",
+        "decimals": 1,
+        "step": 1.0,
+        "minimum": 0.0,
+        "maximum": 240.0,
+        "help_template": "When Network Summary says backup is below {value} min, the validator treats the file "
+                         "as a component check and skips battery-dependent rules.",
     },
     {
         "key": "string_ampere_a",

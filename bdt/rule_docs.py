@@ -45,6 +45,7 @@ def _resolve_context(tolerances: BDTTolerances | None,
         "end_v_min": _fmt(tol.end_voltage_min),
         "end_v_max": _fmt(tol.end_voltage_max),
         "completion_min": _fmt(tol.completion_minutes, 0),
+        "network_min": _fmt(tol.min_backup_minutes_for_battery_rules, 0),
         "sizing_pct": _fmt(tol.sizing_fractional_tolerance * 100.0, 1),
         "sizing_floor": _fmt(tol.sizing_minutes_floor, 0),
         "health": str(health),
@@ -82,6 +83,13 @@ seven battery-dependent checks (R2, R3, R5, R6, R7, R8, R9) are skipped
 because there is no usable battery to test. The whole file is still
 declined, while R1, R10, and R11 remain visible as evidence checks for
 photos, door alarm, and summary consistency.</p>
+<p>If <b>Network Summary</b> strongly declares no usable backup battery
+(zero backup, stolen, removed, zero strings, or backup below
+<b>{network_min} minutes</b>), the BDT can run as a <b>component check</b>.
+Battery-dependent rules are skipped, infrastructure checks still run, and
+the canonical verdict remains one of Accepted, Revise, or Rejected. When
+the infrastructure checks pass, the table can display
+<b>Accepted (component check - no backup battery)</b>.</p>
 <p>The BDT table also shows <b>Insight Status</b> and
 <b>Insight Severity</b>. Those are not extra pass/fail rules. They are
 cross-checks between Network Summary and BDT evidence, used to show
@@ -118,12 +126,17 @@ up with your test.</p>
 <ul>
   <li>The power-cut alarm may start up to <b>{power_min} minutes</b>
   before or after the test start time.</li>
-  <li>The alarm length must match the discharge length within
+  <li>The expected duration comes from the highest reached minute in the
+  BDT discharge table, not from Time Out minus Time In.</li>
+  <li>R2 compares candidate paths: <b>Power &rarr; Down</b> and
+  <b>Power &rarr; Power Cleared</b>.</li>
+  <li>A Power clear can be after handwritten Time Out as long as the
+  Power duration still matches the discharge-duration within
   <b>{power_min} minutes</b>.</li>
-  <li>If no matching alarm is found for the site on the test date,
-  R2 fails (the grid was never actually cut).</li>
+  <li>If no matching Power alarm is found for the site on the test date,
+  R2 fails.</li>
   <li>If the closest alarm is outside the {power_min}-minute window on
-  start time or duration, R2 fails.</li>
+  start time, end time, or duration, R2 fails.</li>
 </ul>
 <p>Wider settings forgive small clock differences between the site and
 the alarm system.</p>
@@ -263,8 +276,11 @@ the site. R10 looks for that door alarm in the alarm history during
 the test window.</p>
 <h3>How R10 decides</h3>
 <ul>
+  <li>Door evidence is strict: <b>alarm_category</b> must be Door, with
+  usable <b>occurred_on</b> and <b>cleared_on</b> timestamps.</li>
   <li>A door alarm at the same site, on the same date, inside the
-  test window &rarr; <b>Accepted</b>.</li>
+  test window &rarr; <b>Accepted</b>; R10 applies no tolerance outside
+  the BDT time window.</li>
   <li>No matching door alarm &rarr; <b>Rejected</b> (a real BDT
   should produce one).</li>
   <li>No alarm history loaded for that site &rarr; <b>N/A</b>.</li>
@@ -281,13 +297,16 @@ R11_HTML: str = """
 matching values on the Summary sheet. The two sheets should agree.</p>
 <h3>What gets compared</h3>
 <ul>
-  <li>Site code and test date.</li>
-  <li>Battery brand, voltage, number of strings, number of batteries.</li>
-  <li>Rectifier brand and number of modules.</li>
-  <li>Start voltage, start current, end voltage, end current.</li>
-  <li>Discharge time in minutes.</li>
-  <li>PLD value.</li>
+  <li><b>Group A</b> infrastructure fields: site code, PLD value,
+  rectifier brand, number of modules, and test date.</li>
+  <li><b>Group B1</b> battery inventory: battery brand, voltage, number
+  of strings, and number of batteries.</li>
+  <li><b>Group B2</b> discharge results: start voltage, start current,
+  end voltage, end current, and discharge time in minutes.</li>
 </ul>
+<p>Real BDT tests check Group A, Group B1, and Group B2. Faulty-present
+battery cases check Group A and Group B1. No-battery and Network Summary
+component-check cases check Group A only.</p>
 <h3>How R11 decides</h3>
 <ul>
   <li><b>0 mismatches</b> &rarr; <b>Accepted</b>.</li>
@@ -346,6 +365,10 @@ that matches the field evidence.</p>
   usable battery setup. This can be caused by blank/no battery type, zero
   strings, zero backup minutes, zero-backup status, or a reason such as
   stolen or removed battery.</li>
+  <li><b>Component Check - No Backup Battery</b> &mdash; Network Summary
+  strongly says no usable backup exists, so BDT validation checks the
+  site infrastructure without treating skipped battery rules as a failed
+  battery discharge test.</li>
   <li><b>Battery Exists - BDT Passed</b> &mdash; Network Summary says the
   battery exists, the latest BDT validation is accepted, and no configured
   mismatch was detected. This is the strongest positive status.</li>
@@ -375,7 +398,10 @@ SETTINGS_HTML: str = """
 <p>Every threshold shown above is read from your saved settings:</p>
 <ul>
   <li>Battery health and the {completion_min}-minute completion target.</li>
-  <li>The {power_min}-minute window for the power alarm (R2).</li>
+  <li>The {power_min}-minute timing and discharge-duration match tolerance for R2.</li>
+  <li>The {network_min} minutes Network Summary backup threshold that
+  decides when battery-dependent BDT rules are skipped for component
+  checks.</li>
   <li>The {string_a} A gap for rectifier vs strings (R3).</li>
   <li>The {start_a} A starting current limit (R5).</li>
   <li>The {end_v_min}\u2013{end_v_max} V end-voltage range (R6).</li>

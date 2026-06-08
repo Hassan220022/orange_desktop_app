@@ -539,9 +539,17 @@ class BDTValidationThread(QThread):
         except ImportError:
             from bdt.validator import validate_bdt
         try:
-            from alarm_app.core.battery_backup_insights import attach_battery_backup_insight
+            from alarm_app.core.battery_backup_insights import (
+                attach_battery_backup_insight,
+                load_network_summary_rows_for_site,
+                resolve_network_battery_context,
+            )
         except ImportError:
-            from core.battery_backup_insights import attach_battery_backup_insight
+            from core.battery_backup_insights import (
+                attach_battery_backup_insight,
+                load_network_summary_rows_for_site,
+                resolve_network_battery_context,
+            )
 
         try:
             total = len(self._files)
@@ -553,6 +561,9 @@ class BDTValidationThread(QThread):
             persist_items: list[dict] = []
             done = 0
             summary_lookup = _loaders._load_external_summary_lookup(self._files)
+            network_backup_rule_min = float(
+                getattr(self._tolerances, "min_backup_minutes_for_battery_rules", 10.0)
+            )
 
             # xlsx parsing is I/O-bound (zip extraction + XML parse); GIL releases on I/O so more threads help.
             workers = min(total, (os.cpu_count() or 1) * 4, 32)
@@ -575,11 +586,28 @@ class BDTValidationThread(QThread):
                 alarm_df = self._load_alarm_df_for_bdt(bdt_data)
                 if self._is_cancelled():
                     return None
+                site_code = str(getattr(bdt_data, "site_code", "") or "").strip()
+                network_rows = []
+                if site_code:
+                    try:
+                        network_rows = load_network_summary_rows_for_site(site_code)
+                    except Exception:
+                        _log.warning(
+                            "Network Summary lookup failed during BDT validation; continuing without network context",
+                            exc_info=True,
+                        )
+                network_context = resolve_network_battery_context(
+                    network_rows,
+                    min_backup_minutes=network_backup_rule_min,
+                )
                 result = validate_bdt(
                     bdt_data, alarm_df,
                     self._tolerance, self._health_pct,
-                    tolerances=self._tolerances)
-                return result, bdt_data
+                    tolerances=self._tolerances,
+                    network_no_usable_backup=network_context.no_usable_backup,
+                    network_backup_minutes=network_context.backup_minutes,
+                    network_backup_reasons=network_context.reasons)
+                return result, bdt_data, network_rows
 
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 futures = {
@@ -608,9 +636,13 @@ class BDTValidationThread(QThread):
                             pct, f"[{done}/{total}]  skipped invalid BDT: {fname}")
                         continue
 
-                    result, bdt_data = payload
+                    result, bdt_data, network_rows = payload
                     try:
-                        attach_battery_backup_insight(result, bdt_data)
+                        attach_battery_backup_insight(
+                            result,
+                            bdt_data,
+                            network_rows=network_rows,
+                        )
                     except Exception as exc:
                         result.battery_backup_insight = {
                             "insight_status": "Insight Unavailable",
@@ -707,6 +739,7 @@ class BDTValidationThread(QThread):
                         params={
                             "tolerance": self._tolerance,
                             "health_pct": self._health_pct,
+                            "min_backup_minutes_for_battery_rules": network_backup_rule_min,
                         },
                     )
 

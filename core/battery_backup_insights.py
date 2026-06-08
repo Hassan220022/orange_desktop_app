@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -229,6 +229,81 @@ def expand_network_summary_row(row: dict[str, Any]) -> dict[str, Any]:
     return jsonable(expanded)
 
 
+@dataclass
+class NetworkBatteryContext:
+    has_network_summary: bool
+    no_usable_backup: bool
+    backup_minutes: float | None = None
+    reasons: list[str] = field(default_factory=list)
+    battery_type_missing: bool = False
+    raw_fields: dict[str, Any] = field(default_factory=dict)
+
+
+def resolve_network_battery_context(
+    network_rows: list[dict[str, Any]] | None,
+    min_backup_minutes: float,
+) -> NetworkBatteryContext:
+    rows = list(network_rows or [])
+    if not rows:
+        return NetworkBatteryContext(has_network_summary=False, no_usable_backup=False)
+
+    row = expand_network_summary_row(rows[0])
+    battery_type = first(
+        row,
+        "battery_type",
+        "Battery Type",
+        "installed_battery_type",
+        "Installed Battery Type",
+        "battery_status",
+    )
+    installed_battery_type = first(row, "installed_battery_type", "Installed Battery Type")
+    backup_status = first(row, "backup_status", "Backup Status")
+    batt_reason = first(row, "batt_reason", "Batt Reason")
+    backup_minutes = coerce_number(first(row, "backup_minutes", "Backup Minutes"))
+    no_of_strings = coerce_int(first(
+        row,
+        "no_of_strings",
+        "No of String",
+        "No of Strings",
+        "No. of Strings",
+        "# of Strings",
+        "num_strings",
+    ))
+
+    reasons: list[str] = []
+    backup_status_text = upper(backup_status)
+    batt_reason_text = upper(batt_reason)
+    if "ZERO BACKUP" in backup_status_text or "ZERO BACKUP" in batt_reason_text:
+        reasons.append("Network Summary backup status is ZERO BACKUP")
+    if "STOLEN" in backup_status_text or "STOLEN" in batt_reason_text:
+        reasons.append("Network Summary battery is marked STOLEN")
+    if "REMOVED" in backup_status_text or "REMOVED" in batt_reason_text:
+        reasons.append("Network Summary battery is marked REMOVED")
+    if no_of_strings is not None and no_of_strings <= 0:
+        reasons.append(f"Network Summary No of Strings is {no_of_strings}")
+    if backup_minutes is not None and backup_minutes < float(min_backup_minutes):
+        reasons.append(
+            f"Network Summary backup minutes {backup_minutes:g} is below "
+            f"{float(min_backup_minutes):g} minutes"
+        )
+
+    return NetworkBatteryContext(
+        has_network_summary=True,
+        no_usable_backup=bool(reasons),
+        backup_minutes=backup_minutes,
+        reasons=reasons,
+        battery_type_missing=is_placeholder(battery_type) and is_placeholder(installed_battery_type),
+        raw_fields={
+            "battery_type": text(battery_type),
+            "installed_battery_type": text(installed_battery_type),
+            "backup_status": text(backup_status),
+            "batt_reason": text(batt_reason),
+            "backup_minutes": backup_minutes,
+            "no_of_strings": no_of_strings,
+        },
+    )
+
+
 def load_network_summary_rows_for_site(site_code: str, *, limit: int = 10) -> list[dict[str, Any]]:
     try:
         from alarm_app.data import catalog_store
@@ -312,15 +387,12 @@ def build_battery_backup_insight(
     if upper(nodal) and upper(nodal) not in {"", "_", "END POINT", "VIP (END POINT )"}:
         critical_markers.append("nodal_or_tx")
 
-    battery_type_missing = is_placeholder(battery_type) and is_placeholder(installed_battery_type)
+    battery_context = resolve_network_battery_context(network_rows, min_backup_minutes=0.0)
+    battery_type_missing = battery_context.battery_type_missing
     declared_no_battery = (
         battery_type_missing
-        or (no_of_strings is not None and no_of_strings <= 0)
+        or battery_context.no_usable_backup
         or (backup_minutes is not None and backup_minutes <= 0)
-        or "ZERO BACKUP" in upper(backup_status)
-        or "ZERO BACKUP" in upper(batt_reason)
-        or "STOLEN" in upper(batt_reason)
-        or "REMOVED" in upper(batt_reason)
     )
     battery_declared = bool(network_rows) and not declared_no_battery
     has_bdt = bool(bdt_summary or bdt_tests or validation_runs)
@@ -638,5 +710,5 @@ def attach_battery_backup_insight(
         min_backup_minutes=min_backup_minutes,
         backup_minutes_tolerance=backup_minutes_tolerance,
     )
-    setattr(validation_result, "battery_backup_insight", insight)
+    validation_result.battery_backup_insight = insight
     return insight

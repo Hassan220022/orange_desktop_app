@@ -190,6 +190,18 @@ def test_bdt_row_map_includes_battery_backup_insight_fields():
     assert row_map["Insight Severity"] == "low"
 
 
+def test_bdt_row_map_prefers_component_check_display_verdict():
+    result = _result("AAA001", "2026-04-19", "Accepted", "a.xlsx")
+    result.validation_context = {
+        "display_overall": "Accepted (component check - no backup battery)",
+    }
+    panel = _panel_for([result])
+
+    row_map = BdtValidationPanel._row_map_for_result(panel, result)
+
+    assert row_map["Verdict"] == "Accepted (component check - no backup battery)"
+
+
 def test_copy_bdt_cell_copies_value_and_updates_status(monkeypatch):
     copied = {}
     panel = _panel_for([])
@@ -390,6 +402,7 @@ class _StatusBar:
 
 def test_run_validation_returns_when_validation_already_running():
     from types import SimpleNamespace
+
     from alarm_app.ui.panels.bdt_validation_panel import BdtValidationPanel
 
     panel = SimpleNamespace(
@@ -412,3 +425,56 @@ def test_bdt_source_mode_help_explains_read_and_save_behavior():
     assert "does not write" in BDT_SOURCE_TOOLTIPS["db"]
     assert "loads saved SQLite validation results first" in BDT_SOURCE_TOOLTIPS["both"]
     assert "saves new validation history to SQLite" in BDT_SOURCE_TOOLTIPS["both"]
+
+
+def test_rule_docs_explain_r2_r10_bdt_semantics():
+    from alarm_app.bdt.rule_docs import rule_doc
+    from alarm_app.bdt.validator import BDTTolerances
+
+    r2 = rule_doc("R2", tolerances=BDTTolerances.defaults())
+    r10 = rule_doc("R10", tolerances=BDTTolerances.defaults())
+
+    assert "discharge-duration" in r2
+    assert "15 minutes" in r2
+    assert "after handwritten Time Out" in r2
+    assert "start time, end time, or duration" in r2
+    assert "Door evidence" in r10
+    assert "alarm_category" in r10
+    assert "no tolerance" in r10
+    assert "occurred_on" in r10
+    assert "cleared_on" in r10
+
+
+def test_parameter_spec_labels_r2_as_duration_match_tolerance():
+    from alarm_app.ui.dialogs import _TOLERANCE_FIELD_DEFS
+
+    spec = next(item for item in _TOLERANCE_FIELD_DEFS if item["key"] == "power_timing_min")
+
+    assert "timing" in spec["label"].lower()
+    assert "duration" in spec["label"].lower()
+    assert "discharge" in spec["help_template"].lower()
+    assert "start time" in spec["help_template"].lower()
+
+
+def test_parameter_spec_includes_network_backup_threshold():
+    from alarm_app.ui.dialogs import _TOLERANCE_FIELD_DEFS
+
+    spec = next(item for item in _TOLERANCE_FIELD_DEFS if item["key"] == "min_backup_minutes_for_battery_rules")
+
+    assert "Network Summary" in spec["label"]
+    assert "battery-dependent" in spec["help_template"]
+
+
+def test_rule_docs_explain_component_check_and_network_backup_threshold():
+    from alarm_app.bdt.rule_docs import rule_doc
+    from alarm_app.bdt.validator import BDTTolerances
+
+    tol = BDTTolerances.defaults()
+    overview = rule_doc("intro", tolerances=tol)
+    r11 = rule_doc("R11", tolerances=tol)
+    settings = rule_doc("settings", tolerances=tol)
+
+    assert "component check" in overview
+    assert "Accepted (component check - no backup battery)" in overview
+    assert "Group A" in r11 and "Group B1" in r11 and "Group B2" in r11
+    assert "10 minutes" in settings

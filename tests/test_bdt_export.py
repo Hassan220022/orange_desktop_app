@@ -91,6 +91,20 @@ class TestBDTExport:
         assert row["End Rectifier Voltage (V)"] == "46.25"
         assert row["Lead-acid SOH (%)"] == "80"
 
+    def test_validation_and_rule_evidence_export_use_display_overall_when_present(self):
+        res = _make_result(
+            overall="Accepted",
+            rules=[RuleResult("R1", "Photos", False, "Revise", "Missing photo")],
+        )
+        res.validation_context = {
+            "display_overall": "Accepted (component check - no backup battery)",
+        }
+
+        sheets = build_bdt_export_sheets([res], health_pct=0.8)
+
+        assert sheets["Validation Results"].iloc[0]["Verdict"] == "Accepted (component check - no backup battery)"
+        assert sheets["Rule Evidence"].iloc[0]["Overall Verdict"] == "Accepted (component check - no backup battery)"
+
     def test_validation_sheet_exports_battery_backup_insight_columns(self):
         res = _make_result()
         res.battery_backup_insight = {

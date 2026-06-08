@@ -214,6 +214,148 @@ class TestBDTValidationThreadFiltering:
         assert observed["summary_data"]["PLVD Value"] == "44"
         assert observed["summary_data"]["Rectifier Brand"] == "Delta 3"
 
+    def test_passes_network_battery_context_to_validation_and_insight(self):
+        from alarm_app.bdt.validator import BDTTolerances
+        from alarm_app.ui.threads import BDTValidationThread
+
+        class _FakeBdtData:
+            def __init__(self, filename):
+                self.filename = filename
+                self.file_path = f"/fake/{filename}"
+                self.site_code = "3868DE"
+                self.site_name = "Network Site"
+                self.test_date = datetime.datetime(2026, 1, 5)
+                self.errors = []
+                self.photos_deferred = False
+                self.discharge_readings = [("30 min", 52.0, 25.0)]
+                self.start_voltage = 54.0
+                self.start_ampere = 23.0
+                self.summary_data = {}
+
+        parsed = _FakeBdtData("good.xlsx")
+        network_rows = [{"site_id": "3868DE", "backup_status": "ZERO BACKUP", "backup_minutes": 0, "no_of_strings": 0}]
+        observed = {}
+
+        def fake_parse(_fp, skip_photos=True):
+            return parsed
+
+        def fake_validate(bdt_data, alarm_df, tolerance, health_pct, *args, **kwargs):
+            observed["validate_kwargs"] = kwargs
+
+            class _Rule:
+                rule_id = "R1"
+                verdict = "Accepted"
+                detail = ""
+
+            class _Res:
+                def __init__(self, b):
+                    self.filename = b.filename
+                    self.site_code = b.site_code
+                    self.test_date = "2026-01-05"
+                    self.overall = "Accepted"
+                    self.rules = [_Rule()]
+                    self.parse_errors = list(b.errors)
+                    self.bdt_data = b
+                    self.validation_context = {}
+
+            return _Res(bdt_data)
+
+        def fake_attach(result, bdt_data, **kwargs):
+            observed["attach_kwargs"] = kwargs
+            result.battery_backup_insight = {"insight_status": "ok", "severity": "low"}
+            return result.battery_backup_insight
+
+        def fake_save_validation_batch(*, items, alarm_df, params, validator_code_ref=None):
+            observed["save_params"] = params
+            return [], [], []
+
+        th = BDTValidationThread(
+            ["/fake/good.xlsx"], None, 0.15, 0.80,
+            tolerances=BDTTolerances.defaults(),
+        )
+        captured = {}
+        th.finished.connect(lambda results, by_site: captured.update(
+            {"results": results, "by_site": by_site}))
+
+        with patch("alarm_app.bdt.parser.parse_bdt_file", side_effect=fake_parse), \
+             patch("alarm_app.bdt.validator.validate_bdt", side_effect=fake_validate), \
+             patch("alarm_app.core.battery_backup_insights.load_network_summary_rows_for_site", return_value=network_rows), \
+             patch("alarm_app.core.battery_backup_insights.attach_battery_backup_insight", side_effect=fake_attach), \
+             patch("alarm_app.bdt.history.save_validation_batch", side_effect=fake_save_validation_batch), \
+             patch("alarm_app.bdt.parser.load_bdt_photos", side_effect=lambda b: None):
+            th.run()
+
+        assert captured["results"][0].filename == "good.xlsx"
+        assert observed["validate_kwargs"]["network_no_usable_backup"] is True
+        assert observed["validate_kwargs"]["network_backup_minutes"] == 0.0
+        assert "ZERO BACKUP" in " ".join(observed["validate_kwargs"]["network_backup_reasons"])
+        assert observed["attach_kwargs"]["network_rows"] == network_rows
+        assert "min_backup_minutes" not in observed["attach_kwargs"]
+        assert observed["save_params"]["min_backup_minutes_for_battery_rules"] == 10.0
+
+    def test_network_summary_lookup_failure_does_not_skip_validation(self):
+        from alarm_app.ui.threads import BDTValidationThread
+
+        class _FakeBdtData:
+            def __init__(self, filename):
+                self.filename = filename
+                self.file_path = f"/fake/{filename}"
+                self.site_code = "3868DE"
+                self.site_name = "Network Site"
+                self.test_date = datetime.datetime(2026, 1, 5)
+                self.errors = []
+                self.photos_deferred = False
+                self.discharge_readings = [("30 min", 52.0, 25.0)]
+                self.start_voltage = 54.0
+                self.start_ampere = 23.0
+                self.summary_data = {}
+
+        observed = {}
+
+        def fake_validate(bdt_data, alarm_df, tolerance, health_pct, *args, **kwargs):
+            observed["validate_kwargs"] = kwargs
+
+            class _Rule:
+                rule_id = "R1"
+                verdict = "Accepted"
+                detail = ""
+
+            class _Res:
+                def __init__(self, b):
+                    self.filename = b.filename
+                    self.site_code = b.site_code
+                    self.test_date = "2026-01-05"
+                    self.overall = "Accepted"
+                    self.rules = [_Rule()]
+                    self.parse_errors = list(b.errors)
+                    self.bdt_data = b
+                    self.validation_context = {}
+
+            return _Res(bdt_data)
+
+        def fake_attach(result, bdt_data, **kwargs):
+            observed["attach_kwargs"] = kwargs
+            result.battery_backup_insight = {"insight_status": "ok", "severity": "low"}
+            return result.battery_backup_insight
+
+        th = BDTValidationThread(["/fake/good.xlsx"], None, 0.15, 0.80)
+        captured = {}
+        th.finished.connect(lambda results, by_site: captured.update(
+            {"results": results, "by_site": by_site}))
+
+        with patch("alarm_app.bdt.parser.parse_bdt_file", return_value=_FakeBdtData("good.xlsx")), \
+             patch("alarm_app.bdt.validator.validate_bdt", side_effect=fake_validate), \
+             patch("alarm_app.core.battery_backup_insights.load_network_summary_rows_for_site", side_effect=RuntimeError("catalog down")), \
+             patch("alarm_app.core.battery_backup_insights.attach_battery_backup_insight", side_effect=fake_attach), \
+             patch("alarm_app.bdt.history.save_validation_batch", return_value=([], [], [])), \
+             patch("alarm_app.bdt.parser.load_bdt_photos", side_effect=lambda b: None):
+            th.run()
+
+        assert captured["results"][0].filename == "good.xlsx"
+        assert observed["validate_kwargs"]["network_no_usable_backup"] is False
+        assert observed["validate_kwargs"]["network_backup_reasons"] == []
+        assert observed["attach_kwargs"]["network_rows"] == []
+
 
 class TestExternalSummaryHelpers:
     def test_load_external_summary_lookup_maps_alias_headers(self, tmp_path):

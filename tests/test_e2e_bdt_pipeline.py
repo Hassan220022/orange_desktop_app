@@ -159,6 +159,10 @@ class TestBDTParseToPersistToLoadE2E:
                 "severity": "high",
                 "insight_flags": ["network_bdt_mismatch"],
             },
+            validation_context={
+                "validation_mode": "component_check_no_backup_battery",
+                "display_overall": "Accepted (component check - no backup battery)",
+            },
         )
 
         run_payloads, _photo_jobs, failed = save_validation_batch(
@@ -176,6 +180,8 @@ class TestBDTParseToPersistToLoadE2E:
 
         assert loaded_result.battery_backup_insight["insight_status"] == "Network Summary / BDT Mismatch"
         assert loaded_result.battery_backup_insight["severity"] == "high"
+        assert loaded_result.validation_context["validation_mode"] == "component_check_no_backup_battery"
+        assert loaded_result.validation_context["display_overall"] == "Accepted (component check - no backup battery)"
         assert bdt_battery_status(loaded_result.bdt_data) == "No Battery"
 
     def test_photo_persistence_and_load(self, isolated_db):

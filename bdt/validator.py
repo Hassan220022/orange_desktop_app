@@ -78,6 +78,7 @@ class ValidationResult:
     parse_errors: list[str] = field(default_factory=list)
     bdt_data: BDTData | None = None  # parsed source data for detail view
     battery_backup_insight: dict = field(default_factory=dict)
+    validation_context: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -100,6 +101,7 @@ class BDTTolerances:
     end_voltage_min: float = float(BDT_END_VOLTAGE_MIN)
     end_voltage_max: float = float(BDT_END_VOLTAGE_MAX)
     completion_minutes: float = float(BDT_COMPLETION_MINUTES)
+    min_backup_minutes_for_battery_rules: float = 10.0
 
     @classmethod
     def defaults(cls) -> "BDTTolerances":
@@ -139,7 +141,10 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
                  tolerance: float | None = None,
                  health_pct: float = BDT_DEFAULT_HEALTH_PCT,
                  power_timing_tol: float | None = None,
-                 tolerances: BDTTolerances | None = None) -> ValidationResult:
+                 tolerances: BDTTolerances | None = None,
+                 network_no_usable_backup: bool = False,
+                 network_backup_minutes: float | None = None,
+                 network_backup_reasons: list[str] | None = None) -> ValidationResult:
     """Validate a parsed BDT file against alarm data.
 
     Args:
@@ -177,10 +182,30 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
     )
 
     battery_skip_reason = _battery_skip_reason(bdt)
+    network_skip_reasons = list(network_backup_reasons or [])
+    component_check = bool(network_no_usable_backup) and not battery_skip_reason
+    active_r11_groups = {"A", "B1", "B2"}
+    if component_check:
+        active_r11_groups = {"A"}
+        result.validation_context.update({
+            "validation_mode": "component_check_no_backup_battery",
+            "network_no_usable_backup": True,
+            "network_backup_minutes": network_backup_minutes,
+            "network_backup_reasons": network_skip_reasons,
+        })
+    elif battery_skip_reason.startswith("Faulty battery"):
+        active_r11_groups = {"A", "B1"}
+    elif battery_skip_reason:
+        active_r11_groups = {"A"}
 
     result.rules.append(_rule_1_photos(bdt))
-    if battery_skip_reason:
-        result.rules.extend(_skipped_battery_rules(battery_skip_reason))
+    if battery_skip_reason or component_check:
+        skip_reason = battery_skip_reason
+        if component_check:
+            skip_reason = (
+                "Network Summary declares no usable backup battery; component check only"
+            )
+        result.rules.extend(_skipped_battery_rules(skip_reason))
     else:
         result.rules.append(
             _rule_2_power_alarm_match(bdt, alarm_df,
@@ -195,7 +220,7 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
         result.rules.append(
             _rule_9_discharge_current_tolerance(bdt, tolerances=tolerances))
     result.rules.append(_rule_10_door_alarm_match(bdt, alarm_df))
-    result.rules.append(_rule_11_summary_checklist(bdt))
+    result.rules.append(_rule_11_summary_checklist(bdt, active_groups=active_r11_groups))
 
     # Overall verdict
     failed = [r for r in result.rules if r.verdict == "Rejected"]
@@ -220,6 +245,9 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
         result.overall = "Revise"
     else:
         result.overall = "Accepted"
+
+    if component_check and result.overall == "Accepted":
+        result.validation_context["display_overall"] = "Accepted (component check - no backup battery)"
 
     return result
 
@@ -744,9 +772,14 @@ def _rule_2_power_alarm_match(bdt: BDTData,
             detail=f"No matching Power alarm evidence found for site {bdt.site_code}",
         )
 
-    # Check if any Power alarm occurred on the test date
+    power = power.copy()
+    power = power[power["occurred_on"].notna()]
+    if "cleared_on" not in power.columns:
+        power["cleared_on"] = pd.NaT
+    power = _normalize_alarm_datetimes(power)
+
     power_dates = power["occurred_on"].dt.normalize()
-    same_date = power[power_dates == test_date]
+    same_date = power[power_dates == test_date].copy()
     if same_date.empty:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm + Duration",
@@ -755,11 +788,10 @@ def _rule_2_power_alarm_match(bdt: BDTData,
                     f"for site {bdt.site_code}"),
         )
 
-    same_date = same_date.copy()
     same_date["start_diff_min"] = (
         (same_date["occurred_on"] - start_ts).abs() / pd.Timedelta(minutes=1)
     )
-    start_candidates = same_date[same_date["start_diff_min"] <= tol_min]
+    start_candidates = same_date[same_date["start_diff_min"] <= tol_min].copy()
     if start_candidates.empty:
         min_start = same_date["start_diff_min"].min()
         return RuleResult(
@@ -782,6 +814,12 @@ def _rule_2_power_alarm_match(bdt: BDTData,
         start_diff_min = float(power_row["start_diff_min"])
 
         power_clear = power_row.get("cleared_on", pd.NaT)
+        power_clear_upper = power_start + pd.Timedelta(minutes=discharge_minutes + tol_min)
+        clear_usable_for_down = (
+            pd.notna(power_clear)
+            and power_clear >= power_start
+            and power_clear <= power_clear_upper
+        )
         if pd.notna(power_clear) and power_clear >= power_start:
             alarm_duration_min = float(
                 (power_clear - power_start) / pd.Timedelta(minutes=1)
@@ -798,7 +836,7 @@ def _rule_2_power_alarm_match(bdt: BDTData,
                 "duration_diff_min": duration_diff_min,
             })
 
-        if not down.empty:
+        if not down.empty and clear_usable_for_down:
             down_after = down[down["occurred_on"] >= power_start]
             for down_ts in down_after["occurred_on"]:
                 alarm_duration_min = float(
@@ -1392,7 +1430,7 @@ def _summary_lookup_value(summary_data: dict[str, str], canonical_key: str) -> s
     return ""
 
 
-def _rule_11_summary_checklist(bdt: BDTData) -> RuleResult:
+def _rule_11_summary_checklist(bdt: BDTData, active_groups: set[str] | None = None) -> RuleResult:
     """R11: Cross-check key fields between BDT sheet and Summary sheet."""
     if not bdt.summary_data:
         return RuleResult(
@@ -1401,53 +1439,62 @@ def _rule_11_summary_checklist(bdt: BDTData) -> RuleResult:
             detail="No Summary sheet data available",
         )
 
+    active = set(active_groups or {"A", "B1", "B2"})
     checks = [
-        ("Short Code",      str(bdt.site_code or ""),           "Short Code"),
-        ("PLD Value",       str(bdt.pld_value or ""),           "PLVD Value"),
-        ("Rectifier Brand", str(bdt.rectifier_brand or ""),     "Rectifier Brand"),
-        ("Number of Modules", str(bdt.num_modules or ""),       "# of Modules"),
-        ("Battery Brand",   str(bdt.battery_brand or ""),       "Battery Brand"),
-        ("Battery Voltage", str(bdt.battery_voltage or ""),     "Battery Volt"),
-        ("Number of Strings", str(bdt.num_strings or ""),       "No of String"),
-        ("Number of Batteries", str(bdt.num_batteries or ""),   "No of Batteries"),
-        ("Start Voltage",   str(bdt.start_voltage or ""),       "Start Volt"),
-        ("Start Amp",       str(bdt.start_ampere or ""),        "Start Amp"),
-        ("End Voltage",     str(bdt.end_voltage or ""),         "End Volt"),
-        ("End Amp",         str(bdt.end_ampere or ""),          "End Amp"),
-        ("Discharge Time (mins)", str(bdt.discharge_minutes or ""), "Discharge time( Mins)"),
-        ("Test Date",       (bdt.test_date.strftime("%Y-%m-%d") if bdt.test_date else ""), "Test Date"),
+        ("A", "Short Code",      str(bdt.site_code or ""),           "Short Code"),
+        ("A", "PLD Value",       str(bdt.pld_value or ""),           "PLVD Value"),
+        ("A", "Rectifier Brand", str(bdt.rectifier_brand or ""),     "Rectifier Brand"),
+        ("A", "Number of Modules", str(bdt.num_modules or ""),       "# of Modules"),
+        ("B1", "Battery Brand",   str(bdt.battery_brand or ""),       "Battery Brand"),
+        ("B1", "Battery Voltage", str(bdt.battery_voltage or ""),     "Battery Volt"),
+        ("B1", "Number of Strings", str(bdt.num_strings or ""),       "No of String"),
+        ("B1", "Number of Batteries", str(bdt.num_batteries or ""),   "No of Batteries"),
+        ("B2", "Start Voltage",   str(bdt.start_voltage or ""),       "Start Volt"),
+        ("B2", "Start Amp",       str(bdt.start_ampere or ""),        "Start Amp"),
+        ("B2", "End Voltage",     str(bdt.end_voltage or ""),         "End Volt"),
+        ("B2", "End Amp",         str(bdt.end_ampere or ""),          "End Amp"),
+        ("B2", "Discharge Time (mins)", str(bdt.discharge_minutes or ""), "Discharge time( Mins)"),
+        ("A", "Test Date",       (bdt.test_date.strftime("%Y-%m-%d") if bdt.test_date else ""), "Test Date"),
     ]
 
     mismatches = []
+    group_checked = {"A": 0, "B1": 0, "B2": 0}
+    group_mismatches = {"A": 0, "B1": 0, "B2": 0}
     checked = 0
-    for display_name, bdt_val, summary_key in checks:
+    for group, display_name, bdt_val, summary_key in checks:
+        if group not in active:
+            continue
         summary_val = _summary_lookup_value(bdt.summary_data, summary_key)
         if display_name == "PLD Value" and not _has_numeric_comparison_value(bdt_val):
             continue
         if not bdt_val and not summary_val:
             continue  # skip fields missing from both
         checked += 1
+        group_checked[group] += 1
         if not _values_match(bdt_val, summary_val, display_name):
+            group_mismatches[group] += 1
             mismatches.append(f"{display_name}: BDT='{bdt_val}' vs Summary='{summary_val}'")
 
+    group_detail = _r11_group_detail(group_checked, group_mismatches, active)
     if checked == 0:
         return RuleResult(
             rule_id="R11", rule_name="Summary Checklist",
             passed=None, verdict="N/A",
-            detail="No comparable fields found between BDT and Summary sheets",
+            detail=f"No comparable fields found between BDT and Summary sheets; {group_detail}",
         )
 
     if not mismatches:
         return RuleResult(
             rule_id="R11", rule_name="Summary Checklist",
             passed=True, verdict="Accepted",
-            detail=f"All {checked} checklist fields match between BDT and Summary sheets",
+            detail=f"All {checked} active checklist fields match between BDT and Summary sheets; {group_detail}",
         )
 
     n = len(mismatches)
     detail = f"{n} mismatch(es): " + "; ".join(mismatches[:5])
     if n > 5:
         detail += f" (and {n - 5} more)"
+    detail += f"; {group_detail}"
 
     if n >= 4:
         return RuleResult(
@@ -1460,3 +1507,19 @@ def _rule_11_summary_checklist(bdt: BDTData) -> RuleResult:
         passed=False, verdict="Revise",
         detail=detail,
     )
+
+
+def _r11_group_detail(group_checked: dict[str, int], group_mismatches: dict[str, int], active: set[str]) -> str:
+    labels = {"A": "Group A", "B1": "Group B1", "B2": "Group B2"}
+    parts = []
+    for group in ("A", "B1", "B2"):
+        label = labels[group]
+        if group in active:
+            matched = group_checked[group] - group_mismatches[group]
+            parts.append(
+                f"{label}: checked {group_checked[group]}, matched {matched}, "
+                f"mismatches {group_mismatches[group]}"
+            )
+        else:
+            parts.append(f"skipped {label} (inactive for this battery context)")
+    return "; ".join(parts)

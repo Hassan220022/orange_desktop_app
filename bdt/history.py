@@ -682,6 +682,10 @@ def save_validation_batch(
                         insight = getattr(validation_result, "battery_backup_insight", {}) or {}
                         if not isinstance(insight, dict):
                             insight = {}
+                        validation_context = getattr(validation_result, "validation_context", {}) or {}
+                        if isinstance(validation_context, dict) and validation_context:
+                            insight = dict(insight)
+                            insight["validation_context"] = validation_context
 
                         pm_run = _save_pm_run(
                             session,

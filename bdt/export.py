@@ -152,6 +152,15 @@ _VALIDATION_EXPORT_HEADERS = [
 ]
 
 
+def _display_overall(res) -> str:
+    context = getattr(res, "validation_context", None) or {}
+    if isinstance(context, dict):
+        display = str(context.get("display_overall") or "").strip()
+        if display:
+            return display
+    return str(getattr(res, "overall", "") or "--")
+
+
 def _clean_text(value: Any) -> str:
     if value is None:
         return ""
@@ -570,7 +579,7 @@ def build_validation_rows(results, health_pct: float | None = None) -> list[dict
             "File": str(getattr(res, "filename", "") or "--"),
             "Site Code": str(getattr(res, "site_code", "") or "--"),
             "Test Date": str(getattr(res, "test_date", "") or "--"),
-            "Verdict": str(getattr(res, "overall", "") or "--"),
+            "Verdict": _display_overall(res),
             "Verdict Reason": _aggregate_verdict_reason(rules),
             "Insight Status": str(insight.get("insight_status") or ""),
             "Insight Severity": str(insight.get("severity") or ""),
@@ -619,7 +628,7 @@ def build_rule_evidence_rows(results) -> list[dict[str, str]]:
             "File": str(getattr(res, "filename", "") or "--"),
             "Site Code": str(getattr(res, "site_code", "") or "--"),
             "Test Date": str(getattr(res, "test_date", "") or "--"),
-            "Overall Verdict": str(getattr(res, "overall", "") or "--"),
+            "Overall Verdict": _display_overall(res),
         }
         for rule in getattr(res, "rules", []) or []:
             if str(getattr(rule, "verdict", "") or "").strip() in {"Accepted", "Skipped"}:

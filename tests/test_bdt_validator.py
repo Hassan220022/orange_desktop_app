@@ -6,9 +6,9 @@ import pandas as pd
 
 from alarm_app.bdt.parser import BDTData, PhotoSlot
 from alarm_app.bdt.validator import (
-    BDTTolerances,
     BDT_TOLERANCE_PROFILE_VERSION,
     BDT_TOLERANCE_PROFILE_VERSION_KEY,
+    BDTTolerances,
     _find_door_alarms,
     _rule_1_photos,
     _rule_2_power_alarm_match,
@@ -127,14 +127,16 @@ def _power_alarm(
 def _door_alarm(
     site_id: str = "SITE001",
     occurred: str = "2026-01-15 09:00:00",
+    cleared: str | None = None,
     category: str = "Door",
     alarm_name: str = "Door Open",
     file_source: str = "door_alarms.csv",
 ) -> dict:
+    cleared_ts = pd.Timestamp(cleared) if cleared is not None else pd.Timestamp(occurred) + pd.Timedelta(minutes=1)
     return {
         "site_id": site_id,
         "occurred_on": pd.Timestamp(occurred),
-        "cleared_on": pd.Timestamp(occurred) + pd.Timedelta(minutes=1),
+        "cleared_on": cleared_ts,
         "alarm_category": category,
         "alarm_name": alarm_name,
         "_duration_secs": 60.0,
@@ -343,6 +345,168 @@ class TestValidateBDTOverall:
         verdicts = {r.rule_id: r.verdict for r in result.rules}
         assert all(verdicts[r] == "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
         assert result.overall == "Rejected"
+
+    def test_network_no_usable_backup_accepts_component_check_when_infrastructure_passes(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(
+            photo_slots=slots,
+            photo_count=16,
+            site_code="0167DE",
+            pld_value="44",
+            rectifier_brand="Delta 2",
+            num_modules=3,
+            test_date=datetime(2026, 1, 11),
+            battery_brand="Lithium",
+            battery_voltage=48.0,
+            num_strings=2,
+            num_batteries=2,
+            start_voltage=54.10,
+            start_ampere=23.30,
+            end_voltage=48.70,
+            end_ampere=25.80,
+            discharge_minutes=180.0,
+            summary_data={
+                "Short Code": "0167DE",
+                "PLVD Value": "44",
+                "Rectifier Brand": "Delta 2",
+                "# of Modules": "3",
+                "Test Date": "2026-01-11",
+                "Battery Brand": "WRONG",
+                "Start Volt": "99.99",
+            },
+        )
+        alarm_df = _make_alarm_df([
+            _power_alarm(site_id="0167DE", occurred="2026-01-11 08:05:00", cleared="2026-01-11 11:05:00"),
+            _door_alarm(site_id="0167DE", occurred="2026-01-11 08:00:00", cleared="2026-01-11 08:01:00"),
+        ])
+
+        result = validate_bdt(
+            bdt,
+            alarm_df,
+            network_no_usable_backup=True,
+            network_backup_minutes=0.0,
+            network_backup_reasons=["Network Summary backup status is ZERO BACKUP"],
+        )
+
+        verdicts = {r.rule_id: r.verdict for r in result.rules}
+        assert all(verdicts[r] == "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
+        assert verdicts["R1"] == "Accepted"
+        assert verdicts["R10"] == "Accepted"
+        assert verdicts["R11"] == "Accepted"
+        assert result.overall == "Accepted"
+        assert result.validation_context["validation_mode"] == "component_check_no_backup_battery"
+        assert result.validation_context["display_overall"] == "Accepted (component check - no backup battery)"
+        assert result.validation_context["network_backup_minutes"] == 0.0
+        assert "component check only" in next(r.detail for r in result.rules if r.rule_id == "R2")
+        assert "Group A" in next(r.detail for r in result.rules if r.rule_id == "R11")
+        assert "skipped Group B1" in next(r.detail for r in result.rules if r.rule_id == "R11")
+
+    def test_network_component_check_keeps_failed_infrastructure_verdict(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(
+            photo_slots=slots,
+            photo_count=16,
+            summary_data={"Short Code": "SITE001", "Test Date": "2026-01-15"},
+        )
+
+        result = validate_bdt(
+            bdt,
+            _make_alarm_df([]),
+            network_no_usable_backup=True,
+            network_backup_reasons=["Network Summary strings are zero"],
+        )
+
+        assert result.overall == "Rejected"
+        assert result.validation_context["validation_mode"] == "component_check_no_backup_battery"
+        assert "display_overall" not in result.validation_context
+        assert any(r.rule_id == "R10" and r.verdict == "Rejected" for r in result.rules)
+
+    def test_faulty_battery_runs_r11_infrastructure_and_inventory_only(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(
+            photo_slots=slots,
+            photo_count=16,
+            site_code="0167DE",
+            pld_value="44",
+            rectifier_brand="Delta 2",
+            num_modules=3,
+            battery_brand="Lithium",
+            battery_voltage=48.0,
+            num_strings=2,
+            num_batteries=2,
+            start_voltage=54.10,
+            start_ampere=23.30,
+            end_voltage=48.70,
+            end_ampere=25.80,
+            discharge_minutes=180.0,
+            test_date=datetime(2026, 1, 11),
+            summary_data={
+                "Short Code": "0167DE",
+                "PLVD Value": "44",
+                "Rectifier Brand": "Delta 2",
+                "# of Modules": "3",
+                "Battery Brand": "Lithium",
+                "Battery Volt": "48",
+                "No of String": "2",
+                "No of Batteries": "2",
+                "Start Volt": "99.99",
+                "Reason for Stop BDT": "Faulty battery",
+                "Test Date": "2026-01-11",
+            },
+        )
+        alarm_df = _make_alarm_df([_power_alarm(), _door_alarm()])
+
+        result = validate_bdt(bdt, alarm_df)
+
+        r11 = next(r for r in result.rules if r.rule_id == "R11")
+        assert result.overall == "Rejected"
+        assert r11.verdict == "Accepted"
+        assert "Group A" in r11.detail
+        assert "Group B1" in r11.detail
+        assert "skipped Group B2" in r11.detail
+
+    def test_no_battery_runs_r11_infrastructure_only(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(
+            photo_slots=slots,
+            photo_count=16,
+            site_code="0167DE",
+            pld_value="44",
+            rectifier_brand="Delta 2",
+            num_modules=3,
+            num_batteries=0,
+            battery_brand="Lithium",
+            summary_data={
+                "Short Code": "0167DE",
+                "PLVD Value": "44",
+                "Rectifier Brand": "Delta 2",
+                "# of Modules": "3",
+                "Test Date": "2026-01-15",
+                "Battery Brand": "WRONG",
+                "No of Batteries": "99",
+            },
+        )
+        alarm_df = _make_alarm_df([_power_alarm(), _door_alarm()])
+
+        result = validate_bdt(bdt, alarm_df)
+
+        r11 = next(r for r in result.rules if r.rule_id == "R11")
+        assert result.overall == "Rejected"
+        assert r11.verdict == "Accepted"
+        assert "Group A" in r11.detail
+        assert "skipped Group B1" in r11.detail
 
     def test_battery_status_labels_battery_state(self):
         assert bdt_battery_status(_make_bdt()) == "Has Battery"
@@ -702,6 +866,67 @@ class TestR2PowerAlarmMatch:
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
+
+    def test_power_clear_after_time_out_within_discharge_duration_is_accepted(self):
+        bdt = _make_bdt(
+            time_in="08:00",
+            time_out="09:30",
+            discharge_readings=[
+                ("30 min", 52.0, 30.0),
+                ("60 min", 51.0, 30.5),
+                ("120 min", 46.0, 31.0),
+            ],
+            discharge_minutes=120.0,
+        )
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:00:00"),
+            _power_alarm(occurred="2026-01-15 08:05:00", cleared="2026-01-15 10:05:00"),
+        ])
+
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Accepted"
+
+    def test_power_clear_far_beyond_discharge_duration_remains_revise(self):
+        bdt = _make_bdt(
+            time_in="08:00",
+            time_out="09:30",
+            discharge_readings=[
+                ("30 min", 52.0, 30.0),
+                ("60 min", 51.0, 30.5),
+                ("120 min", 46.0, 31.0),
+            ],
+            discharge_minutes=120.0,
+        )
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:00:00"),
+            _power_alarm(occurred="2026-01-15 08:05:00", cleared="2026-01-15 11:30:00"),
+        ])
+
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Revise"
+
+    def test_power_clear_far_beyond_discharge_duration_does_not_extend_down_interval(self):
+        bdt = _make_bdt(
+            time_in="08:00",
+            time_out="10:30",
+            discharge_readings=[
+                ("30 min", 52.0, 30.0),
+                ("60 min", 51.0, 30.5),
+                ("120 min", 46.0, 31.0),
+            ],
+            discharge_minutes=120.0,
+        )
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:00:00"),
+            _power_alarm(occurred="2026-01-15 08:05:00", cleared="2026-01-15 11:30:00"),
+            _down_alarm(occurred="2026-01-15 10:03:00"),
+        ])
+
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Revise"
 
     def test_variable_tolerance_override(self):
         """Custom tolerance overrides the constant."""
@@ -1357,6 +1582,106 @@ class TestR11SummaryChecklist:
         r = _rule_11_summary_checklist(bdt)
         assert r.verdict == "Accepted"
 
+    def test_active_group_a_only_skips_battery_inventory_and_discharge_groups(self):
+        bdt = _make_bdt(
+            site_code="0167DE",
+            pld_value="44",
+            rectifier_brand="Delta 2",
+            num_modules=3,
+            battery_brand="Lithium",
+            start_voltage=54.10,
+            summary_data={
+                "Short Code": "0167DE",
+                "PLVD Value": "44",
+                "Rectifier Brand": "Delta 2",
+                "# of Modules": "3",
+                "Battery Brand": "WRONG",
+                "Start Volt": "99.99",
+                "Test Date": "2026-01-15",
+            },
+        )
+
+        r = _rule_11_summary_checklist(bdt, active_groups={"A"})
+
+        assert r.verdict == "Accepted"
+        assert "Group A" in r.detail
+        assert "skipped Group B1" in r.detail
+        assert "skipped Group B2" in r.detail
+        assert "Battery Brand" not in r.detail
+
+    def test_active_groups_a_b1_skip_discharge_results_only(self):
+        bdt = _make_bdt(
+            site_code="0167DE",
+            pld_value="44",
+            rectifier_brand="Delta 2",
+            num_modules=3,
+            battery_brand="Lithium",
+            battery_voltage=48.0,
+            num_strings=2,
+            num_batteries=2,
+            start_voltage=54.10,
+            summary_data={
+                "Short Code": "0167DE",
+                "PLVD Value": "44",
+                "Rectifier Brand": "Delta 2",
+                "# of Modules": "3",
+                "Battery Brand": "Lithium",
+                "Battery Volt": "48",
+                "No of String": "2",
+                "No of Batteries": "2",
+                "Start Volt": "99.99",
+                "Test Date": "2026-01-15",
+            },
+        )
+
+        r = _rule_11_summary_checklist(bdt, active_groups={"A", "B1"})
+
+        assert r.verdict == "Accepted"
+        assert "Group A" in r.detail
+        assert "Group B1" in r.detail
+        assert "skipped Group B2" in r.detail
+        assert "Start Voltage" not in r.detail
+
+    def test_active_group_threshold_applies_only_to_checked_fields(self):
+        bdt = _make_bdt(
+            site_code="0167DE",
+            pld_value="44",
+            rectifier_brand="Delta 2",
+            num_modules=3,
+            battery_brand="Lithium",
+            battery_voltage=48.0,
+            num_strings=2,
+            num_batteries=2,
+            start_voltage=54.10,
+            start_ampere=23.30,
+            end_voltage=48.70,
+            end_ampere=25.80,
+            discharge_minutes=180.0,
+            test_date=datetime(2026, 1, 11),
+            summary_data={
+                "Short Code": "0167DE",
+                "PLVD Value": "44",
+                "Rectifier Brand": "Delta 2",
+                "# of Modules": "3",
+                "Battery Brand": "WRONG",
+                "Battery Volt": "99",
+                "No of String": "99",
+                "No of Batteries": "99",
+                "Start Volt": "99.99",
+                "Start Amp": "99.99",
+                "End Volt": "99.99",
+                "End Amp": "99.99",
+                "Discharge time( Mins)": "999",
+                "Test Date": "2026-01-11",
+            },
+        )
+
+        a_only = _rule_11_summary_checklist(bdt, active_groups={"A"})
+        all_groups = _rule_11_summary_checklist(bdt)
+
+        assert a_only.verdict == "Accepted"
+        assert all_groups.verdict == "Rejected"
+
 
 # ── R3 String vs Bus Bar Ampere ────────────────────────────────
 
@@ -1483,6 +1808,7 @@ class TestBDTTolerancesDataclass:
         assert tol.end_voltage_min == 45.0
         assert tol.end_voltage_max == 47.0
         assert tol.completion_minutes == 180.0
+        assert tol.min_backup_minutes_for_battery_rules == 10.0
 
     def test_from_dict_overrides_defaults(self):
         tol = BDTTolerances.from_dict(
@@ -1514,7 +1840,11 @@ class TestBDTTolerancesDataclass:
         assert tol.start_ampere_a == 0.5
 
     def test_to_dict_round_trips(self):
-        tol = BDTTolerances(discharge_current_a=2.5, string_ampere_a=4.5)
+        tol = BDTTolerances(
+            discharge_current_a=2.5,
+            string_ampere_a=4.5,
+            min_backup_minutes_for_battery_rules=12.5,
+        )
         roundtrip = BDTTolerances.from_dict(tol.to_dict())
         assert roundtrip == tol
 
