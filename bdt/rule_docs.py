@@ -112,24 +112,29 @@ files where the photos look fabricated.</p>
 
 R2_HTML: str = """
 <h2>R2 &mdash; Power Alarm + Duration</h2>
-<p>Checks that a power-cut alarm exists in the alarm history and lines
-up with your test.</p>
+<p>Checks that usable power-cut evidence exists during the technician
+onsite window. The onsite window comes from <b>Time In</b> to
+<b>Time Out</b>; it is not treated as the exact electrical discharge
+start and end.</p>
 <h3>How R2 decides</h3>
 <ul>
-  <li>The power-cut alarm may start up to <b>{power_min} minutes</b>
-  before or after the test start time.</li>
-  <li>The alarm length must match the discharge length within
-  <b>{power_min} minutes</b>.</li>
-  <li>If no matching alarm is found for the site on the test date,
-  R2 fails (the grid was never actually cut).</li>
-  <li>If the closest alarm is outside the {power_min}-minute window on
-  start time or duration, R2 fails.</li>
+  <li>The expected duration comes from the highest reached minute in the
+  BDT discharge table, not from Time Out minus Time In.</li>
+  <li>R2 looks for same-site Power alarms inside the onsite window.
+  Power alarms before the Door evidence are ignored.</li>
+  <li>Power alarms must have valid start and clear times, and their
+  intervals must not overlap each other.</li>
+  <li>R2 compares candidate paths: <b>Power &rarr; Down</b> and
+  <b>Power &rarr; Power Cleared</b>. A Down alarm counts only when it is
+  inside the same Power interval.</li>
+  <li>The closest duration candidate wins. The candidate alarm duration
+  must match the BDT discharge-duration within <b>{power_min} minutes</b>
+  (default 5 minutes).</li>
 </ul>
-<p>Wider settings forgive small clock differences between the site and
-the alarm system.</p>
+<p>If there is no Power after Door, no usable end candidate, overlapping
+Power intervals, or the closest duration is outside tolerance, R2 returns
+<b>Revise</b> for manual review.</p>
 """
-
-
 R3_HTML: str = """
 <h2>R3 &mdash; Rectifier vs String Current</h2>
 <p>Compares the rectifier's main current reading against the total of
@@ -258,23 +263,24 @@ changed mid-test.</p>
 
 R10_HTML: str = """
 <h2>R10 &mdash; Door Alarm</h2>
-<p>A BDT requires opening the cabinet, which raises a door alarm at
-the site. R10 looks for that door alarm in the alarm history during
-the test window.</p>
+<p>A BDT requires opening the cabinet, which raises a Door alarm at the
+site. R10 is mandatory evidence that somebody physically attended the
+site during the technician onsite window.</p>
 <h3>How R10 decides</h3>
 <ul>
-  <li>A door alarm at the same site, on the same date, inside the
-  test window &rarr; <b>Accepted</b>.</li>
-  <li>No matching door alarm &rarr; <b>Rejected</b> (a real BDT
-  should produce one).</li>
-  <li>No alarm history loaded for that site &rarr; <b>N/A</b>.</li>
-  <li>The test date can't be read from the BDT sheet &rarr;
-  <b>Revise</b>.</li>
+  <li>R10 only accepts same-site alarms where <b>alarm_category</b> is
+  exactly <b>Door</b>. Door words in the alarm name or file source do not
+  count for this strict evidence rule.</li>
+  <li>Door <b>occurred_on</b> must be inside Time In &rarr; Time Out.</li>
+  <li>Door <b>cleared_on</b> must also be inside Time In &rarr; Time Out.</li>
+  <li>There is no tolerance for R10. Missing or invalid Door
+  cleared_on does not pass.</li>
+  <li>The Door times do not need to equal Time In or Time Out exactly;
+  full containment inside the onsite window is enough.</li>
 </ul>
-<p>This check helps catch tests that exist only on paper.</p>
+<p>If no valid Door interval is found, R10 is <b>Rejected</b>, which
+rejects the whole BDT file.</p>
 """
-
-
 R11_HTML: str = """
 <h2>R11 &mdash; Summary Sheet Match</h2>
 <p>Cross-checks the values written on the BDT sheets against the
@@ -375,7 +381,7 @@ SETTINGS_HTML: str = """
 <p>Every threshold shown above is read from your saved settings:</p>
 <ul>
   <li>Battery health and the {completion_min}-minute completion target.</li>
-  <li>The {power_min}-minute window for the power alarm (R2).</li>
+  <li>The {power_min}-minute discharge-duration match tolerance for R2.</li>
   <li>The {string_a} A gap for rectifier vs strings (R3).</li>
   <li>The {start_a} A starting current limit (R5).</li>
   <li>The {end_v_min}\u2013{end_v_max} V end-voltage range (R6).</li>

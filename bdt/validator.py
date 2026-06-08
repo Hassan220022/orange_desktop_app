@@ -51,9 +51,10 @@ except ImportError:
     from core.battery_topology import battery_topology_from_bdt
 
 
-BDT_TOLERANCE_PROFILE_VERSION = 2
+BDT_TOLERANCE_PROFILE_VERSION = 3
 BDT_TOLERANCE_PROFILE_VERSION_KEY = "_profile_version"
 _LEGACY_START_AMPERE_DEFAULT_A = 0.5
+_LEGACY_POWER_TIMING_DEFAULT_MIN = 15.0
 _LEGACY_FLOAT_EPSILON = 1e-6
 
 
@@ -88,6 +89,8 @@ class BDTTolerances:
     lives here so the UI can edit them and the validator can stay pure.
     Fractional fields are dimensionless ratios; ``*_a`` are amps,
     ``*_v`` are volts, and ``*_minutes``/``*_min`` are minutes.
+    ``power_timing_min`` is the persisted legacy name for the R2
+    discharge-duration match tolerance.
     """
     sizing_fractional_tolerance: float = BDT_DEFAULT_TOLERANCE
     sizing_minutes_floor: float = float(BDT_SIZING_TOLERANCE_MINUTES)
@@ -112,7 +115,14 @@ class BDTTolerances:
         defaults = cls()
         if not data:
             return defaults
-        has_profile_version = BDT_TOLERANCE_PROFILE_VERSION_KEY in data
+        raw_profile_version = data.get(BDT_TOLERANCE_PROFILE_VERSION_KEY)
+        has_profile_version = raw_profile_version is not None
+        try:
+            profile_version = float(raw_profile_version) if has_profile_version else None
+        except (TypeError, ValueError):
+            profile_version = None
+        is_pre_v3_profile = profile_version is None or profile_version < 3
+
         kwargs: dict[str, float] = {}
         for fld in defaults.__dataclass_fields__:
             if fld in data and data[fld] is not None:
@@ -126,6 +136,12 @@ class BDTTolerances:
             and abs(kwargs["start_ampere_a"] - _LEGACY_START_AMPERE_DEFAULT_A) <= _LEGACY_FLOAT_EPSILON
         ):
             kwargs.pop("start_ampere_a")
+        if (
+            is_pre_v3_profile
+            and "power_timing_min" in kwargs
+            and abs(kwargs["power_timing_min"] - _LEGACY_POWER_TIMING_DEFAULT_MIN) <= _LEGACY_FLOAT_EPSILON
+        ):
+            kwargs.pop("power_timing_min")
         default_values = {fld: getattr(defaults, fld) for fld in defaults.__dataclass_fields__}
         return cls(**{**default_values, **kwargs})
 
@@ -148,9 +164,9 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
         tolerance: Legacy fractional tolerance for sizing-vs-actual (R8).
             When ``tolerances`` is provided this argument is ignored.
         health_pct: Battery health percentage applied to lead-acid sizing.
-        power_timing_tol: Legacy override for the R2 power-alarm timing
-            window (minutes). When ``tolerances`` is provided this argument
-            is ignored.
+        power_timing_tol: Legacy override for the R2 discharge-duration
+            match tolerance (minutes). When ``tolerances`` is provided this
+            argument is ignored.
         tolerances: Full bundle of user-configurable tolerance thresholds.
             When omitted, defaults from ``BDTTolerances`` are used and
             mixed with any legacy ``tolerance``/``power_timing_tol``
@@ -576,7 +592,8 @@ def _parse_test_time(raw_time) -> time | None:
     return None
 
 
-def _build_test_window(bdt: BDTData) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+def _build_onsite_window(bdt: BDTData) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    """Build the technician onsite window from BDT ``time_in``/``time_out``."""
     if bdt.test_date is None:
         return None, None
     try:
@@ -595,21 +612,22 @@ def _build_test_window(bdt: BDTData) -> tuple[pd.Timestamp | None, pd.Timestamp 
     )
 
     end_time = _parse_test_time(getattr(bdt, "time_out", None))
-    if end_time is not None:
-        end_ts = test_date + pd.Timedelta(
-            hours=end_time.hour,
-            minutes=end_time.minute,
-            seconds=end_time.second,
-        )
-        if end_ts < start_ts:
-            end_ts += pd.Timedelta(days=1)
-        return start_ts, end_ts
+    if end_time is None:
+        return start_ts, None
 
-    discharge_minutes = _max_reached_discharge_minutes(bdt)
-    if discharge_minutes is not None:
-        return start_ts, start_ts + pd.Timedelta(minutes=discharge_minutes)
+    end_ts = test_date + pd.Timedelta(
+        hours=end_time.hour,
+        minutes=end_time.minute,
+        seconds=end_time.second,
+    )
+    if end_ts < start_ts:
+        end_ts += pd.Timedelta(days=1)
+    return start_ts, end_ts
 
-    return start_ts, None
+
+def _build_test_window(bdt: BDTData) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    """Backward-compatible wrapper for the onsite technician window."""
+    return _build_onsite_window(bdt)
 
 
 def _max_reached_discharge_minutes(bdt: BDTData) -> float | None:
@@ -684,12 +702,49 @@ def _lithium_cadence_violation(bdt: BDTData) -> str | None:
     return None
 
 
+def _format_alarm_ts(ts: pd.Timestamp) -> str:
+    try:
+        return pd.Timestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return str(ts)
+
+
+def _strict_door_candidates(
+    alarm_df: pd.DataFrame,
+    site_code: str,
+    window_start: pd.Timestamp,
+    window_end: pd.Timestamp,
+) -> pd.DataFrame:
+    """Strict BDT Door evidence: same site, category Door, full interval onsite."""
+    required_cols = {"site_id", "occurred_on", "cleared_on", "alarm_category"}
+    if not required_cols.issubset(alarm_df.columns):
+        return alarm_df.iloc[0:0]
+
+    alarms = _normalize_alarm_datetimes(alarm_df)
+    site_mask = (
+        alarms["site_id"].astype(str).str.strip().str.upper()
+        == site_code.strip().upper()
+    )
+    door_mask = alarms["alarm_category"].astype(str).str.strip().str.lower() == "door"
+    occurred = alarms["occurred_on"]
+    cleared = alarms["cleared_on"]
+    valid_interval = (
+        occurred.notna()
+        & cleared.notna()
+        & (cleared >= occurred)
+        & (occurred >= window_start)
+        & (occurred <= window_end)
+        & (cleared >= window_start)
+        & (cleared <= window_end)
+    )
+    return alarms[site_mask & door_mask & valid_interval].copy()
+
+
 def _rule_2_power_alarm_match(bdt: BDTData,
                                alarm_df: pd.DataFrame | None,
                                tol_override: float | None = None) -> RuleResult:
-    """R2: Unified Power timing + duration check (Power→Cleared or Power→Down)."""
+    """R2: Rank Power→Down and Power→Cleared durations against BDT discharge."""
     tol_min = float(tol_override if tol_override is not None else BDT_POWER_TIMING_TOLERANCE_MIN)
-    tol = pd.Timedelta(minutes=tol_min)
 
     if alarm_df is None or alarm_df.empty:
         return RuleResult(
@@ -704,15 +759,6 @@ def _rule_2_power_alarm_match(bdt: BDTData,
             detail="Cannot check Power alarm evidence: no test date found in BDT file",
         )
 
-    try:
-        test_date = pd.Timestamp(bdt.test_date).normalize()
-    except Exception:
-        return RuleResult(
-            rule_id="R2", rule_name="Power Alarm + Duration",
-            passed=False, verdict="Revise",
-            detail=f"Cannot check Power alarm evidence: invalid test date {bdt.test_date!r}",
-        )
-
     discharge_minutes = _max_reached_discharge_minutes(bdt)
     if discharge_minutes is None:
         return RuleResult(
@@ -722,19 +768,32 @@ def _rule_2_power_alarm_match(bdt: BDTData,
                     "(need at least one row with V or A reading)"),
         )
 
-    start_time = _parse_test_time(bdt.time_in)
-    if start_time is None:
+    window_start, window_end = _build_onsite_window(bdt)
+    if window_start is None:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm + Duration",
             passed=False, verdict="Revise",
             detail=("Cannot validate alarm timing: invalid time_in "
                     "(expected HH:MM, HH:MM:SS, or AM/PM format)"),
         )
+    if window_end is None:
+        return RuleResult(
+            rule_id="R2", rule_name="Power Alarm + Duration",
+            passed=False, verdict="Revise",
+            detail=("Cannot validate alarm timing: invalid time_out "
+                    "(expected HH:MM, HH:MM:SS, or AM/PM format)"),
+        )
 
-    start_ts = test_date + pd.Timedelta(
-        hours=start_time.hour, minutes=start_time.minute, seconds=start_time.second
-    )
-    expected_end_ts = start_ts + pd.Timedelta(minutes=discharge_minutes)
+    doors = _strict_door_candidates(alarm_df, bdt.site_code, window_start, window_end)
+    if doors.empty:
+        return RuleResult(
+            rule_id="R2", rule_name="Power Alarm + Duration",
+            passed=False, verdict="Revise",
+            detail=("Door evidence missing/cannot anchor Power-after-Door matching "
+                    f"inside onsite window for site {bdt.site_code} "
+                    f"({_format_alarm_ts(window_start)} to {_format_alarm_ts(window_end)})"),
+        )
+    door_anchor = doors.sort_values("occurred_on").iloc[0]["occurred_on"]
 
     power = _find_power_alarms(alarm_df, bdt.site_code)
     if power.empty:
@@ -744,127 +803,105 @@ def _rule_2_power_alarm_match(bdt: BDTData,
             detail=f"No matching Power alarm evidence found for site {bdt.site_code}",
         )
 
-    # Check if any Power alarm occurred on the test date
-    power_dates = power["occurred_on"].dt.normalize()
-    same_date = power[power_dates == test_date]
-    if same_date.empty:
+    power = power.copy()
+    power = power[power["occurred_on"].notna()]
+    if "cleared_on" not in power.columns:
+        power["cleared_on"] = pd.NaT
+    power = _normalize_alarm_datetimes(power)
+    valid_power = power[
+        power["cleared_on"].notna()
+        & (power["cleared_on"] >= power["occurred_on"])
+        & (power["occurred_on"] >= window_start)
+        & (power["occurred_on"] <= window_end)
+        & (power["cleared_on"] <= window_end)
+        & (power["occurred_on"] >= door_anchor)
+    ].copy()
+    valid_power = valid_power.sort_values("occurred_on")
+
+    if valid_power.empty:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm + Duration",
             passed=False, verdict="Revise",
-            detail=(f"No matching Power alarm evidence found on {test_date.date()} "
-                    f"for site {bdt.site_code}"),
+            detail=(f"No Power alarm after Door inside onsite window for site {bdt.site_code} "
+                    f"({_format_alarm_ts(window_start)} to {_format_alarm_ts(window_end)})"),
         )
 
-    same_date = same_date.copy()
-    same_date["start_diff_min"] = (
-        (same_date["occurred_on"] - start_ts).abs() / pd.Timedelta(minutes=1)
-    )
-    start_candidates = same_date[same_date["start_diff_min"] <= tol_min]
-    if start_candidates.empty:
-        min_start = same_date["start_diff_min"].min()
-        return RuleResult(
-            rule_id="R2", rule_name="Power Alarm + Duration",
-            passed=False, verdict="Revise",
-            detail=(f"No matching Power alarm start evidence within ±{tol_min:.0f} min "
-                    f"(closest start Δ={min_start:.1f} min)"),
-        )
+    previous_clear: pd.Timestamp | None = None
+    previous_start: pd.Timestamp | None = None
+    for _, row in valid_power.iterrows():
+        power_start = row["occurred_on"]
+        power_clear = row["cleared_on"]
+        if previous_clear is not None and power_start < previous_clear:
+            return RuleResult(
+                rule_id="R2", rule_name="Power Alarm + Duration",
+                passed=False, verdict="Revise",
+                detail=("Overlapping Power alarm intervals create ambiguous R2 evidence: "
+                        f"{_format_alarm_ts(previous_start)}→{_format_alarm_ts(previous_clear)} "
+                        f"overlaps {_format_alarm_ts(power_start)}→{_format_alarm_ts(power_clear)}"),
+            )
+        previous_start = power_start
+        previous_clear = power_clear
 
     down = _find_down_alarms(alarm_df, bdt.site_code)
     if not down.empty:
         down = down.copy()
         down = down[down["occurred_on"].notna()]
-        down = down[(down["occurred_on"] >= (start_ts - tol)) &
-                    (down["occurred_on"] <= (expected_end_ts + tol))]
+        down = down[
+            (down["occurred_on"] >= window_start)
+            & (down["occurred_on"] <= window_end)
+        ]
 
     attempts = []
-    for _, power_row in start_candidates.iterrows():
+    for _, power_row in valid_power.iterrows():
         power_start = power_row["occurred_on"]
-        start_diff_min = float(power_row["start_diff_min"])
-
-        power_clear = power_row.get("cleared_on", pd.NaT)
-        if pd.notna(power_clear) and power_clear >= power_start:
-            alarm_duration_min = float(
-                (power_clear - power_start) / pd.Timedelta(minutes=1)
-            )
-            end_diff_min = float(
-                abs(power_clear - expected_end_ts) / pd.Timedelta(minutes=1)
-            )
-            duration_diff_min = abs(alarm_duration_min - discharge_minutes)
-            attempts.append({
-                "path": "Power→Cleared",
-                "start_diff_min": start_diff_min,
-                "end_diff_min": end_diff_min,
-                "duration_min": alarm_duration_min,
-                "duration_diff_min": duration_diff_min,
-            })
+        power_clear = power_row["cleared_on"]
+        clear_duration_min = float((power_clear - power_start) / pd.Timedelta(minutes=1))
+        attempts.append({
+            "path": "Power→Cleared",
+            "power_start": power_start,
+            "candidate_end": power_clear,
+            "duration_min": clear_duration_min,
+            "duration_diff_min": abs(clear_duration_min - discharge_minutes),
+        })
 
         if not down.empty:
-            down_after = down[down["occurred_on"] >= power_start]
-            for down_ts in down_after["occurred_on"]:
-                alarm_duration_min = float(
-                    (down_ts - power_start) / pd.Timedelta(minutes=1)
-                )
-                end_diff_min = float(
-                    abs(down_ts - expected_end_ts) / pd.Timedelta(minutes=1)
-                )
-                duration_diff_min = abs(alarm_duration_min - discharge_minutes)
+            down_inside = down[
+                (down["occurred_on"] >= power_start)
+                & (down["occurred_on"] <= power_clear)
+            ]
+            for down_ts in down_inside["occurred_on"]:
+                down_duration_min = float((down_ts - power_start) / pd.Timedelta(minutes=1))
                 attempts.append({
                     "path": "Power→Down",
-                    "start_diff_min": start_diff_min,
-                    "end_diff_min": end_diff_min,
-                    "duration_min": alarm_duration_min,
-                    "duration_diff_min": duration_diff_min,
+                    "power_start": power_start,
+                    "candidate_end": down_ts,
+                    "duration_min": down_duration_min,
+                    "duration_diff_min": abs(down_duration_min - discharge_minutes),
                 })
 
     if not attempts:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm + Duration",
             passed=False, verdict="Revise",
-            detail=("No usable end event found for matched Power start "
-                    "(need Power clear or Down alarm)"),
+            detail=("No usable Power interval/end candidate inside onsite window "
+                    "(need valid Power clear or Down alarm inside the same Power interval)"),
         )
 
-    for a in attempts:
-        a["passed"] = (
-            cast(float, a["start_diff_min"]) <= tol_min
-            and cast(float, a["end_diff_min"]) <= tol_min
-            and cast(float, a["duration_diff_min"]) <= tol_min
-        )
-
-    passed_attempts = [a for a in attempts if a["passed"]]
-    if passed_attempts:
-        best = min(
-            passed_attempts,
-            key=lambda a: (a["duration_diff_min"], a["end_diff_min"], a["start_diff_min"]),
-        )
-        return RuleResult(
-            rule_id="R2", rule_name="Power Alarm + Duration",
-            passed=True, verdict="Accepted",
-            detail=(f"{best['path']} matched test window: "
-                    f"start Δ={best['start_diff_min']:.1f} min, "
-                    f"end Δ={best['end_diff_min']:.1f} min, "
-                    f"alarm duration={best['duration_min']:.1f} min vs "
-                    f"discharge-table max {discharge_minutes:.1f} min "
-                    f"(duration Δ={best['duration_diff_min']:.1f} min, "
-                    f"tolerance ±{tol_min:.0f} min)"),
-        )
-
-    best = min(
-        attempts,
-        key=lambda a: (a["duration_diff_min"], a["end_diff_min"], a["start_diff_min"]),
+    best = min(attempts, key=lambda a: cast(float, a["duration_diff_min"]))
+    passed = cast(float, best["duration_diff_min"]) <= tol_min
+    common = (
+        f"{best['path']} closest duration candidate: "
+        f"Power occurred_on={_format_alarm_ts(cast(pd.Timestamp, best['power_start']))}, "
+        f"candidate end={_format_alarm_ts(cast(pd.Timestamp, best['candidate_end']))}, "
+        f"alarm duration={best['duration_min']:.1f} min vs discharge-table max "
+        f"{discharge_minutes:.1f} min (duration Δ={best['duration_diff_min']:.1f} min, "
+        f"tolerance ±{tol_min:.0f} min)"
     )
     return RuleResult(
         rule_id="R2", rule_name="Power Alarm + Duration",
-        passed=False, verdict="Revise",
-        detail=(f"No matching Power timing/duration evidence within ±{tol_min:.0f} min. "
-                f"Closest path {best['path']}: "
-                f"start Δ={best['start_diff_min']:.1f} min, "
-                f"end Δ={best['end_diff_min']:.1f} min, "
-                f"duration Δ={best['duration_diff_min']:.1f} min "
-                f"(alarm {best['duration_min']:.1f} min vs discharge-table max "
-                f"{discharge_minutes:.1f} min)"),
+        passed=passed, verdict="Accepted" if passed else "Revise",
+        detail=common if passed else f"Closest Power duration outside tolerance. {common}",
     )
-
 
 
 def _rule_5_start_ampere(bdt: BDTData,
@@ -1178,7 +1215,7 @@ def _find_door_alarms(
 
 def _rule_10_door_alarm_match(bdt: BDTData,
                               alarm_df: pd.DataFrame | None) -> RuleResult:
-    """R10: Same-site/date Door alarm must exist."""
+    """R10: strict same-site Door alarm interval must be inside onsite window."""
     if alarm_df is None or alarm_df.empty:
         return RuleResult(
             rule_id="R10", rule_name="Door Alarm Condition",
@@ -1203,28 +1240,62 @@ def _rule_10_door_alarm_match(bdt: BDTData,
                     f"is invalid: {bdt.test_date!r}"),
         )
 
-    window_start, window_end = _build_test_window(bdt)
-    doors = _find_door_alarms(
-        alarm_df,
-        bdt.site_code,
-        test_date,
-        window_start,
-        window_end,
-        strict_window=window_start is not None,
-    )
-    if doors.empty:
+    window_start, window_end = _build_onsite_window(bdt)
+    if window_start is None or window_end is None:
         return RuleResult(
             rule_id="R10", rule_name="Door Alarm Condition",
             passed=False, verdict="Rejected",
-            detail=(f"No Door alarm found for site {bdt.site_code} during "
-                    f"the test window on {test_date.date()}"),
+            detail="Door alarm evidence is required, but the onsite time_in/time_out window is invalid",
         )
 
+    if "alarm_category" not in alarm_df.columns:
+        return RuleResult(
+            rule_id="R10", rule_name="Door Alarm Condition",
+            passed=False, verdict="Rejected",
+            detail="No strict Door alarm evidence found: alarm_category column is missing",
+        )
+
+    normalized = _normalize_alarm_datetimes(alarm_df)
+    site_mask = (
+        normalized.get("site_id", pd.Series("", index=normalized.index)).astype(str).str.strip().str.upper()
+        == bdt.site_code.strip().upper()
+    )
+    category_mask = normalized["alarm_category"].astype(str).str.strip().str.lower() == "door"
+    same_site_doors = normalized[site_mask & category_mask].copy()
+    if same_site_doors.empty:
+        return RuleResult(
+            rule_id="R10", rule_name="Door Alarm Condition",
+            passed=False, verdict="Rejected",
+            detail=("No strict Door alarm evidence found for site "
+                    f"{bdt.site_code}: R10 only accepts alarm_category == 'Door'"),
+        )
+
+    valid_doors = _strict_door_candidates(normalized, bdt.site_code, window_start, window_end)
+    if valid_doors.empty:
+        missing_cleared = "cleared_on" not in same_site_doors.columns or same_site_doors["cleared_on"].isna().any()
+        reason = "missing/invalid Door cleared_on" if missing_cleared else "Door occurred_on/cleared_on not fully contained in onsite window"
+        return RuleResult(
+            rule_id="R10", rule_name="Door Alarm Condition",
+            passed=False, verdict="Rejected",
+            detail=(f"No valid Door evidence inside onsite window on {test_date.date()}: {reason}. "
+                    f"Onsite window time_in={_format_alarm_ts(window_start)}, "
+                    f"time_out={_format_alarm_ts(window_end)}"),
+        )
+
+    door = valid_doors.sort_values("occurred_on").iloc[0]
+    occurred = door["occurred_on"]
+    cleared = door["cleared_on"]
+    entry_delta = float((occurred - window_start) / pd.Timedelta(minutes=1))
+    exit_delta = float((window_end - cleared) / pd.Timedelta(minutes=1))
     return RuleResult(
         rule_id="R10", rule_name="Door Alarm Condition",
         passed=True, verdict="Accepted",
-        detail=(f"Door alarm found for site {bdt.site_code} on {test_date.date()} "
-                f"({len(doors)} match(es){' within test window' if window_start is not None else ''})"),
+        detail=(f"Strict Door evidence contained in onsite window: "
+                f"Door occurred_on={_format_alarm_ts(occurred)}, "
+                f"Door cleared_on={_format_alarm_ts(cleared)}, "
+                f"time_in={_format_alarm_ts(window_start)}, "
+                f"time_out={_format_alarm_ts(window_end)}, "
+                f"entry_delta={entry_delta:.1f} min, exit_delta={exit_delta:.1f} min"),
     )
 
 

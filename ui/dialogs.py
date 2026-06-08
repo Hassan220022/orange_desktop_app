@@ -953,15 +953,15 @@ _TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
     },
     {
         "key": "power_timing_min",
-        "label": "R2 power-alarm timing window",
+        "label": "R2 discharge duration match tolerance",
         "suffix": " min",
         "decimals": 0,
         "step": 1.0,
         "minimum": 0.0,
         "maximum": 240.0,
-        "help_template": "How many minutes the power-cut alarm can be off from the test start time "
-                         "and still match. Currently {value} min — bigger values forgive "
-                         "clock differences between the site and the alarm system.",
+        "help_template": "How far the closest Power/Down or Power/Cleared alarm duration may be "
+                         "from the BDT discharge-table duration. Currently {value} min — bigger "
+                         "values make Rule R2 more forgiving about discharge duration evidence.",
     },
     {
         "key": "string_ampere_a",

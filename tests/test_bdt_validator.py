@@ -127,18 +127,24 @@ def _power_alarm(
 def _door_alarm(
     site_id: str = "SITE001",
     occurred: str = "2026-01-15 09:00:00",
+    cleared: str | None = None,
     category: str = "Door",
     alarm_name: str = "Door Open",
     file_source: str = "door_alarms.csv",
 ) -> dict:
+    occurred_ts = pd.Timestamp(occurred)
+    cleared_ts = pd.NaT if cleared is None else pd.Timestamp(cleared)
+    if cleared is None:
+        cleared_ts = occurred_ts + pd.Timedelta(minutes=1)
+    duration_secs = (cleared_ts - occurred_ts).total_seconds() if pd.notna(cleared_ts) else None
     return {
         "site_id": site_id,
-        "occurred_on": pd.Timestamp(occurred),
-        "cleared_on": pd.Timestamp(occurred) + pd.Timedelta(minutes=1),
+        "occurred_on": occurred_ts,
+        "cleared_on": cleared_ts,
         "alarm_category": category,
         "alarm_name": alarm_name,
-        "_duration_secs": 60.0,
-        "duration": "00:01:00",
+        "_duration_secs": duration_secs,
+        "duration": "00:01:00" if duration_secs == 60.0 else None,
         "file_source": file_source,
     }
 
@@ -177,7 +183,7 @@ class TestValidateBDTOverall:
         )
         alarm_df = _make_alarm_df([
             _power_alarm(),
-            _door_alarm(),
+            _door_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 08:01:00"),
         ])
 
         result = validate_bdt(bdt, alarm_df)
@@ -227,6 +233,26 @@ class TestValidateBDTOverall:
         result = validate_bdt(bdt, None)
         verdicts = {r.rule_id: r.verdict for r in result.rules}
         assert verdicts["R2"] == "N/A"
+        assert verdicts["R10"] == "Rejected"
+        assert result.overall == "Rejected"
+
+    def test_overall_rejected_when_door_cleared_on_invalid_but_power_matches(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(photo_slots=slots, photo_count=16, time_in="08:00", time_out="10:00")
+        alarm_df = _make_alarm_df([
+            {
+                **_door_alarm(occurred="2026-01-15 08:05:00", cleared="2026-01-15 08:10:00"),
+                "cleared_on": pd.NaT,
+            },
+            _power_alarm(occurred="2026-01-15 08:20:00", cleared="2026-01-15 10:20:00"),
+        ])
+
+        result = validate_bdt(bdt, alarm_df)
+        verdicts = {r.rule_id: r.verdict for r in result.rules}
+
         assert verdicts["R10"] == "Rejected"
         assert result.overall == "Rejected"
 
@@ -285,7 +311,7 @@ class TestValidateBDTOverall:
         result = validate_bdt(bdt, alarm_df)
 
         verdicts = {r.rule_id: r.verdict for r in result.rules}
-        assert verdicts["R2"] == "Accepted"
+        assert verdicts["R2"] == "Revise"
         assert verdicts["R10"] == "Rejected"
         assert result.overall == "Rejected"
 
@@ -436,9 +462,10 @@ class TestR1Photos:
 class TestR2PowerAlarmMatch:
 
     def test_time_match_within_five_minutes_accepted(self):
-        bdt = _make_bdt(time_in="08:00", time_out="10:00")
+        bdt = _make_bdt(time_in="08:00", time_out="10:10")
         alarm_df = _make_alarm_df([
-            _power_alarm(occurred="2026-01-15 08:04:00", cleared="2026-01-15 10:04:00")
+            _door_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 08:01:00"),
+            _power_alarm(occurred="2026-01-15 08:04:00", cleared="2026-01-15 10:04:00"),
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
@@ -446,7 +473,8 @@ class TestR2PowerAlarmMatch:
     def test_time_match_hhmmss_format_accepted(self):
         bdt = _make_bdt(time_in="08:00:30", time_out="10:00:30")
         alarm_df = _make_alarm_df([
-            _power_alarm(occurred="2026-01-15 08:00:30", cleared="2026-01-15 10:00:30")
+            _door_alarm(occurred="2026-01-15 08:00:30", cleared="2026-01-15 08:00:40"),
+            _power_alarm(occurred="2026-01-15 08:00:30", cleared="2026-01-15 10:00:30"),
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
@@ -454,7 +482,7 @@ class TestR2PowerAlarmMatch:
     def test_ampm_time_format_accepted(self):
         """12-hour AM/PM format like '12:31:10PM' from real BDT files."""
         bdt = _make_bdt(
-            time_in="12:31:10PM", time_out="2:31:10PM",
+            time_in="12:31:10PM", time_out="2:40:10PM",
             discharge_readings=[
                 ("30 min", 52.0, 30.0),
                 ("60 min", 51.0, 30.5),
@@ -464,7 +492,8 @@ class TestR2PowerAlarmMatch:
             discharge_minutes=120.0,
         )
         alarm_df = _make_alarm_df([
-            _power_alarm(occurred="2026-01-15 12:31:00", cleared="2026-01-15 14:31:00")
+            _door_alarm(occurred="2026-01-15 12:31:10", cleared="2026-01-15 12:31:20"),
+            _power_alarm(occurred="2026-01-15 12:31:10", cleared="2026-01-15 14:31:10"),
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
@@ -482,7 +511,8 @@ class TestR2PowerAlarmMatch:
             discharge_minutes=120.0,
         )
         alarm_df = _make_alarm_df([
-            _power_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 10:00:00")
+            _door_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 08:00:30"),
+            _power_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 10:00:00"),
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
@@ -500,7 +530,8 @@ class TestR2PowerAlarmMatch:
             discharge_minutes=120.0,
         )
         alarm_df = _make_alarm_df([
-            _power_alarm(occurred="2026-01-15 14:00:00", cleared="2026-01-15 16:00:00")
+            _door_alarm(occurred="2026-01-15 14:00:00", cleared="2026-01-15 14:00:30"),
+            _power_alarm(occurred="2026-01-15 14:00:00", cleared="2026-01-15 16:00:00"),
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
@@ -518,7 +549,8 @@ class TestR2PowerAlarmMatch:
             discharge_minutes=120.0,
         )
         alarm_df = _make_alarm_df([
-            _power_alarm(occurred="2026-01-15 14:00:00", cleared="2026-01-15 16:00:00")
+            _door_alarm(occurred="2026-01-15 14:00:00", cleared="2026-01-15 14:00:30"),
+            _power_alarm(occurred="2026-01-15 14:00:00", cleared="2026-01-15 16:00:00"),
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
@@ -531,13 +563,13 @@ class TestR2PowerAlarmMatch:
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Revise"
 
-    def test_default_tolerance_15_minutes_accepted(self):
-        bdt = _make_bdt(time_in="08:00", time_out="10:00")
+    def test_default_duration_tolerance_five_minutes_revises_far_duration(self):
+        bdt = _make_bdt(time_in="08:00", time_out="11:00")
         alarm_df = _make_alarm_df([
-            _power_alarm(occurred="2026-01-15 08:15:00", cleared="2026-01-15 10:15:00")
+            _power_alarm(occurred="2026-01-15 08:15:00", cleared="2026-01-15 10:30:00")
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
-        assert r.verdict == "Accepted"
+        assert r.verdict == "Revise"
 
     def test_invalid_test_times_revise(self):
         bdt = _make_bdt(time_in="invalid", time_out="10:00")
@@ -562,7 +594,7 @@ class TestR2PowerAlarmMatch:
     def test_power_to_down_path_accepted_when_clear_mismatch(self):
         bdt = _make_bdt(
             time_in="08:00",
-            time_out="10:00",
+            time_out="10:10",
             discharge_readings=[
                 ("30 min", 52.0, 30.0),
                 ("60 min", 51.0, 30.0),
@@ -572,7 +604,8 @@ class TestR2PowerAlarmMatch:
             discharge_minutes=10.0,  # should be ignored by R2; max reached is 123
         )
         alarm_df = _make_alarm_df([
-            _power_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 09:20:00"),
+            _door_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 08:01:00"),
+            _power_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 10:10:00"),
             _down_alarm(occurred="2026-01-15 10:03:00"),
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
@@ -594,10 +627,11 @@ class TestR2PowerAlarmMatch:
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Revise"
-        assert "duration" in r.detail.lower()
+        assert "onsite window" in r.detail.lower() or "duration" in r.detail.lower()
 
     def test_duration_over_180_minutes_no_longer_auto_rejected(self):
         bdt = _make_bdt(
+            time_out="11:45",
             discharge_readings=[
                 ("30 min", 52.0, 30.0),
                 ("120 min", 49.0, 30.0),
@@ -607,7 +641,8 @@ class TestR2PowerAlarmMatch:
             discharge_minutes=210.0,
         )
         alarm_df = _make_alarm_df([
-            _power_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 11:30:00")
+            _door_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 08:01:00"),
+            _power_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 11:30:00"),
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
@@ -645,6 +680,7 @@ class TestR2PowerAlarmMatch:
     def test_uses_discharge_table_max_even_with_empty_trailing_rows(self):
         bdt = _make_bdt(
             time_in="08:00",
+            time_out="11:15",
             discharge_readings=[
                 ("10 Mins", 49.9, 25.0),
                 ("30 Mins", 49.2, 25.5),
@@ -661,7 +697,8 @@ class TestR2PowerAlarmMatch:
             discharge_minutes=300.0,  # ignored by R2
         )
         alarm_df = _make_alarm_df([
-            _power_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 11:00:00")
+            _door_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 08:01:00"),
+            _power_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 11:00:00"),
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
@@ -679,8 +716,9 @@ class TestR2PowerAlarmMatch:
             discharge_minutes=180.0,
         )
         alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 11:00:00", cleared="2026-01-15 11:01:00"),
             _power_alarm(occurred="2026-01-15 11:00:00",
-                         cleared="2026-01-15 14:00:00")
+                         cleared="2026-01-15 14:00:00"),
         ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
@@ -693,29 +731,141 @@ class TestR2PowerAlarmMatch:
         assert r.verdict == "Revise"
         assert "Power alarm evidence" in r.detail
 
-    def test_power_cleared_no_site_down_accepted(self):
-        """Case A: Power alarm clears (grid restores), no Down alarm."""
+    def test_power_cleared_without_strict_door_revise(self):
+        """R2 cannot accept Power evidence without strict Door anchoring."""
         bdt = _make_bdt(time_in="08:00", time_out="11:00")
         alarm_df = _make_alarm_df([
             _power_alarm(occurred="2026-01-15 08:00:00",
                          cleared="2026-01-15 10:05:00")
         ])
+
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Revise"
+        assert "Door evidence" in r.detail
+        assert "Power-after-Door" in r.detail
+
+    def test_power_cleared_no_site_down_accepted_with_strict_door(self):
+        """Case A: Power alarm clears (grid restores), no Down alarm."""
+        bdt = _make_bdt(time_in="08:00", time_out="11:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 08:01:00"),
+            _power_alarm(occurred="2026-01-15 08:05:00",
+                         cleared="2026-01-15 10:10:00"),
+        ])
         r = _rule_2_power_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
 
     def test_variable_tolerance_override(self):
-        """Custom tolerance overrides the constant."""
-        bdt = _make_bdt(time_in="08:00", time_out="10:00")
+        """Custom tolerance applies to the duration match."""
+        bdt = _make_bdt(time_in="08:00", time_out="10:15")
         alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:00:00", cleared="2026-01-15 08:01:00"),
             _power_alarm(occurred="2026-01-15 08:04:00",
-                         cleared="2026-01-15 10:04:00")
+                         cleared="2026-01-15 10:07:00"),
         ])
-        # With 3-minute tolerance, 4-minute offset needs review
-        r = _rule_2_power_alarm_match(bdt, alarm_df, tol_override=3.0)
+        # With 2-minute tolerance, 3-minute duration difference needs review
+        r = _rule_2_power_alarm_match(bdt, alarm_df, tol_override=2.0)
         assert r.verdict == "Revise"
-        # With 5-minute tolerance, 4-minute offset should pass
-        r = _rule_2_power_alarm_match(bdt, alarm_df, tol_override=5.0)
+        # With 3-minute tolerance, the same duration difference passes
+        r = _rule_2_power_alarm_match(bdt, alarm_df, tol_override=3.0)
         assert r.verdict == "Accepted"
+
+    def test_ignores_power_before_door_and_picks_later_closest_candidate(self):
+        bdt = _make_bdt(time_in="08:00", time_out="12:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:30:00", cleared="2026-01-15 08:35:00"),
+            _power_alarm(occurred="2026-01-15 08:10:00", cleared="2026-01-15 10:10:00"),
+            _power_alarm(occurred="2026-01-15 08:45:00", cleared="2026-01-15 10:45:00"),
+        ])
+
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Accepted"
+        assert "08:45" in r.detail
+
+    def test_pre_door_perfect_power_is_ignored_when_post_door_candidate_differs(self):
+        bdt = _make_bdt(time_in="08:00", time_out="12:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:30:00", cleared="2026-01-15 08:35:00"),
+            _power_alarm(occurred="2026-01-15 08:10:00", cleared="2026-01-15 10:10:00"),
+            _power_alarm(occurred="2026-01-15 08:45:00", cleared="2026-01-15 10:00:00"),
+        ])
+
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Revise"
+        assert "08:45" in r.detail
+        assert "duration Δ=45.0 min" in r.detail
+
+    def test_chooses_closest_duration_among_multiple_power_intervals(self):
+        bdt = _make_bdt(time_in="08:00", time_out="13:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:05:00", cleared="2026-01-15 08:10:00"),
+            _power_alarm(occurred="2026-01-15 08:20:00", cleared="2026-01-15 10:10:00"),
+            _power_alarm(occurred="2026-01-15 10:30:00", cleared="2026-01-15 12:32:00"),
+        ])
+
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Accepted"
+        assert "duration Δ=2.0 min" in r.detail
+        assert "10:30" in r.detail
+
+    def test_down_candidate_must_be_inside_same_power_interval(self):
+        bdt = _make_bdt(time_in="08:00", time_out="13:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:05:00", cleared="2026-01-15 08:10:00"),
+            _power_alarm(occurred="2026-01-15 08:30:00", cleared="2026-01-15 09:30:00"),
+            _down_alarm(occurred="2026-01-15 10:30:00"),
+        ])
+
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Revise"
+        assert "outside tolerance" in r.detail.lower()
+
+    def test_overlapping_power_intervals_revise_as_ambiguous(self):
+        bdt = _make_bdt(time_in="08:00", time_out="13:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:05:00", cleared="2026-01-15 08:10:00"),
+            _power_alarm(occurred="2026-01-15 08:30:00", cleared="2026-01-15 10:30:00"),
+            _power_alarm(occurred="2026-01-15 09:00:00", cleared="2026-01-15 11:00:00"),
+        ])
+
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Revise"
+        assert "overlap" in r.detail.lower()
+
+    def test_closest_duration_outside_default_five_minute_tolerance_revise(self):
+        bdt = _make_bdt(time_in="08:00", time_out="13:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:05:00", cleared="2026-01-15 08:10:00"),
+            _power_alarm(occurred="2026-01-15 08:30:00", cleared="2026-01-15 10:39:00"),
+        ])
+
+        r = _rule_2_power_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Revise"
+        assert "duration Δ=9.0 min" in r.detail
+        assert "±5 min" in r.detail
+
+    def test_configurable_duration_tolerance_default_and_override(self):
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:05:00", cleared="2026-01-15 08:10:00"),
+            _power_alarm(occurred="2026-01-15 08:30:00", cleared="2026-01-15 10:39:00"),
+        ])
+
+        default_result = validate_bdt(_make_bdt(time_in="08:00", time_out="13:00"), alarm_df)
+        loose_result = validate_bdt(
+            _make_bdt(time_in="08:00", time_out="13:00"),
+            alarm_df,
+            tolerances=BDTTolerances(power_timing_min=10.0),
+        )
+
+        assert next(r for r in default_result.rules if r.rule_id == "R2").verdict == "Revise"
+        assert next(r for r in loose_result.rules if r.rule_id == "R2").verdict == "Accepted"
 
 
 
@@ -999,21 +1149,21 @@ class TestR10DoorAlarmCondition:
         r = _rule_10_door_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
 
-    def test_detect_by_alarm_name_accepted(self):
+    def test_alarm_name_only_rejected(self):
         bdt = _make_bdt()
         alarm_df = _make_alarm_df([
             _door_alarm(category="Security", alarm_name="Main Door Open", file_source="misc.csv")
         ])
         r = _rule_10_door_alarm_match(bdt, alarm_df)
-        assert r.verdict == "Accepted"
+        assert r.verdict == "Rejected"
 
-    def test_detect_by_file_source_accepted(self):
+    def test_file_source_only_rejected(self):
         bdt = _make_bdt()
         alarm_df = _make_alarm_df([
             _door_alarm(category="Security", alarm_name="Other", file_source="door_events.csv")
         ])
         r = _rule_10_door_alarm_match(bdt, alarm_df)
-        assert r.verdict == "Accepted"
+        assert r.verdict == "Rejected"
 
     def test_same_site_and_date_required_rejected(self):
         bdt = _make_bdt()
@@ -1050,7 +1200,62 @@ class TestR10DoorAlarmCondition:
         r = _rule_10_door_alarm_match(bdt, alarm_df)
 
         assert r.verdict == "Rejected"
-        assert "test window" in r.detail
+        assert "onsite window" in r.detail
+
+    def test_accepts_door_interval_contained_in_onsite_window_and_reports_deltas(self):
+        bdt = _make_bdt(time_in="08:00", time_out="10:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:20:00", cleared="2026-01-15 09:45:00"),
+        ])
+
+        r = _rule_10_door_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Accepted"
+        assert "entry_delta=20.0 min" in r.detail
+        assert "exit_delta=15.0 min" in r.detail
+        assert "08:20" in r.detail
+        assert "09:45" in r.detail
+
+    def test_rejects_missing_door_cleared_on(self):
+        bdt = _make_bdt(time_in="08:00", time_out="10:00")
+        alarm_df = _make_alarm_df([{
+            **_door_alarm(occurred="2026-01-15 08:20:00", cleared="2026-01-15 09:45:00"),
+            "cleared_on": pd.NaT,
+        }])
+
+        r = _rule_10_door_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Rejected"
+        assert "cleared" in r.detail.lower()
+
+    def test_rejects_door_when_clear_is_outside_onsite_window(self):
+        bdt = _make_bdt(time_in="08:00", time_out="10:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(occurred="2026-01-15 08:20:00", cleared="2026-01-15 10:01:00"),
+        ])
+
+        r = _rule_10_door_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Rejected"
+        assert "onsite window" in r.detail.lower()
+        assert "test window" not in r.detail.lower()
+
+    def test_rejects_alarm_name_or_source_only_door_evidence(self):
+        bdt = _make_bdt(time_in="08:00", time_out="10:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(
+                occurred="2026-01-15 08:20:00",
+                cleared="2026-01-15 09:45:00",
+                category="Security",
+                alarm_name="Door Open",
+                file_source="door_events.csv",
+            ),
+        ])
+
+        r = _rule_10_door_alarm_match(bdt, alarm_df)
+
+        assert r.verdict == "Rejected"
+        assert "alarm_category" in r.detail
 
 
 # ── Helper behavior remains valid ───────────────────────────────────────
@@ -1474,7 +1679,7 @@ class TestBDTTolerancesDataclass:
         tol = BDTTolerances.defaults()
         assert tol.sizing_fractional_tolerance == 0.15
         assert tol.sizing_minutes_floor == 15.0
-        assert tol.power_timing_min == 15.0
+        assert tol.power_timing_min == 5.0
         assert tol.string_ampere_a == 3.0
         assert tol.string_ampere_pos_a == 0.5
         assert tol.discharge_current_a == 1.0
@@ -1512,6 +1717,31 @@ class TestBDTTolerancesDataclass:
             "start_ampere_a": 0.5,
         })
         assert tol.start_ampere_a == 0.5
+
+    def test_from_dict_migrates_unversioned_legacy_power_timing_default(self):
+        tol = BDTTolerances.from_dict({"power_timing_min": 15.0})
+        assert tol.power_timing_min == 5.0
+
+    def test_from_dict_migrates_old_version_legacy_power_timing_default(self):
+        tol = BDTTolerances.from_dict({
+            BDT_TOLERANCE_PROFILE_VERSION_KEY: 2,
+            "power_timing_min": 15.0,
+        })
+        assert tol.power_timing_min == 5.0
+
+    def test_from_dict_preserves_old_version_custom_power_timing(self):
+        tol = BDTTolerances.from_dict({
+            BDT_TOLERANCE_PROFILE_VERSION_KEY: 2,
+            "power_timing_min": 12.0,
+        })
+        assert tol.power_timing_min == 12.0
+
+    def test_from_dict_preserves_current_version_power_timing_fifteen(self):
+        tol = BDTTolerances.from_dict({
+            BDT_TOLERANCE_PROFILE_VERSION_KEY: BDT_TOLERANCE_PROFILE_VERSION,
+            "power_timing_min": 15.0,
+        })
+        assert tol.power_timing_min == 15.0
 
     def test_to_dict_round_trips(self):
         tol = BDTTolerances(discharge_current_a=2.5, string_ampere_a=4.5)

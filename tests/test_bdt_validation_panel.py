@@ -412,3 +412,30 @@ def test_bdt_source_mode_help_explains_read_and_save_behavior():
     assert "does not write" in BDT_SOURCE_TOOLTIPS["db"]
     assert "loads saved SQLite validation results first" in BDT_SOURCE_TOOLTIPS["both"]
     assert "saves new validation history to SQLite" in BDT_SOURCE_TOOLTIPS["both"]
+
+
+def test_rule_docs_explain_r2_r10_bdt_semantics():
+    from alarm_app.bdt.rule_docs import rule_doc
+    from alarm_app.bdt.validator import BDTTolerances
+
+    r2 = rule_doc("R2", tolerances=BDTTolerances.defaults())
+    r10 = rule_doc("R10", tolerances=BDTTolerances.defaults())
+
+    assert "discharge-duration" in r2
+    assert "5 minutes" in r2
+    assert "Power alarms before the Door" in r2
+    assert "closest duration" in r2
+    assert "alarm_category" in r10
+    assert "no tolerance" in r10
+    assert "occurred_on" in r10
+    assert "cleared_on" in r10
+
+
+def test_parameter_spec_labels_r2_as_duration_match_tolerance():
+    from alarm_app.ui.dialogs import _TOLERANCE_FIELD_DEFS
+
+    spec = next(item for item in _TOLERANCE_FIELD_DEFS if item["key"] == "power_timing_min")
+
+    assert "duration" in spec["label"].lower()
+    assert "discharge" in spec["help_template"].lower()
+    assert "start time" not in spec["help_template"].lower()
