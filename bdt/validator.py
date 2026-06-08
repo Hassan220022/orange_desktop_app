@@ -193,6 +193,12 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
             "network_backup_minutes": network_backup_minutes,
             "network_backup_reasons": network_skip_reasons,
         })
+    elif network_no_usable_backup and battery_skip_reason:
+        result.validation_context.update({
+            "network_no_usable_backup_also": True,
+            "network_backup_minutes": network_backup_minutes,
+            "network_backup_reasons": network_skip_reasons,
+        })
     elif battery_skip_reason.startswith("Faulty battery"):
         active_r11_groups = {"A", "B1"}
     elif battery_skip_reason:

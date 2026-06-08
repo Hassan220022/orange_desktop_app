@@ -24,6 +24,7 @@ from alarm_app.bdt.validator import (
     bdt_battery_status,
     validate_bdt,
 )
+from alarm_app.core.battery_backup_insights import resolve_network_battery_context
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -328,6 +329,35 @@ class TestValidateBDTOverall:
         assert verdicts["R10"] == "Accepted"
         assert result.overall == "Rejected"
 
+    def test_bdt_battery_skip_takes_precedence_but_records_network_agreement(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(
+            photo_slots=slots,
+            photo_count=16,
+            summary_data={"Reason for Stop BDT": "Faulty battery"},
+        )
+        alarm_df = _make_alarm_df([_power_alarm(), _door_alarm()])
+
+        result = validate_bdt(
+            bdt,
+            alarm_df,
+            network_no_usable_backup=True,
+            network_backup_minutes=0.0,
+            network_backup_reasons=["Network Summary backup status is ZERO BACKUP"],
+        )
+
+        verdicts = {r.rule_id: r.verdict for r in result.rules}
+        assert all(verdicts[r] == "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
+        assert result.overall == "Rejected"
+        assert result.validation_context["network_no_usable_backup_also"] is True
+        assert result.validation_context["network_backup_reasons"] == [
+            "Network Summary backup status is ZERO BACKUP"
+        ]
+        assert "display_overall" not in result.validation_context
+
     def test_summary_zero_batteries_skips_battery_dependent_rules(self):
         slots = [
             _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
@@ -345,6 +375,33 @@ class TestValidateBDTOverall:
         verdicts = {r.rule_id: r.verdict for r in result.rules}
         assert all(verdicts[r] == "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
         assert result.overall == "Rejected"
+
+    def test_empty_network_summary_context_runs_full_validation(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(
+            photo_slots=slots,
+            photo_count=16,
+        )
+        alarm_df = _make_alarm_df([_power_alarm(), _door_alarm()])
+        network_context = resolve_network_battery_context([], min_backup_minutes=10.0)
+
+        result = validate_bdt(
+            bdt,
+            alarm_df,
+            network_no_usable_backup=network_context.no_usable_backup,
+            network_backup_minutes=network_context.backup_minutes,
+            network_backup_reasons=network_context.reasons,
+        )
+
+        verdicts = {r.rule_id: r.verdict for r in result.rules}
+        assert network_context.has_network_summary is False
+        assert all(verdicts[r] != "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
+        assert verdicts["R2"] == "Accepted"
+        assert result.validation_context == {}
+        assert result.overall == "Accepted"
 
     def test_network_no_usable_backup_accepts_component_check_when_infrastructure_passes(self):
         slots = [
@@ -401,8 +458,10 @@ class TestValidateBDTOverall:
         assert result.validation_context["display_overall"] == "Accepted (component check - no backup battery)"
         assert result.validation_context["network_backup_minutes"] == 0.0
         assert "component check only" in next(r.detail for r in result.rules if r.rule_id == "R2")
-        assert "Group A" in next(r.detail for r in result.rules if r.rule_id == "R11")
-        assert "skipped Group B1" in next(r.detail for r in result.rules if r.rule_id == "R11")
+        r11_detail = next(r.detail for r in result.rules if r.rule_id == "R11")
+        assert "Group A" in r11_detail
+        assert "skipped Group B1" in r11_detail
+        assert "skipped Group B2" in r11_detail
 
     def test_network_component_check_keeps_failed_infrastructure_verdict(self):
         slots = [
