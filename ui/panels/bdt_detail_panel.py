@@ -376,17 +376,26 @@ class BdtDetailPanel(QWidget):
         self._bdt_door_section_label.setVisible(False)
         history_section_lay.addWidget(self._bdt_door_section_label)
 
-        self._bdt_door_table = QTableWidget(0, 4)
+        self._bdt_door_window_hint = QLabel("")
+        self._bdt_door_window_hint.setObjectName("bdt_empty_hint")
+        self._bdt_door_window_hint.setWordWrap(True)
+        self._bdt_door_window_hint.setVisible(False)
+        history_section_lay.addWidget(self._bdt_door_window_hint)
+
+        self._bdt_door_table = QTableWidget(0, 6)
         self._bdt_door_table.setHorizontalHeaderLabels(
-            ["Site", "Occurred", "Cleared", "Alarm Name"])
+            ["Site", "Occurred", "Cleared", "Alarm", "R10 Status", "Overlap"])
         self._bdt_door_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self._bdt_door_table.setSelectionBehavior(QTableWidget.SelectRows)
         self._bdt_door_table.setAlternatingRowColors(True)
         self._bdt_door_table.verticalHeader().setVisible(False)
         self._bdt_door_table.verticalHeader().setDefaultSectionSize(24)
-        self._bdt_door_table.setColumnWidth(0, 90)
-        self._bdt_door_table.setColumnWidth(1, 150)
-        self._bdt_door_table.setColumnWidth(2, 150)
+        self._bdt_door_table.setColumnWidth(0, 80)
+        self._bdt_door_table.setColumnWidth(1, 130)
+        self._bdt_door_table.setColumnWidth(2, 130)
+        self._bdt_door_table.setColumnWidth(3, 120)
+        self._bdt_door_table.setColumnWidth(4, 90)
+        self._bdt_door_table.setColumnWidth(5, 70)
         self._bdt_door_table.horizontalHeader().setStretchLastSection(True)
         self._bdt_door_table.setMaximumHeight(160)
         self._bdt_door_table.setVisible(False)
@@ -708,26 +717,73 @@ class BdtDetailPanel(QWidget):
 
         # ── Populate door alarm history ──────────────────────────
         self._bdt_door_table.setRowCount(0)
+        self._bdt_door_window_hint.setText("")
+        self._bdt_door_window_hint.setVisible(False)
         if bdt and bdt.test_date:
             try:
                 try:
-                    from alarm_app.bdt.validator import _find_door_alarms
+                    from alarm_app.bdt.validator import _evaluate_door_evidence
                 except ImportError:
-                    from bdt.validator import _find_door_alarms
+                    from bdt.validator import _evaluate_door_evidence
                 test_date_ts = pd.Timestamp(bdt.test_date).normalize()
                 alarm_df = self._load_door_alarm_subset(bdt.site_code, test_date_ts)
-                doors = _find_door_alarms(alarm_df, bdt.site_code, test_date_ts)
-                if not doors.empty:
-                    self._bdt_door_table.setRowCount(len(doors))
-                    for i, (_, row) in enumerate(doors.iterrows()):
-                        self._bdt_door_table.setItem(i, 0, QTableWidgetItem(str(row.get("site_id", ""))))
-                        occ = row.get("occurred_on", "")
-                        self._bdt_door_table.setItem(i, 1, QTableWidgetItem(
-                            str(occ.strftime("%Y-%m-%d %H:%M") if hasattr(occ, "strftime") else occ)))
-                        clr = row.get("cleared_on", "")
-                        self._bdt_door_table.setItem(i, 2, QTableWidgetItem(
-                            str(clr.strftime("%Y-%m-%d %H:%M") if hasattr(clr, "strftime") else clr)))
-                        self._bdt_door_table.setItem(i, 3, QTableWidgetItem(str(row.get("alarm_name", ""))))
+                if not alarm_df.empty:
+                    evidence = _evaluate_door_evidence(bdt, alarm_df)
+                    if evidence.window_start is not None and evidence.window_end is not None:
+                        window_text = (
+                            f"Onsite window: {evidence.window_start.strftime('%H:%M')} → "
+                            f"{evidence.window_end.strftime('%H:%M')}"
+                        )
+                        if evidence.best is not None and evidence.best.status_label == "Revise":
+                            window_text += (
+                                " — door evidence overlaps the visit but extends outside "
+                                "recorded time_in/time_out; reviewer decision"
+                            )
+                        self._bdt_door_window_hint.setText(window_text)
+                        self._bdt_door_window_hint.setVisible(True)
+
+                    if evidence.rows:
+                        sorted_rows = sorted(
+                            evidence.rows,
+                            key=lambda row: (
+                                0 if evidence.best is not None and row.row_index == evidence.best.row_index else 1,
+                                -row.overlap_min,
+                            ),
+                        )
+                        status_colors = {
+                            "Accepted": QColor("#a6e3a1"),
+                            "Revise": QColor("#fab387"),
+                            "No overlap": QColor("#f38ba8"),
+                        }
+                        self._bdt_door_table.setRowCount(len(sorted_rows))
+                        for i, door_row in enumerate(sorted_rows):
+                            occ = door_row.occurred_on
+                            clr = door_row.cleared_on
+                            self._bdt_door_table.setItem(
+                                i, 0, QTableWidgetItem(door_row.site_id))
+                            self._bdt_door_table.setItem(
+                                i, 1, QTableWidgetItem(occ.strftime("%Y-%m-%d %H:%M")))
+                            cleared_text = (
+                                clr.strftime("%Y-%m-%d %H:%M")
+                                if clr is not None and hasattr(clr, "strftime")
+                                else "—"
+                            )
+                            self._bdt_door_table.setItem(
+                                i, 2, QTableWidgetItem(cleared_text))
+                            self._bdt_door_table.setItem(
+                                i, 3, QTableWidgetItem(door_row.alarm_name))
+                            status_item = QTableWidgetItem(door_row.status_label)
+                            status_item.setForeground(
+                                status_colors.get(door_row.status_label, QColor("#cdd6f4"))
+                            )
+                            self._bdt_door_table.setItem(i, 4, status_item)
+                            overlap_text = (
+                                f"{door_row.overlap_min:.0f}m"
+                                if door_row.overlap_min > 0
+                                else "—"
+                            )
+                            self._bdt_door_table.setItem(
+                                i, 5, QTableWidgetItem(overlap_text))
             except Exception:
                 pass  # Graceful fallback if alarm data unavailable
 
@@ -1072,6 +1128,9 @@ class BdtDetailPanel(QWidget):
 
     def _sync_optional_sections(self, *, has_doors: bool, has_history: bool):
         self._bdt_door_section_label.setVisible(has_doors)
+        self._bdt_door_window_hint.setVisible(
+            has_doors and bool(self._bdt_door_window_hint.text().strip())
+        )
         self._bdt_door_table.setVisible(has_doors)
         self._bdt_door_empty.setVisible(False)
         self._bdt_hist_section_label.setVisible(has_history)

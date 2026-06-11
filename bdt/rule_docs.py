@@ -75,6 +75,10 @@ one of these outcomes:</p>
 Any <b>Rejected</b> &rarr; the file is Rejected. Otherwise any
 <b>Revise</b> &rarr; the file is Revise. Otherwise the file is
 <b>Accepted</b>.</p>
+<p>The validator assists human reviewers who already sign off Excel BDT
+submissions. A <b>Revise</b> on R10 means door evidence is present but
+needs a person to confirm sloppy <b>time_in</b>/<b>time_out</b> before
+sign-off.</p>
 <p>There is no R4. The numbering jumps from R3 to R5 because R4 was
 retired. The active checks are <b>R1, R2, R3, R5, R6, R7, R8, R9, R10,
 R11</b>.</p>
@@ -272,22 +276,30 @@ changed mid-test.</p>
 R10_HTML: str = """
 <h2>R10 &mdash; Door Alarm</h2>
 <p>A BDT requires opening the cabinet, which raises a door alarm at
-the site. R10 looks for that door alarm in the alarm history during
-the test window.</p>
+the site. R10 confirms onsite presence using the technician visit window
+<b>time_in &rarr; time_out</b> from the BDT sheet. That window records
+when the provider was at the site, not the exact discharge start/end.</p>
 <h3>How R10 decides</h3>
 <ul>
-  <li>Door evidence is strict: <b>alarm_category</b> must be Door, with
-  usable <b>occurred_on</b> and <b>cleared_on</b> timestamps.</li>
-  <li>A door alarm at the same site, on the same date, inside the
-  test window &rarr; <b>Accepted</b>; R10 applies no tolerance outside
-  the BDT time window.</li>
-  <li>No matching door alarm &rarr; <b>Rejected</b> (a real BDT
-  should produce one).</li>
-  <li>No alarm history loaded for that site &rarr; <b>N/A</b>.</li>
-  <li>The test date can't be read from the BDT sheet &rarr;
-  <b>Revise</b>.</li>
+  <li>Door evidence is strict: <b>alarm_category</b> must be Door on the
+  same site and test date.</li>
+  <li><b>Accepted</b> &mdash; door <b>occurred_on</b> and <b>cleared_on</b>
+  are fully inside <b>time_in &rarr; time_out</b>. Entry/exit deltas are
+  reported for audit.</li>
+  <li><b>Revise</b> &mdash; a door alarm overlaps the visit window but
+  starts before <b>time_in</b> and/or clears after <b>time_out</b>, or
+  <b>cleared_on</b> is missing. Example: door 10:51&rarr;13:44 with
+  window 11:05&rarr;13:42 &rarr; overlap exists but edges extend outside
+  the recorded visit &mdash; a human reviewer decides.</li>
+  <li><b>Rejected</b> &mdash; no Door alarm on that date, or door alarms
+  exist but none overlap the visit window (for example a morning visit
+  door with an afternoon test window).</li>
+  <li>No alarm history loaded for that site &rarr; <b>Revise</b>
+  (incomplete evidence).</li>
+  <li>Invalid or missing <b>time_in</b> &rarr; <b>Revise</b>.</li>
 </ul>
-<p>This check helps catch tests that exist only on paper.</p>
+<p>This check helps catch tests that exist only on paper while still
+allowing real field visits where paperwork times are slightly off.</p>
 """
 
 

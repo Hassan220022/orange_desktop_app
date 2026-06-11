@@ -9,6 +9,7 @@ from alarm_app.bdt.validator import (
     BDT_TOLERANCE_PROFILE_VERSION,
     BDT_TOLERANCE_PROFILE_VERSION_KEY,
     BDTTolerances,
+    _evaluate_door_evidence,
     _find_door_alarms,
     _rule_1_photos,
     _rule_2_power_alarm_match,
@@ -230,8 +231,8 @@ class TestValidateBDTOverall:
         result = validate_bdt(bdt, None)
         verdicts = {r.rule_id: r.verdict for r in result.rules}
         assert verdicts["R2"] == "N/A"
-        assert verdicts["R10"] == "Rejected"
-        assert result.overall == "Rejected"
+        assert verdicts["R10"] == "Revise"
+        assert result.overall == "Revise"
 
     def test_overall_revise_when_power_evidence_revise_and_door_accepted(self):
         slots = [
@@ -1270,10 +1271,10 @@ class TestR9DischargeCurrentTolerance:
 
 class TestR10DoorAlarmCondition:
 
-    def test_no_alarm_data_rejected(self):
+    def test_no_alarm_data_revise(self):
         bdt = _make_bdt()
         r = _rule_10_door_alarm_match(bdt, None)
-        assert r.verdict == "Rejected"
+        assert r.verdict == "Revise"
         assert "required" in r.detail.lower()
         assert "no alarm data" in r.detail.lower()
 
@@ -1282,22 +1283,23 @@ class TestR10DoorAlarmCondition:
         alarm_df = _make_alarm_df([_door_alarm(category="Door", alarm_name="X", file_source="misc.csv")])
         r = _rule_10_door_alarm_match(bdt, alarm_df)
         assert r.verdict == "Accepted"
+        assert "entry" in r.detail.lower()
 
-    def test_detect_by_alarm_name_accepted(self):
+    def test_strict_category_rejects_name_only_match(self):
         bdt = _make_bdt()
         alarm_df = _make_alarm_df([
             _door_alarm(category="Security", alarm_name="Main Door Open", file_source="misc.csv")
         ])
         r = _rule_10_door_alarm_match(bdt, alarm_df)
-        assert r.verdict == "Accepted"
+        assert r.verdict == "Rejected"
 
-    def test_detect_by_file_source_accepted(self):
+    def test_strict_category_rejects_file_source_only_match(self):
         bdt = _make_bdt()
         alarm_df = _make_alarm_df([
             _door_alarm(category="Security", alarm_name="Other", file_source="door_events.csv")
         ])
         r = _rule_10_door_alarm_match(bdt, alarm_df)
-        assert r.verdict == "Accepted"
+        assert r.verdict == "Rejected"
 
     def test_same_site_and_date_required_rejected(self):
         bdt = _make_bdt()
@@ -1308,7 +1310,7 @@ class TestR10DoorAlarmCondition:
         r = _rule_10_door_alarm_match(bdt, alarm_df)
         assert r.verdict == "Rejected"
 
-    def test_prefers_door_alarm_within_test_window(self):
+    def test_find_door_alarms_lists_all_strict_candidates(self):
         bdt = _make_bdt(time_in="08:00", time_out="10:00")
         alarm_df = _make_alarm_df([
             _door_alarm(site_id="SITE001", occurred="2026-01-15 06:30:00"),
@@ -1318,23 +1320,162 @@ class TestR10DoorAlarmCondition:
             alarm_df,
             bdt.site_code,
             pd.Timestamp(bdt.test_date).normalize(),
-            pd.Timestamp("2026-01-15 08:00:00"),
-            pd.Timestamp("2026-01-15 10:00:00"),
         )
 
-        assert len(doors) == 1
-        assert doors.iloc[0]["occurred_on"] == pd.Timestamp("2026-01-15 09:15:00")
+        assert len(doors) == 2
 
-    def test_door_alarm_rule_rejects_when_only_outside_window_matches(self):
+    def test_r10_contained_accepted(self):
+        bdt = _make_bdt(time_in="11:05", time_out="13:42")
+        alarm_df = _make_alarm_df([
+            _door_alarm(
+                occurred="2026-01-15 11:10:00",
+                cleared="2026-01-15 13:30:00",
+            ),
+        ])
+        r = _rule_10_door_alarm_match(bdt, alarm_df)
+        assert r.verdict == "Accepted"
+        assert "inside onsite window" in r.detail
+        assert "entry" in r.detail.lower()
+
+    def test_r10_4528ca_pattern_revise(self):
+        bdt = _make_bdt(
+            site_code="4528CA",
+            time_in="11:05",
+            time_out="13:42",
+            test_date=datetime(2026, 4, 2),
+        )
+        alarm_df = _make_alarm_df([
+            _door_alarm(
+                site_id="4528CA",
+                occurred="2026-04-02 10:51:00",
+                cleared="2026-04-02 13:44:00",
+                alarm_name="Shelter Door Alarm",
+            ),
+        ])
+        r = _rule_10_door_alarm_match(bdt, alarm_df)
+        assert r.verdict == "Revise"
+        assert "overlap" in r.detail.lower()
+        assert "entry" in r.detail.lower()
+        assert "exit" in r.detail.lower()
+        assert "reviewer decision" in r.detail.lower()
+
+    def test_r10_no_overlap_rejected(self):
+        bdt = _make_bdt(time_in="11:05", time_out="13:42")
+        alarm_df = _make_alarm_df([
+            _door_alarm(
+                occurred="2026-01-15 08:00:00",
+                cleared="2026-01-15 09:00:00",
+            ),
+        ])
+        r = _rule_10_door_alarm_match(bdt, alarm_df)
+        assert r.verdict == "Rejected"
+        assert "none overlap onsite window" in r.detail.lower()
+
+    def test_r10_missing_cleared_revise(self):
+        bdt = _make_bdt(time_in="11:05", time_out="13:42")
+        alarm_df = _make_alarm_df([
+            {
+                "site_id": "SITE001",
+                "occurred_on": pd.Timestamp("2026-01-15 11:10:00"),
+                "cleared_on": pd.NaT,
+                "alarm_category": "Door",
+                "alarm_name": "Shelter Door Alarm",
+                "_duration_secs": 60.0,
+                "duration": "00:01:00",
+                "file_source": "door_alarms.csv",
+            },
+        ])
+        r = _rule_10_door_alarm_match(bdt, alarm_df)
+        assert r.verdict == "Revise"
+        assert "cleared_on is missing" in r.detail.lower()
+
+    def test_r10_overlap_but_not_contained_revise(self):
         bdt = _make_bdt(time_in="08:00", time_out="10:00")
         alarm_df = _make_alarm_df([
-            _door_alarm(site_id="SITE001", occurred="2026-01-15 06:30:00"),
+            _door_alarm(
+                occurred="2026-01-15 06:30:00",
+                cleared="2026-01-15 09:00:00",
+            ),
         ])
-
         r = _rule_10_door_alarm_match(bdt, alarm_df)
+        assert r.verdict == "Revise"
+        assert "reviewer decision" in r.detail.lower()
 
+    def test_r10_no_overlap_when_only_early_visit_rejected(self):
+        bdt = _make_bdt(time_in="08:00", time_out="10:00")
+        alarm_df = _make_alarm_df([
+            _door_alarm(
+                occurred="2026-01-15 06:30:00",
+                cleared="2026-01-15 07:00:00",
+            ),
+        ])
+        r = _rule_10_door_alarm_match(bdt, alarm_df)
         assert r.verdict == "Rejected"
-        assert "test window" in r.detail
+        assert "none overlap onsite window" in r.detail.lower()
+
+    def test_r10_overall_revise_not_rejected_on_edge(self):
+        bdt = _make_bdt(
+            site_code="4528CA",
+            time_in="11:05",
+            time_out="13:42",
+            test_date=datetime(2026, 4, 2),
+            battery_brand="Lithium - Huawei",
+            battery_voltage=48.0,
+            num_strings=2,
+            num_batteries=2,
+            num_modules=5,
+            rectifier_brand="Huawei",
+            summary_data={
+                "Short Code": "4528CA",
+                "Battery Brand": "Lithium - Huawei",
+                "Battery Voltage": "48",
+                "Number of Strings": "2",
+                "Number of Batteries": "2",
+                "Number of Modules": "5",
+                "Rectifier Brand": "Huawei",
+                "Test Date": "2026-04-02",
+                "Start Voltage": "48.0",
+                "Start Amp": "40.0",
+                "End Voltage": "46.0",
+                "End Amp": "31.0",
+                "Discharge Time (mins)": "120.0",
+            },
+        )
+        alarm_df = _make_alarm_df([
+            _door_alarm(
+                site_id="4528CA",
+                occurred="2026-04-02 10:51:00",
+                cleared="2026-04-02 13:44:00",
+            ),
+            _power_alarm(
+                site_id="4528CA",
+                occurred="2026-04-02 11:05:00",
+                cleared="2026-04-02 13:05:00",
+            ),
+        ])
+        result = validate_bdt(bdt, alarm_df)
+        r10 = next(r for r in result.rules if r.rule_id == "R10")
+        assert r10.verdict == "Revise"
+        rejected = [r.rule_id for r in result.rules if r.verdict == "Rejected"]
+        assert "R10" not in rejected
+        assert result.overall == "Revise"
+
+    def test_evaluate_door_evidence_rows_share_r10_status_labels(self):
+        bdt = _make_bdt(time_in="11:05", time_out="13:42")
+        alarm_df = _make_alarm_df([
+            _door_alarm(
+                occurred="2026-01-15 11:10:00",
+                cleared="2026-01-15 13:30:00",
+            ),
+            _door_alarm(
+                occurred="2026-01-15 08:00:00",
+                cleared="2026-01-15 09:00:00",
+            ),
+        ])
+        evidence = _evaluate_door_evidence(bdt, alarm_df)
+        statuses = {row.status_label for row in evidence.rows}
+        assert "Accepted" in statuses
+        assert "No overlap" in statuses
 
 
 # ── Helper behavior remains valid ───────────────────────────────────────

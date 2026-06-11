@@ -440,7 +440,8 @@ def test_rule_docs_explain_r2_r10_bdt_semantics():
     assert "start time, end time, or duration" in r2
     assert "Door evidence" in r10
     assert "alarm_category" in r10
-    assert "no tolerance" in r10
+    assert "Revise" in r10
+    assert "time_in" in r10
     assert "occurred_on" in r10
     assert "cleared_on" in r10
 

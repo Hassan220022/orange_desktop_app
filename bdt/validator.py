@@ -646,6 +646,285 @@ def _build_test_window(bdt: BDTData) -> tuple[pd.Timestamp | None, pd.Timestamp 
     return start_ts, None
 
 
+@dataclass(frozen=True)
+class DoorEvidenceRow:
+    """Per-candidate door alarm scoring against the BDT onsite window."""
+    row_index: int
+    site_id: str
+    alarm_name: str
+    occurred_on: pd.Timestamp
+    cleared_on: pd.Timestamp | None
+    overlap_min: float
+    entry_delta_min: float | None
+    exit_delta_min: float | None
+    contained: bool
+    overlaps: bool
+    status_label: str
+
+
+@dataclass(frozen=True)
+class DoorEvidence:
+    """Shared door-presence evaluation for R10 and the detail panel."""
+    window_start: pd.Timestamp | None
+    window_end: pd.Timestamp | None
+    candidates: pd.DataFrame
+    rows: list[DoorEvidenceRow]
+    best: DoorEvidenceRow | None
+    verdict: str
+    detail: str
+
+
+def _door_candidates_strict(
+    alarm_df: pd.DataFrame,
+    site_code: str,
+    test_date: pd.Timestamp,
+) -> pd.DataFrame:
+    """Same site, same date, alarm_category == Door only."""
+    required_cols = {"site_id", "occurred_on"}
+    if not required_cols.issubset(alarm_df.columns):
+        return alarm_df.iloc[0:0]
+
+    alarm_df = _normalize_alarm_datetimes(alarm_df)
+    site_mask = (
+        alarm_df["site_id"].astype(str).str.strip().str.upper()
+        == site_code.strip().upper()
+    )
+    date_mask = alarm_df["occurred_on"].dt.normalize() == test_date
+
+    category_mask = pd.Series(False, index=alarm_df.index)
+    if "alarm_category" in alarm_df.columns:
+        category_mask = (
+            alarm_df["alarm_category"].astype(str).str.strip().str.lower() == "door"
+        )
+
+    return alarm_df[site_mask & date_mask & category_mask].copy()
+
+
+def _valid_door_cleared(
+    occurred_on: pd.Timestamp,
+    cleared_on: object,
+) -> pd.Timestamp | None:
+    if cleared_on is None or (isinstance(cleared_on, float) and np.isnan(cleared_on)):
+        return None
+    try:
+        cleared_ts = pd.Timestamp(cleared_on)
+    except Exception:
+        return None
+    if pd.isna(cleared_ts) or cleared_ts < occurred_on:
+        return None
+    return cleared_ts
+
+
+def _door_overlap_minutes(
+    door_start: pd.Timestamp,
+    door_end: pd.Timestamp,
+    window_start: pd.Timestamp,
+    window_end: pd.Timestamp,
+) -> float:
+    if door_end <= window_start or door_start >= window_end:
+        return 0.0
+    overlap_start = max(door_start, window_start)
+    overlap_end = min(door_end, window_end)
+    return float((overlap_end - overlap_start) / pd.Timedelta(minutes=1))
+
+
+def _score_door_candidate(
+    row_index: int,
+    row: pd.Series,
+    window_start: pd.Timestamp,
+    window_end: pd.Timestamp,
+) -> DoorEvidenceRow:
+    occurred_on = pd.Timestamp(row["occurred_on"])
+    cleared_ts = _valid_door_cleared(occurred_on, row.get("cleared_on"))
+    door_end_for_overlap = cleared_ts if cleared_ts is not None else window_end
+    overlap_min = _door_overlap_minutes(
+        occurred_on, door_end_for_overlap, window_start, window_end
+    )
+    overlaps = overlap_min > 0.0
+    contained = (
+        cleared_ts is not None
+        and occurred_on >= window_start
+        and cleared_ts <= window_end
+    )
+    entry_delta_min = float(
+        (occurred_on - window_start) / pd.Timedelta(minutes=1)
+    )
+    exit_delta_min = (
+        float((cleared_ts - window_end) / pd.Timedelta(minutes=1))
+        if cleared_ts is not None
+        else None
+    )
+    if not overlaps:
+        status_label = "No overlap"
+    elif contained:
+        status_label = "Accepted"
+    else:
+        status_label = "Revise"
+
+    return DoorEvidenceRow(
+        row_index=row_index,
+        site_id=str(row.get("site_id", "")),
+        alarm_name=str(row.get("alarm_name", "")),
+        occurred_on=occurred_on,
+        cleared_on=cleared_ts,
+        overlap_min=overlap_min,
+        entry_delta_min=entry_delta_min,
+        exit_delta_min=exit_delta_min,
+        contained=contained,
+        overlaps=overlaps,
+        status_label=status_label,
+    )
+
+
+def _format_door_ts(ts: pd.Timestamp | None) -> str:
+    if ts is None or pd.isna(ts):
+        return "?"
+    return ts.strftime("%H:%M")
+
+
+def _format_door_window(
+    window_start: pd.Timestamp | None,
+    window_end: pd.Timestamp | None,
+) -> str:
+    if window_start is None or window_end is None:
+        return "unknown"
+    return f"{_format_door_ts(window_start)}→{_format_door_ts(window_end)}"
+
+
+def _door_evidence_detail(
+    best: DoorEvidenceRow,
+    window_start: pd.Timestamp,
+    window_end: pd.Timestamp,
+    verdict: str,
+) -> str:
+    occ = _format_door_ts(best.occurred_on)
+    clr = _format_door_ts(best.cleared_on)
+    window_text = _format_door_window(window_start, window_end)
+    entry = best.entry_delta_min
+    exit_delta = best.exit_delta_min
+    entry_text = f"{entry:+.0f}m" if entry is not None else "n/a"
+    exit_text = f"{exit_delta:+.0f}m" if exit_delta is not None else "n/a"
+
+    if verdict == "Accepted":
+        return (
+            f"Door alarm {occ}→{clr} inside onsite window ({window_text}); "
+            f"overlap {best.overlap_min:.0f}m; "
+            f"entry Δ={entry_text}, exit Δ={exit_text}"
+        )
+    if verdict == "Revise":
+        if best.cleared_on is None:
+            return (
+                f"Door alarm {occ}→{clr} overlaps onsite window ({window_text}) "
+                f"by {best.overlap_min:.0f}m but cleared_on is missing — reviewer decision"
+            )
+        return (
+            f"Door alarm {occ}→{clr} overlaps onsite window ({window_text}) "
+            f"by {best.overlap_min:.0f}m but extends outside recorded time_in/time_out; "
+            f"entry Δ={entry_text}, exit Δ={exit_text} — reviewer decision"
+        )
+    return ""
+
+
+def _evaluate_door_evidence(bdt: BDTData, alarm_df: pd.DataFrame) -> DoorEvidence:
+    window_start, window_end = _build_test_window(bdt)
+
+    if bdt.test_date is None:
+        return DoorEvidence(
+            window_start=window_start,
+            window_end=window_end,
+            candidates=alarm_df.iloc[0:0],
+            rows=[],
+            best=None,
+            verdict="Rejected",
+            detail="Door alarm evidence is required, but the BDT test date is missing",
+        )
+
+    try:
+        test_date = pd.Timestamp(bdt.test_date).normalize()
+    except Exception:
+        return DoorEvidence(
+            window_start=window_start,
+            window_end=window_end,
+            candidates=alarm_df.iloc[0:0],
+            rows=[],
+            best=None,
+            verdict="Rejected",
+            detail=(
+                f"Door alarm evidence is required, but the BDT test date "
+                f"is invalid: {bdt.test_date!r}"
+            ),
+        )
+
+    if window_start is None or window_end is None:
+        return DoorEvidence(
+            window_start=window_start,
+            window_end=window_end,
+            candidates=alarm_df.iloc[0:0],
+            rows=[],
+            best=None,
+            verdict="Revise",
+            detail=(
+                "Cannot evaluate door alarm evidence: invalid or missing time_in "
+                "(expected HH:MM, HH:MM:SS, or AM/PM format)"
+            ),
+        )
+
+    candidates = _door_candidates_strict(alarm_df, bdt.site_code, test_date)
+    if candidates.empty:
+        return DoorEvidence(
+            window_start=window_start,
+            window_end=window_end,
+            candidates=candidates,
+            rows=[],
+            best=None,
+            verdict="Rejected",
+            detail=(
+                f"No Door alarm found for site {bdt.site_code} on {test_date.date()}"
+            ),
+        )
+
+    rows = [
+        _score_door_candidate(int(idx), row, window_start, window_end)
+        for idx, row in candidates.iterrows()
+    ]
+    overlapping = [row for row in rows if row.overlaps]
+    if not overlapping:
+        return DoorEvidence(
+            window_start=window_start,
+            window_end=window_end,
+            candidates=candidates,
+            rows=rows,
+            best=None,
+            verdict="Rejected",
+            detail=(
+                f"Door alarm(s) found on {test_date.date()} but none overlap onsite "
+                f"window ({_format_door_window(window_start, window_end)})"
+            ),
+        )
+
+    best = max(
+        overlapping,
+        key=lambda row: (
+            row.overlap_min,
+            -(
+                abs(row.entry_delta_min or 0.0)
+                + abs(row.exit_delta_min or 0.0)
+            ),
+        ),
+    )
+    verdict = "Accepted" if best.contained else "Revise"
+    detail = _door_evidence_detail(best, window_start, window_end, verdict)
+    return DoorEvidence(
+        window_start=window_start,
+        window_end=window_end,
+        candidates=candidates,
+        rows=rows,
+        best=best,
+        verdict=verdict,
+        detail=detail,
+    )
+
+
 def _max_reached_discharge_minutes(bdt: BDTData) -> float | None:
     """Return max discharge-minute label that has at least one real reading."""
     max_mins = 0.0
@@ -1181,94 +1460,35 @@ def _find_door_alarms(
     window_end: pd.Timestamp | None = None,
     strict_window: bool = False,
 ) -> pd.DataFrame:
-    """Find same-site door alarms, preferring those inside the BDT test window."""
-    required_cols = {"site_id", "occurred_on"}
-    if not required_cols.issubset(alarm_df.columns):
-        return alarm_df.iloc[0:0]
+    """List same-site Door-category alarms on the test date.
 
-    alarm_df = _normalize_alarm_datetimes(alarm_df)
-    site_mask = (
-        alarm_df["site_id"].astype(str).str.strip().str.upper()
-        == site_code.strip().upper()
-    )
-    date_mask = alarm_df["occurred_on"].dt.normalize() == test_date
-
-    category_mask = pd.Series(False, index=alarm_df.index)
-    if "alarm_category" in alarm_df.columns:
-        category_mask = (
-            alarm_df["alarm_category"].astype(str).str.strip().str.lower() == "door"
-        )
-
-    name_mask = pd.Series(False, index=alarm_df.index)
-    if "alarm_name" in alarm_df.columns:
-        name_mask = alarm_df["alarm_name"].astype(str).str.contains("door", case=False, na=False)
-
-    source_mask = pd.Series(False, index=alarm_df.index)
-    if "file_source" in alarm_df.columns:
-        source_mask = alarm_df["file_source"].astype(str).str.contains("door", case=False, na=False)
-
-    door_mask = category_mask | name_mask | source_mask
-    matches = alarm_df[site_mask & date_mask & door_mask]
-    if matches.empty or window_start is None:
-        return matches
-
-    window_matches = matches[matches["occurred_on"] >= window_start]
-    if window_end is not None:
-        window_matches = window_matches[window_matches["occurred_on"] <= window_end]
-    if not window_matches.empty:
-        return window_matches
-    return matches.iloc[0:0] if strict_window else matches
+    ``window_start``, ``window_end``, and ``strict_window`` are accepted for
+    backward compatibility but no longer filter candidates. Use
+    :func:`_evaluate_door_evidence` for onsite-window verdict logic.
+    """
+    _ = (window_start, window_end, strict_window)
+    return _door_candidates_strict(alarm_df, site_code, test_date)
 
 
 def _rule_10_door_alarm_match(bdt: BDTData,
                               alarm_df: pd.DataFrame | None) -> RuleResult:
-    """R10: Same-site/date Door alarm must exist."""
+    """R10: Door alarm evidence aligned with human reviewer judgment."""
     if alarm_df is None or alarm_df.empty:
         return RuleResult(
             rule_id="R10", rule_name="Door Alarm Condition",
-            passed=False, verdict="Rejected",
+            passed=False, verdict="Revise",
             detail="Door alarm evidence is required, but no alarm data loaded",
         )
 
-    if bdt.test_date is None:
-        return RuleResult(
-            rule_id="R10", rule_name="Door Alarm Condition",
-            passed=False, verdict="Rejected",
-            detail="Door alarm evidence is required, but the BDT test date is missing",
-        )
-
-    try:
-        test_date = pd.Timestamp(bdt.test_date).normalize()
-    except Exception:
-        return RuleResult(
-            rule_id="R10", rule_name="Door Alarm Condition",
-            passed=False, verdict="Rejected",
-            detail=(f"Door alarm evidence is required, but the BDT test date "
-                    f"is invalid: {bdt.test_date!r}"),
-        )
-
-    window_start, window_end = _build_test_window(bdt)
-    doors = _find_door_alarms(
-        alarm_df,
-        bdt.site_code,
-        test_date,
-        window_start,
-        window_end,
-        strict_window=window_start is not None,
-    )
-    if doors.empty:
-        return RuleResult(
-            rule_id="R10", rule_name="Door Alarm Condition",
-            passed=False, verdict="Rejected",
-            detail=(f"No Door alarm found for site {bdt.site_code} during "
-                    f"the test window on {test_date.date()}"),
-        )
-
+    evidence = _evaluate_door_evidence(bdt, alarm_df)
+    passed = evidence.verdict == "Accepted"
+    if evidence.verdict == "N/A":
+        passed = None
     return RuleResult(
         rule_id="R10", rule_name="Door Alarm Condition",
-        passed=True, verdict="Accepted",
-        detail=(f"Door alarm found for site {bdt.site_code} on {test_date.date()} "
-                f"({len(doors)} match(es){' within test window' if window_start is not None else ''})"),
+        passed=passed,
+        verdict=evidence.verdict,
+        detail=evidence.detail,
     )
 
 
