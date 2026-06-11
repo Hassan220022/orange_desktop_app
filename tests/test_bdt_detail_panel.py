@@ -12,9 +12,22 @@ class _Widget:
         self.visible = visible
 
 
+class _Hint:
+    def __init__(self, text=""):
+        self._text = text
+        self.visible = None
+
+    def text(self):
+        return self._text
+
+    def setVisible(self, visible):
+        self.visible = visible
+
+
 def test_sync_optional_sections_hides_empty_sections():
     panel = SimpleNamespace(
         _bdt_door_section_label=_Widget(),
+        _bdt_door_window_hint=_Hint(),
         _bdt_door_table=_Widget(),
         _bdt_door_empty=_Widget(),
         _bdt_hist_section_label=_Widget(),
@@ -35,6 +48,7 @@ def test_sync_optional_sections_hides_empty_sections():
 def test_sync_optional_sections_shows_only_sections_with_content():
     panel = SimpleNamespace(
         _bdt_door_section_label=_Widget(),
+        _bdt_door_window_hint=_Hint(),
         _bdt_door_table=_Widget(),
         _bdt_door_empty=_Widget(),
         _bdt_hist_section_label=_Widget(),
@@ -81,40 +95,11 @@ def test_photo_verification_text_hides_non_flagged_results():
     assert BdtDetailPanel._photo_verification_text(slot) == ""
 
 
-class _Combo:
-    def __init__(self):
-        self.items = []
-        self.blocked = []
+def test_category_summary_text_formats_previous_test_heading():
+    summary = {"batteries": 6, "modules": 0, "rectifier": 4}
+    text = BdtDetailPanel._category_summary_text("2024-05-26", summary)
 
-    def blockSignals(self, blocked):
-        self.blocked.append(blocked)
-
-    def clear(self):
-        self.items.clear()
-
-    def addItem(self, label, data):
-        self.items.append((label, data))
-
-
-def test_setup_photo_comparison_aggregates_all_previous_tests():
-    current = SimpleNamespace(site_code="AAA001", test_date=datetime(2026, 4, 22))
-    older1 = SimpleNamespace(site_code="AAA001", test_date=datetime(2026, 4, 21))
-    older2 = SimpleNamespace(site_code="AAA001", test_date=datetime(2026, 4, 20))
-    panel = SimpleNamespace(
-        _bdt_compare_grid=SimpleNamespace(count=lambda: 0),
-        _bdt_compare_section=_Widget(),
-        _cmb_compare_year=_Combo(),
-        _comparison_candidates_for_site=lambda bdt: [older1, older2],
-        _show_photo_comparison=lambda all_slots=False: None,
-    )
-
-    BdtDetailPanel._setup_photo_comparison(panel, current)
-
-    assert panel._bdt_compare_section.visible is True
-    assert len(panel._cmb_compare_year.items) == 1
-    label, data = panel._cmb_compare_year.items[0]
-    assert label == "2 previous test(s)"
-    assert data == [older1, older2]
+    assert text == "2024-05-26: Rectifier 4 · Batteries 6 · Modules 0"
 
 
 def test_build_discharge_detail_rows_includes_bus_sum_and_delta():

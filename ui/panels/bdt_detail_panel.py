@@ -3,7 +3,6 @@ BdtDetailPanel — BDT detail/photo gallery panel extracted from AlarmViewer.
 """
 
 import os
-import re
 from datetime import datetime
 
 import pandas as pd
@@ -11,7 +10,6 @@ from PyQt5.QtCore import Qt, QTimer, QUrl
 from PyQt5.QtGui import QColor, QDesktopServices, QPixmap
 from PyQt5.QtWidgets import (
     QAbstractItemView,
-    QComboBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -37,7 +35,6 @@ try:
     from alarm_app.constants import format_bdt_rule_label
     from alarm_app.data import state
     from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
-    from alarm_app.ui.flow_layout import FlowLayout
 except ImportError:
     from bdt.parser import BDTData, load_bdt_photos
     from bdt.photo_auth import verify_photo_slots
@@ -45,7 +42,6 @@ except ImportError:
     from constants import format_bdt_rule_label
     from data import state
     from data.alarm_store import load_alarm_slice_for_bdt
-    from ui.flow_layout import FlowLayout
 
 
 class _VerticalExpandButton(QPushButton):
@@ -96,7 +92,7 @@ class BdtDetailPanel(QWidget):
     _PHOTO_THUMB_MIN = 140
     _PHOTO_THUMB_MAX = 260
 
-    _COMPARE_KEY_CATEGORIES = {"rectifier", "batteries", "modules"}
+    _PHOTO_SUMMARY_CATEGORIES = {"rectifier", "batteries", "modules"}
     _DISCHARGE_FIXED_HEADERS = [
         "Time: min (h)",
         "Rec Bus V",
@@ -464,60 +460,6 @@ class BdtDetailPanel(QWidget):
 
         right_lay.addWidget(scroll, 1)
 
-        # ── Photo comparison section ──
-        self._bdt_compare_section = QWidget()
-        self._bdt_compare_section.setVisible(False)
-        compare_outer = QVBoxLayout(self._bdt_compare_section)
-        compare_outer.setContentsMargins(0, 6, 0, 0)
-        compare_outer.setSpacing(4)
-
-        # Compare header with buttons and year selector
-        compare_hdr_frame = QFrame()
-        compare_hdr_frame.setObjectName("filter_actions")
-        compare_hdr = FlowLayout(compare_hdr_frame, hspacing=8, vspacing=6)
-
-        lbl_compare = QLabel("COMPARE PHOTOS")
-        lbl_compare.setObjectName("bdt_section_title")
-        compare_hdr.addWidget(lbl_compare)
-
-        self._btn_compare_key = QPushButton("Key Slots")
-        self._btn_compare_key.setObjectName("btn_search")
-        self._mark_compact(self._btn_compare_key)
-        self._btn_compare_key.clicked.connect(
-            lambda: self._show_photo_comparison(all_slots=False))
-        compare_hdr.addWidget(self._btn_compare_key)
-
-        self._btn_compare_all = QPushButton("All Slots")
-        self._btn_compare_all.setObjectName("btn_clear")
-        self._mark_compact(self._btn_compare_all)
-        self._btn_compare_all.clicked.connect(
-            lambda: self._show_photo_comparison(all_slots=True))
-        compare_hdr.addWidget(self._btn_compare_all)
-
-        self._cmb_compare_year = QComboBox()
-        self._cmb_compare_year.setFixedWidth(100)
-        self._cmb_compare_year.currentIndexChanged.connect(
-            self._on_compare_year_changed)
-        compare_hdr.addWidget(self._cmb_compare_year)
-
-        compare_outer.addWidget(compare_hdr_frame)
-
-        # Scrollable comparison grid
-        compare_scroll = QScrollArea()
-        compare_scroll.setObjectName("bdt_photo_scroll")
-        compare_scroll.setWidgetResizable(True)
-        compare_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        self._bdt_compare_container = QWidget()
-        self._bdt_compare_container.setObjectName("bdt_photo_container")
-        self._bdt_compare_grid = QGridLayout(self._bdt_compare_container)
-        self._bdt_compare_grid.setContentsMargins(4, 4, 4, 4)
-        self._bdt_compare_grid.setSpacing(6)
-        compare_scroll.setWidget(self._bdt_compare_container)
-
-        compare_outer.addWidget(compare_scroll, 1)
-        right_lay.addWidget(self._bdt_compare_section, 1)
-
         self._bdt_detail_splitter.addWidget(right)
 
         # Initial proportions favor photos (left:center:right ≈ 1:1.4:2.8)
@@ -874,10 +816,7 @@ class BdtDetailPanel(QWidget):
         if bdt:
             load_bdt_photos(bdt)
         self._populate_bdt_photos(bdt)
-
-        # ── Photo comparison setup ──
         self._current_bdt = bdt
-        self._setup_photo_comparison(bdt)
 
     @classmethod
     def _discharge_headers(cls, active_strings: int | None = None) -> list[str]:
@@ -1484,7 +1423,7 @@ class BdtDetailPanel(QWidget):
         append every older sibling test for the same site beneath it,
         newest-first, each under its own 'PREVIOUS TEST — yyyy-MM-dd'
         separator. Siblings come from the currently loaded validation
-        batch via _comparison_candidates_for_site."""
+        batch via _sibling_bdt_for_site."""
         # Clear existing widgets
         while self._bdt_photo_grid.count():
             item = self._bdt_photo_grid.takeAt(0)
@@ -1528,10 +1467,10 @@ class BdtDetailPanel(QWidget):
             bands, thumb_w, start_row=0, max_cols=max_cols)
 
         # ── Older sibling tests for the same site, newest-first ─
-        # _comparison_candidates_for_site already sorts desc by test_date
-        # and excludes the current BDT.
+        # _sibling_bdt_for_site already sorts desc by test_date and excludes
+        # the current BDT.
         try:
-            siblings = self._comparison_candidates_for_site(bdt)
+            siblings = self._sibling_bdt_for_site(bdt)
         except Exception:
             siblings = []
 
@@ -1557,7 +1496,12 @@ class BdtDetailPanel(QWidget):
             # Separator heading — full width, distinct style
             sep_date = (sibling.test_date.strftime("%Y-%m-%d")
                         if sibling.test_date else "unknown date")
-            sep = QLabel(f"◂  PREVIOUS TEST    {sep_date}")
+            summary = self._photo_category_summary(sibling.photo_slots)
+            sep_text = (
+                f"◂  PREVIOUS TEST    "
+                f"{self._category_summary_text(sep_date, summary)}"
+            )
+            sep = QLabel(sep_text)
             sep.setObjectName("bdt_history_separator")
             sep.setAlignment(Qt.AlignLeft)
             self._bdt_photo_grid.addWidget(sep, grid_row, 0, 1, max_cols)
@@ -1570,7 +1514,7 @@ class BdtDetailPanel(QWidget):
                 sibling_bands, sibling_thumb, start_row=grid_row, max_cols=sibling_cols)
 
     # ------------------------------------------------------------------
-    # Photo comparison utilities
+    # Previous-test photo helpers
     # ------------------------------------------------------------------
     @staticmethod
     def _slot_category(slot) -> str:
@@ -1579,8 +1523,8 @@ class BdtDetailPanel(QWidget):
             return str(category).lower()
         return "other"
 
-    def _build_compare_category_summary(self, slots) -> dict[str, int]:
-        summary = dict.fromkeys(sorted(self._COMPARE_KEY_CATEGORIES), 0)
+    def _photo_category_summary(self, slots) -> dict[str, int]:
+        summary = dict.fromkeys(sorted(self._PHOTO_SUMMARY_CATEGORIES), 0)
         for slot in slots:
             cat = self._slot_category(slot)
             if cat in summary and self._slot_has_image(slot):
@@ -1597,24 +1541,6 @@ class BdtDetailPanel(QWidget):
         )
 
     @staticmethod
-    def _slot_match_key(slot) -> str:
-        label = re.sub(r"\s+", " ", str(getattr(slot, "label", "")).strip().lower())
-        category = str(getattr(slot, "category", "")).strip().lower() or "other"
-        return f"{category}|{label}"
-
-    def _comparison_slots(self, other: BDTData, all_slots: bool) -> list:
-        slots = [
-            slot for slot in list(getattr(other, "photo_slots", []) or [])
-            if getattr(slot, "image_data", None)
-        ]
-        if all_slots:
-            return slots
-        return [
-            slot for slot in slots
-            if self._slot_category(slot) in self._COMPARE_KEY_CATEGORIES
-        ]
-
-    @staticmethod
     def _normalize_site_token(text: str) -> str:
         """Normalize site/file text to alphanumeric uppercase for robust matching."""
         return "".join(ch for ch in str(text).upper() if ch.isalnum())
@@ -1628,8 +1554,8 @@ class BdtDetailPanel(QWidget):
         file_token = cls._normalize_site_token(file_name)
         return bool(file_token) and site_token in file_token
 
-    def _comparison_candidates_for_site(self, bdt: BDTData) -> list[BDTData]:
-        """Collect comparison candidates from exact site map + filename fallback."""
+    def _sibling_bdt_for_site(self, bdt: BDTData) -> list[BDTData]:
+        """Collect other BDT files for the same site from map + filename fallback."""
         key = (bdt.site_code or "").strip().upper()
         if not key:
             return []
@@ -1664,157 +1590,3 @@ class BdtDetailPanel(QWidget):
             reverse=True,
         )
         return candidates
-
-    def _setup_photo_comparison(self, bdt: BDTData | None):
-        """Check if comparison data is available and configure the UI."""
-        # Clear comparison grid
-        while self._bdt_compare_grid.count():
-            item = self._bdt_compare_grid.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-
-        if not bdt or not bdt.site_code:
-            self._bdt_compare_section.setVisible(False)
-            return
-
-        others = self._comparison_candidates_for_site(bdt)
-
-        if not others:
-            self._bdt_compare_section.setVisible(False)
-            return
-
-        older = [
-            other for other in others
-            if other.test_date and bdt.test_date and other.test_date < bdt.test_date
-        ]
-        if not older:
-            self._bdt_compare_section.setVisible(False)
-            return
-
-        # Populate selector with summary only; compare view aggregates all prior tests.
-        self._cmb_compare_year.blockSignals(True)
-        self._cmb_compare_year.clear()
-        self._cmb_compare_year.addItem(f"{len(older)} previous test(s)", older)
-        self._cmb_compare_year.blockSignals(False)
-
-        self._bdt_compare_section.setVisible(True)
-        self._show_photo_comparison(all_slots=False)
-
-    def _on_compare_year_changed(self, _idx):
-        """Re-render comparison when user selects a different year."""
-        if self._bdt_compare_section.isVisible():
-            self._show_photo_comparison(all_slots=False)
-
-    def _show_photo_comparison(self, all_slots: bool = False):
-        """Render side-by-side photo comparison grid."""
-        # Clear
-        while self._bdt_compare_grid.count():
-            item = self._bdt_compare_grid.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-
-        bdt = self._current_bdt
-        if not bdt or not bdt.photo_slots:
-            return
-
-        others = list(self._cmb_compare_year.currentData() or [])
-        if not others:
-            lbl = QLabel("No comparison data available")
-            lbl.setObjectName("bdt_photo_label")
-            lbl.setAlignment(Qt.AlignCenter)
-            self._bdt_compare_grid.addWidget(lbl, 0, 0, 1, 3)
-            return
-
-        grid_row = 0
-        shown_any = False
-        for other in others:
-            load_bdt_photos(other)
-            compare_slots = self._comparison_slots(other, all_slots)
-            if not compare_slots:
-                continue
-            shown_any = True
-
-            other_label = (
-                other.test_date.strftime("%Y-%m-%d")
-                if other.test_date else "Unknown test"
-            )
-
-            hdr_slot = QLabel("Slot")
-            hdr_slot.setObjectName("bdt_info_key")
-            hdr_slot.setAlignment(Qt.AlignCenter)
-            hdr_oth = QLabel(other_label)
-            hdr_oth.setObjectName("bdt_section_title")
-            hdr_oth.setAlignment(Qt.AlignCenter)
-            self._bdt_compare_grid.addWidget(hdr_slot, grid_row, 0)
-            self._bdt_compare_grid.addWidget(hdr_oth, grid_row, 1)
-            grid_row += 1
-
-            oth_summary = self._build_compare_category_summary(compare_slots)
-            summary_slot = QLabel("Category photos")
-            summary_slot.setObjectName("bdt_info_key")
-            summary_slot.setAlignment(Qt.AlignCenter)
-            summary_oth = QLabel(self._category_summary_text(other_label, oth_summary))
-            summary_oth.setObjectName("bdt_photo_label")
-            summary_oth.setAlignment(Qt.AlignCenter)
-            self._bdt_compare_grid.addWidget(summary_slot, grid_row, 0)
-            self._bdt_compare_grid.addWidget(summary_oth, grid_row, 1)
-            grid_row += 1
-
-            for slot in compare_slots:
-                name_lbl = QLabel(getattr(slot, "label", "") or self._slot_category(slot))
-                name_lbl.setObjectName("bdt_photo_label")
-                name_lbl.setAlignment(Qt.AlignCenter)
-                name_lbl.setWordWrap(True)
-                self._bdt_compare_grid.addWidget(name_lbl, grid_row, 0)
-                self._bdt_compare_grid.addWidget(
-                    self._make_compare_photo_widget(slot),
-                    grid_row, 1)
-                grid_row += 1
-
-            spacer = QLabel("")
-            spacer.setMinimumHeight(10)
-            self._bdt_compare_grid.addWidget(spacer, grid_row, 0, 1, 2)
-            grid_row += 1
-
-        if not shown_any:
-            lbl = QLabel("No matching slots for this comparison mode")
-            lbl.setObjectName("bdt_photo_label")
-            lbl.setAlignment(Qt.AlignCenter)
-            self._bdt_compare_grid.addWidget(lbl, 0, 0, 1, 2)
-
-    def _make_compare_photo_widget(self, slot) -> QFrame:
-        """Create a photo card for the comparison grid."""
-        card = QFrame()
-        card_lay = QVBoxLayout(card)
-        card_lay.setContentsMargins(2, 2, 2, 2)
-        card_lay.setSpacing(1)
-
-        if slot and self._slot_has_image(slot):
-            card.setObjectName("bdt_photo_card")
-            card.setCursor(Qt.PointingHandCursor)
-            pix = self._slot_pixmap(slot)
-            if pix.isNull():
-                card.setObjectName("bdt_photo_missing")
-                na_lbl = QLabel("N/A")
-                na_lbl.setObjectName("bdt_photo_missing_label")
-                na_lbl.setAlignment(Qt.AlignCenter)
-                card_lay.addWidget(na_lbl, 1)
-            else:
-                thumb = pix.scaledToWidth(160, Qt.SmoothTransformation)
-                img_lbl = QLabel()
-                img_lbl.setPixmap(thumb)
-                img_lbl.setAlignment(Qt.AlignCenter)
-                card_lay.addWidget(img_lbl)
-                _source = self._slot_fullsize_source(slot)
-                _label = getattr(slot, "label", "") or getattr(slot, "category", "") or "Photo"
-                card.mousePressEvent = lambda _, s=_source, l=_label: self._show_photo_fullsize(s, l)
-        else:
-            card.setObjectName("bdt_photo_missing")
-            na_lbl = QLabel("N/A")
-            na_lbl.setObjectName("bdt_photo_missing_label")
-            na_lbl.setAlignment(Qt.AlignCenter)
-            card_lay.addWidget(na_lbl, 1)
-
-        return card
