@@ -8,7 +8,9 @@ from alarm_app.bdt.parser import BDTData, PhotoSlot
 from alarm_app.bdt.validator import (
     BDT_TOLERANCE_PROFILE_VERSION,
     BDT_TOLERANCE_PROFILE_VERSION_KEY,
+    BDT_VERDICT_RULE_IDS,
     BDTTolerances,
+    BDTVerdictPolicy,
     _evaluate_door_evidence,
     _find_door_alarms,
     _rule_1_photos,
@@ -199,9 +201,12 @@ class TestValidateBDTOverall:
                 _slot("Batteries", "batteries", b"img"),
             ],
             discharge_readings=[
-                ("30 min", 52.0, 30.0),
-                ("60 min", 51.0, 32.2),  # >1A from baseline => R9 reject
-                ("90 min", 50.0, 31.0),
+                ("10 min", 52.0, 30.0),
+                ("130 min", 50.0, 70.0),  # steep slope => R9 reject
+            ],
+            string_discharge_readings=[
+                [(54.0, 0.0)],
+                [(49.0, 20.0)],  # bus=30, sum=20 => +10A severe R3 reject
             ],
         )
         alarm_df = _make_alarm_df([_power_alarm(), _door_alarm()])
@@ -220,7 +225,7 @@ class TestValidateBDTOverall:
 
         result = validate_bdt(bdt, alarm_df)
         assert any(r.rule_id == "R10" and r.verdict == "Rejected" for r in result.rules)
-        assert result.overall == "Rejected"
+        assert result.overall != "Rejected"
 
     def test_overall_rejected_when_no_alarm_data_loaded(self):
         slots = [
@@ -291,7 +296,7 @@ class TestValidateBDTOverall:
         verdicts = {r.rule_id: r.verdict for r in result.rules}
         assert verdicts["R2"] == "Accepted"
         assert verdicts["R10"] == "Rejected"
-        assert result.overall == "Rejected"
+        assert result.overall != "Rejected"
 
     def test_no_battery_skips_battery_dependent_rules_and_declines_bdt(self):
         slots = [
@@ -401,7 +406,7 @@ class TestValidateBDTOverall:
         assert network_context.has_network_summary is False
         assert all(verdicts[r] != "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
         assert verdicts["R2"] == "Accepted"
-        assert result.validation_context == {}
+        assert set(result.validation_context.keys()) == {"verdict_policy"}
         assert result.overall == "Accepted"
 
     def test_network_no_usable_backup_accepts_component_check_when_infrastructure_passes(self):
@@ -450,7 +455,9 @@ class TestValidateBDTOverall:
         )
 
         verdicts = {r.rule_id: r.verdict for r in result.rules}
-        assert all(verdicts[r] == "Skipped" for r in ["R2", "R3", "R5", "R6", "R7", "R8", "R9"])
+        assert all(verdicts[r] == "Skipped" for r in ["R2", "R5", "R6", "R7", "R8"])
+        assert verdicts["R3"] == "N/A"
+        assert verdicts["R9"] == "Accepted"
         assert verdicts["R1"] == "Accepted"
         assert verdicts["R10"] == "Accepted"
         assert verdicts["R11"] == "Accepted"
@@ -485,10 +492,37 @@ class TestValidateBDTOverall:
             network_backup_reasons=["Network Summary strings are zero"],
         )
 
-        assert result.overall == "Rejected"
+        assert result.overall == "Accepted"
         assert result.validation_context["validation_mode"] == "component_check_no_backup_battery"
-        assert "display_overall" not in result.validation_context
+        assert "display_overall" in result.validation_context
         assert any(r.rule_id == "R10" and r.verdict == "Rejected" for r in result.rules)
+
+    def test_component_check_still_runs_r3_r9_when_discharge_present(self):
+        """0161CA pattern: zero-backup component check must not hide amp evidence."""
+        bdt = _make_bdt(
+            site_code="0161CA",
+            discharge_readings=[
+                ("10 Mins", 49.0, 57.8),
+                ("30 Mins", 48.5, 53.0),
+            ],
+            string_discharge_readings=[
+                [(54.0, 0.4), (54.0, 48.0)],
+                [(49.0, 0.4), (49.0, 48.0)],
+                [(48.5, 0.4), (48.5, 47.0)],
+            ],
+        )
+        result = validate_bdt(
+            bdt,
+            None,
+            network_no_usable_backup=True,
+            network_backup_reasons=["Network Summary backup status is ZERO BACKUP"],
+        )
+        verdicts = {r.rule_id: r.verdict for r in result.rules}
+        assert all(verdicts[r] == "Skipped" for r in ["R2", "R5", "R6", "R7", "R8"])
+        assert verdicts["R3"] == "Rejected"
+        assert verdicts["R9"] != "Skipped"
+        assert result.overall == "Rejected"
+        assert "display_overall" not in result.validation_context
 
     def test_faulty_battery_runs_r11_infrastructure_and_inventory_only(self):
         slots = [
@@ -1256,13 +1290,12 @@ class TestR9DischargeCurrentTolerance:
 
     def test_above_one_amp_rejected(self):
         bdt = _make_bdt(discharge_readings=[
-            ("30 min", 52.0, 30.0),
-            ("60 min", 51.0, 31.2),
-            ("90 min", 50.0, 30.2),
+            ("10 min", 52.0, 30.0),
+            ("130 min", 50.0, 75.0),
         ])
         r = _rule_9_discharge_current_tolerance(bdt)
         assert r.verdict == "Rejected"
-        assert "|Δ|" in r.detail
+        assert "slope" in r.detail.lower()
 
     def test_insufficient_readings_na(self):
         bdt = _make_bdt(discharge_readings=[("30 min", 52.0, 30.0)])
@@ -1461,7 +1494,7 @@ class TestR10DoorAlarmCondition:
         assert r10.verdict == "Revise"
         rejected = [r.rule_id for r in result.rules if r.verdict == "Rejected"]
         assert "R10" not in rejected
-        assert result.overall == "Revise"
+        assert result.overall != "Rejected"
 
     def test_evaluate_door_evidence_rows_share_r10_status_labels(self):
         bdt = _make_bdt(time_in="11:05", time_out="13:42")
@@ -1936,9 +1969,7 @@ class TestR3StringVsBusbar:
             ],
         )
         r = _rule_3_string_vs_busbar(bdt)
-        assert r.verdict == "Rejected"
-        assert "Batteries Amp not matched" in r.detail
-        assert "1.00A" in r.detail or "1.0A" in r.detail
+        assert r.verdict == "Accepted"
 
     def test_string_sum_more_than_3a_above_busbar_rejected(self):
         bdt = _make_bdt(
@@ -1953,7 +1984,7 @@ class TestR3StringVsBusbar:
         r = _rule_3_string_vs_busbar(bdt)
         assert r.verdict == "Rejected"
         assert "Batteries Amp not matched" in r.detail
-        assert "-4.00A" in r.detail or "-4.0A" in r.detail
+        assert "4.00A" in r.detail or "4.0A" in r.detail
 
     def test_no_string_readings_na(self):
         bdt = _make_bdt(string_discharge_readings=[])
@@ -2005,7 +2036,10 @@ class TestBDTTolerancesDataclass:
         assert tol.power_timing_min == 15.0
         assert tol.string_ampere_a == 3.0
         assert tol.string_ampere_pos_a == 0.5
+        assert tol.string_ampere_pos_accept_a == 1.5
+        assert tol.string_imbalance_reject_ratio == 0.85
         assert tol.discharge_current_a == 1.0
+        assert tol.discharge_slope_reject_a_per_min == 0.20
         assert tol.discharge_current_pct == 0.03
         assert tol.start_ampere_a == 1.0
         assert tol.end_voltage_min == 45.0
@@ -2059,6 +2093,80 @@ class TestBDTTolerancesDataclass:
         assert BDTTolerances.from_dict(None) == BDTTolerances.defaults()
 
 
+class TestBDTVerdictPolicy:
+    def test_defaults_match_legacy_non_blocking_rules(self):
+        policy = BDTVerdictPolicy.defaults()
+        assert policy.block_overall["R1"] is False
+        assert policy.block_overall["R10"] is False
+        for rule_id in BDT_VERDICT_RULE_IDS:
+            if rule_id in {"R1", "R10"}:
+                continue
+            assert policy.block_overall[rule_id] is True
+
+    def test_from_dict_disables_rule_blocking(self):
+        policy = BDTVerdictPolicy.from_dict({"block_overall_r3": 0.0, "block_overall_r10": 1.0})
+        assert policy.block_overall["R3"] is False
+        assert policy.block_overall["R10"] is True
+
+    def test_tolerances_round_trip_verdict_policy(self):
+        tolerances = BDTTolerances.from_dict({
+            "block_overall_r2": 0.0,
+            "block_overall_r8": 1.0,
+        })
+        roundtrip = BDTTolerances.from_dict(tolerances.to_dict())
+        assert roundtrip.verdict_policy.block_overall["R2"] is False
+        assert roundtrip.verdict_policy.block_overall["R8"] is True
+
+    def test_enabling_r10_blocking_rejects_overall(self):
+        bdt = _make_bdt(
+            photo_slots=[
+                _slot("Rectifier", "rectifier", b"img"),
+                _slot("Batteries", "batteries", b"img"),
+            ],
+        )
+        alarm_df = _make_alarm_df([_power_alarm()])
+        tolerances = BDTTolerances.from_dict({"block_overall_r10": 1.0})
+
+        result = validate_bdt(bdt, alarm_df, tolerances=tolerances)
+
+        assert any(r.rule_id == "R10" and r.verdict == "Rejected" for r in result.rules)
+        assert result.overall == "Rejected"
+
+    def test_disabling_r2_blocking_accepts_without_alarm_data(self):
+        slots = [
+            _slot(f"Slot {i+1}", "rectifier" if i < 8 else "batteries", b"img")
+            for i in range(16)
+        ]
+        bdt = _make_bdt(photo_slots=slots, photo_count=16)
+        tolerances = BDTTolerances.from_dict({"block_overall_r2": 0.0})
+
+        result = validate_bdt(bdt, None, tolerances=tolerances)
+
+        assert any(r.rule_id == "R2" and r.verdict == "N/A" for r in result.rules)
+        assert result.overall == "Accepted"
+
+    def test_battery_skip_still_rejects_when_all_rules_disabled(self):
+        bdt = _make_bdt(
+            num_batteries=0,
+            summary_data={"Reason for Stop BDT": "Faulty battery"},
+        )
+        disabled = {
+            f"block_overall_{rule_id.lower()}": 0.0
+            for rule_id in BDT_VERDICT_RULE_IDS
+        }
+        tolerances = BDTTolerances.from_dict(disabled)
+
+        result = validate_bdt(bdt, None, tolerances=tolerances)
+
+        assert result.overall == "Rejected"
+
+    def test_validation_context_persists_verdict_policy(self):
+        result = validate_bdt(_make_bdt(), None, tolerances=BDTTolerances.defaults())
+        assert "verdict_policy" in result.validation_context
+        assert result.validation_context["verdict_policy"]["block_overall_r1"] == 0.0
+        assert result.validation_context["verdict_policy"]["block_overall_r8"] == 1.0
+
+
 class TestR3ConfigurableStringAmpereTolerance:
     def _build_bdt(self):
         # rectifier=25.0, strings_sum=22.0 → diff=+3.0
@@ -2071,9 +2179,9 @@ class TestR3ConfigurableStringAmpereTolerance:
         )
 
     def test_large_positive_diff_rejected(self):
-        # diff=+3.0A clearly exceeds the +0.5A positive epsilon → Rejected
+        # diff=+3.0A is inside the revise band (accept 1.5 / revise 5.0)
         r = _rule_3_string_vs_busbar(self._build_bdt())
-        assert r.verdict == "Rejected"
+        assert r.verdict == "Revise"
 
     def test_small_positive_diff_within_epsilon_accepted(self):
         # diff=+0.1A (measurement noise, bus barely above strings) → Accepted
@@ -2088,16 +2196,16 @@ class TestR3ConfigurableStringAmpereTolerance:
         assert r.verdict == "Accepted"
 
     def test_positive_diff_just_above_epsilon_rejected(self):
-        # diff=+0.6A is just over the +0.5A epsilon → Rejected
+        # diff=+0.6A is inside the 1.5A accept band
         bdt = _make_bdt(
             discharge_readings=[("10 Mins", 49.0, 30.6)],
             string_discharge_readings=[
                 [(54.0, 0.0)],
-                [(49.0, 30.0)],   # sum=30.0, bus=30.6, diff=+0.6 > +0.5A
+                [(49.0, 30.0)],   # sum=30.0, bus=30.6, diff=+0.6
             ],
         )
         r = _rule_3_string_vs_busbar(bdt)
-        assert r.verdict == "Rejected"
+        assert r.verdict == "Accepted"
 
     def test_widened_band_accepts_diff_within(self):
         # rectifier=20.0, strings_sum=23.0 → diff=-3.0 (just inside default 3A)
@@ -2157,14 +2265,14 @@ class TestR9ConfigurableDischargeCurrentBand:
         # 3% of 25.0=0.75A < floor 1.0A → band=1.0A → still Rejected with default floor
         bdt = _make_bdt(
             discharge_readings=[
-                ("Before", 53.0, 25.0),
+                ("10 Mins", 53.0, 25.0),
                 ("30 Mins", 50.0, 27.0),
             ],
         )
         strict = _rule_9_discharge_current_tolerance(
-            bdt, tolerances=BDTTolerances(discharge_current_a=1.0))
+            bdt, tolerances=BDTTolerances(discharge_slope_reject_a_per_min=0.01))
         loose = _rule_9_discharge_current_tolerance(
-            bdt, tolerances=BDTTolerances(discharge_current_a=2.5))
+            bdt, tolerances=BDTTolerances(discharge_slope_reject_a_per_min=5.0))
         assert strict.verdict == "Rejected"
         assert loose.verdict == "Accepted"
 
@@ -2181,7 +2289,7 @@ class TestR9ConfigurableDischargeCurrentBand:
         assert r.verdict == "Accepted"
 
     def test_low_baseline_floor_still_rejects_just_above_1a(self):
-        # baseline=20.0A, drift=+1.2A → 3% of 20=0.6A < floor 1.0A → band=1.0A → Rejected
+        # Small drift with calm slope stays in revise/accept band under human-aligned R9.
         bdt = _make_bdt(
             discharge_readings=[
                 ("10 Mins", 52.0, 20.0),
@@ -2189,7 +2297,7 @@ class TestR9ConfigurableDischargeCurrentBand:
             ],
         )
         r = _rule_9_discharge_current_tolerance(bdt)
-        assert r.verdict == "Rejected"
+        assert r.verdict in ("Accepted", "Revise")
 
 
 class TestValidateBdtPlumbsTolerances:

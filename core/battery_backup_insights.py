@@ -23,6 +23,70 @@ except ImportError:
 
 
 FAILED_RULE_VERDICTS = {"REJECTED", "REVISE", "NO DATA", "FAILED"}
+COMPONENT_CHECK_INSIGHT_STATUS = "Component Check - No Backup Battery"
+
+
+def _resolve_verdict_policy(bdt_payload: dict[str, Any]) -> Any:
+    try:
+        from alarm_app.bdt.validator import BDTVerdictPolicy
+    except ImportError:
+        from bdt.validator import BDTVerdictPolicy
+    raw = bdt_payload.get("verdict_policy")
+    if isinstance(raw, dict):
+        return BDTVerdictPolicy.from_dict(raw)
+    tolerances = bdt_payload.get("tolerances")
+    if isinstance(tolerances, dict):
+        return BDTVerdictPolicy.from_dict(tolerances)
+    return BDTVerdictPolicy.defaults()
+
+
+def insight_blocking_rule_failures(
+    rule_results: list[dict[str, Any]],
+    *,
+    verdict_policy: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Mirror validator overall blocking policy for insight severity."""
+    try:
+        from alarm_app.bdt.validator import (
+            BDTVerdictPolicy,
+            rule_blocks_overall_verdict_for_result,
+        )
+        from alarm_app.constants import BDT_OVERALL_IGNORE_NA_RULES
+    except ImportError:
+        from bdt.validator import (
+            BDTVerdictPolicy,
+            rule_blocks_overall_verdict_for_result,
+        )
+        from constants import BDT_OVERALL_IGNORE_NA_RULES
+    policy = verdict_policy if verdict_policy is not None else BDTVerdictPolicy.defaults()
+    failures: list[dict[str, Any]] = []
+    for rule in rule_results:
+        rule_id = str(rule.get("rule_id") or "").strip()
+        verdict = str(rule.get("verdict") or "").strip()
+        if upper(verdict) == "SKIPPED":
+            continue
+        pseudo = type("InsightRule", (), {
+            "rule_id": rule_id,
+            "verdict": verdict,
+            "detail": str(rule.get("detail") or ""),
+        })()
+        if rule_blocks_overall_verdict_for_result(
+            pseudo,
+            policy,
+            ignore_na_rules=frozenset(BDT_OVERALL_IGNORE_NA_RULES),
+        ):
+            failures.append(rule)
+    return failures
+
+
+def is_component_check_accepted(
+    validation_context: dict[str, Any] | None,
+    overall_verdict: Any,
+) -> bool:
+    context = validation_context if isinstance(validation_context, dict) else {}
+    if context.get("validation_mode") != "component_check_no_backup_battery":
+        return False
+    return upper(overall_verdict) == "ACCEPTED"
 
 
 def jsonable(value: Any) -> Any:
@@ -381,6 +445,12 @@ def build_battery_backup_insight(
     bdt_end_voltage = coerce_number(first(latest_test, "end_voltage"))
     latest_bdt_test_date = first(latest_test, "test_date") or first(latest_run, "test_date")
     overall_verdict = first(latest_run, "overall_verdict")
+    validation_context = (
+        bdt_payload.get("validation_context")
+        if isinstance(bdt_payload.get("validation_context"), dict)
+        else {}
+    )
+    component_check_mode = is_component_check_accepted(validation_context, overall_verdict)
 
     critical_markers: list[str] = []
     if upper(vip) and upper(vip) != "_":
@@ -397,12 +467,18 @@ def build_battery_backup_insight(
         or battery_context.no_usable_backup
         or (backup_minutes is not None and backup_minutes <= 0)
     )
+    if validation_context.get("network_no_usable_backup"):
+        declared_no_battery = True
     battery_declared = bool(network_rows) and not declared_no_battery
     has_bdt = bool(bdt_summary or bdt_tests or validation_runs)
     has_validation = bool(validation_runs)
     has_photos = section_total(bdt_payload, "photos") > 0 or bool(section_rows(bdt_payload, "photos"))
 
-    failed_rules = [rule for rule in rule_results if upper(rule.get("verdict")) in FAILED_RULE_VERDICTS]
+    verdict_policy = _resolve_verdict_policy(bdt_payload)
+    blocking_failed_rules = insight_blocking_rule_failures(
+        rule_results,
+        verdict_policy=verdict_policy,
+    )
     network_topology = build_battery_topology(
         brand=battery_type,
         battery_ah=network_battery_ah,
@@ -458,10 +534,18 @@ def build_battery_backup_insight(
     if overall_text in FAILED_RULE_VERDICTS:
         add_flag("bdt_failed", f"Latest BDT validation verdict is {overall_verdict}.", "high")
 
-    if failed_rules:
-        add_flag("failed_bdt_rules", f"{len(failed_rules)} BDT validation rule(s) are rejected/revise/no-data.", "high")
+    if blocking_failed_rules:
+        add_flag(
+            "failed_bdt_rules",
+            f"{len(blocking_failed_rules)} blocking BDT validation rule(s) are rejected/revise/no-data.",
+            "high",
+        )
 
-    if bdt_discharge_minutes is not None and bdt_discharge_minutes < min_backup_minutes:
+    if (
+        bdt_discharge_minutes is not None
+        and bdt_discharge_minutes < min_backup_minutes
+        and not (component_check_mode and declared_no_battery)
+    ):
         add_flag(
             "weak_measured_backup",
             f"Measured BDT discharge is {bdt_discharge_minutes:g} minutes, below the {min_backup_minutes:g} minute threshold.",
@@ -549,6 +633,9 @@ def build_battery_backup_insight(
         insight_status = "Battery Technology Upgrade Detected"
     elif "network_bdt_mismatch" in flags:
         insight_status = "Network Summary / BDT Mismatch"
+    elif component_check_mode and overall_text == "ACCEPTED" and "failed_bdt_rules" not in flags:
+        insight_status = COMPONENT_CHECK_INSIGHT_STATUS
+        severity = max_severity(severity, "medium")
     elif "bdt_failed" in flags or "failed_bdt_rules" in flags:
         insight_status = "Battery Exists - BDT Failed"
     elif "missing_bdt" in flags:
@@ -612,7 +699,7 @@ def build_battery_backup_insight(
             "bdt_test_count": section_total(bdt_payload, "bdt_tests"),
             "validation_run_count": section_total(bdt_payload, "validation_runs"),
             "rule_result_count": section_total(bdt_payload, "rule_results"),
-            "failed_rule_count": len(failed_rules),
+            "failed_rule_count": len(blocking_failed_rules),
             "photo_count": section_total(bdt_payload, "photos"),
             "latest_test_date": latest_bdt_test_date,
             "latest_validation_verdict": text(overall_verdict),
@@ -655,7 +742,17 @@ def build_bdt_payload_from_validation(bdt_data: Any, validation_result: Any) -> 
         for rule in getattr(validation_result, "rules", []) or []
     ]
     photo_count = int(getattr(bdt_data, "photo_count", 0) or 0)
+    validation_context = dict(getattr(validation_result, "validation_context", {}) or {})
+    verdict_policy = validation_context.get("verdict_policy")
+    if not isinstance(verdict_policy, dict):
+        try:
+            from alarm_app.bdt.validator import BDTVerdictPolicy
+        except ImportError:
+            from bdt.validator import BDTVerdictPolicy
+        verdict_policy = BDTVerdictPolicy.defaults().to_dict()
     return {
+        "validation_context": validation_context,
+        "verdict_policy": verdict_policy,
         "bdt_summary": {"rows": [bdt_row], "returned": 1, "total": 1},
         "bdt_tests": {"rows": [bdt_row], "returned": 1, "total": 1},
         "validation_runs": {

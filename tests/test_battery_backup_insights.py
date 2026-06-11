@@ -2,8 +2,10 @@ from types import SimpleNamespace
 
 from alarm_app.bdt.validator import RuleResult, ValidationResult
 from alarm_app.core.battery_backup_insights import (
+    COMPONENT_CHECK_INSIGHT_STATUS,
     attach_battery_backup_insight,
     build_battery_backup_insight,
+    insight_blocking_rule_failures,
     resolve_network_battery_context,
 )
 
@@ -201,3 +203,105 @@ def test_build_battery_backup_insight_classifies_lead_acid_to_lithium_upgrade():
     assert {diff["field"] for diff in insight["differences"]} == {"battery_technology_upgrade", "backup_minutes"}
     assert insight["battery_topology"]["upgrade_detected"] is True
     assert insight["snapshot_freshness"]["status"] == "network_summary_older_than_bdt"
+
+
+def test_insight_blocking_rule_failures_ignore_non_blocking_rules():
+    rules = [
+        {"rule_id": "R1", "verdict": "Rejected"},
+        {"rule_id": "R10", "verdict": "Rejected"},
+        {"rule_id": "R11", "verdict": "No data"},
+        {"rule_id": "R8", "verdict": "Revise"},
+    ]
+    failures = insight_blocking_rule_failures(rules)
+    assert [rule["rule_id"] for rule in failures] == ["R8"]
+
+
+def test_insight_blocking_rule_failures_honor_custom_verdict_policy():
+    from alarm_app.bdt.validator import BDTVerdictPolicy
+
+    rules = [
+        {"rule_id": "R3", "verdict": "Rejected"},
+        {"rule_id": "R10", "verdict": "Rejected"},
+    ]
+    policy = BDTVerdictPolicy.from_dict({"block_overall_r3": 0.0, "block_overall_r10": 1.0})
+    failures = insight_blocking_rule_failures(rules, verdict_policy=policy)
+    assert [rule["rule_id"] for rule in failures] == ["R10"]
+
+
+def test_component_check_accepted_uses_component_check_insight_status():
+    insight = build_battery_backup_insight(
+        site_row={"site_id": "4962UP"},
+        network_rows=[{
+            "site_id": "4962UP",
+            "backup_status": "ZERO BACKUP",
+            "backup_minutes": 0,
+            "no_of_strings": 0,
+        }],
+        bdt_payload={
+            "validation_context": {
+                "validation_mode": "component_check_no_backup_battery",
+                "network_no_usable_backup": True,
+            },
+            "bdt_summary": {"rows": [{}], "returned": 1, "total": 1},
+            "bdt_tests": {
+                "rows": [{
+                    "battery_brand": "SBS",
+                    "discharge_minutes": 0,
+                    "num_strings": 0,
+                }],
+                "returned": 1,
+                "total": 1,
+            },
+            "validation_runs": {"rows": [{"overall_verdict": "Accepted"}], "returned": 1, "total": 1},
+            "rule_results": {
+                "rows": [
+                    {"rule_id": "R1", "verdict": "Rejected"},
+                    {"rule_id": "R10", "verdict": "Rejected"},
+                    {"rule_id": "R11", "verdict": "No data"},
+                ],
+                "returned": 3,
+                "total": 3,
+            },
+            "photos": {"rows": [], "returned": 0, "total": 0},
+        },
+    )
+
+    assert insight["insight_status"] == COMPONENT_CHECK_INSIGHT_STATUS
+    assert "failed_bdt_rules" not in insight["insight_flags"]
+    assert "weak_measured_backup" not in insight["insight_flags"]
+
+
+def test_accepted_with_only_non_blocking_rule_failures_is_bdt_passed():
+    insight = build_battery_backup_insight(
+        site_row={"site_id": "3750CA"},
+        network_rows=[{
+            "site_id": "3750CA",
+            "battery_type": "Narada",
+            "backup_status": "Good",
+            "backup_minutes": 120,
+            "no_of_strings": 2,
+        }],
+        bdt_payload={
+            "bdt_summary": {"rows": [{}], "returned": 1, "total": 1},
+            "bdt_tests": {
+                "rows": [{"battery_brand": "Narada", "discharge_minutes": 120, "num_strings": 2}],
+                "returned": 1,
+                "total": 1,
+            },
+            "validation_runs": {"rows": [{"overall_verdict": "Accepted"}], "returned": 1, "total": 1},
+            "rule_results": {
+                "rows": [
+                    {"rule_id": "R10", "verdict": "Rejected"},
+                    {"rule_id": "R11", "verdict": "No data"},
+                ],
+                "returned": 2,
+                "total": 2,
+            },
+            "photos": {"rows": [{}], "returned": 1, "total": 1},
+        },
+        min_backup_minutes=90,
+    )
+
+    assert insight["insight_status"] == "Battery Exists - BDT Passed"
+    assert insight["severity"] == "low"
+    assert "failed_bdt_rules" not in insight["insight_flags"]

@@ -976,25 +976,117 @@ _TOLERANCE_FIELD_DEFS: tuple[dict, ...] = (
     },
     {
         "key": "string_ampere_a",
-        "label": "R3 rectifier-vs-string band",
+        "label": "R3 rectifier-vs-string reject band",
         "suffix": " A",
         "decimals": 2,
         "step": 0.1,
         "minimum": 0.0,
         "maximum": 100.0,
-        "help_template": "Largest gap allowed between the main rectifier reading and the total "
-                         "of all string readings. Currently {value} A — anything bigger fails Rule R3.",
+        "help_template": "Reject when summed string current exceeds bus current by more than "
+                         "{value} A on any timed row.",
+    },
+    {
+        "key": "string_ampere_pos_accept_a",
+        "label": "R3 positive-gap accept band",
+        "suffix": " A",
+        "decimals": 2,
+        "step": 0.1,
+        "minimum": 0.0,
+        "maximum": 100.0,
+        "help_template": "Accepted when bus-above-strings gap stays within {value} A.",
+    },
+    {
+        "key": "string_ampere_pos_revise_a",
+        "label": "R3 positive-gap revise ceiling",
+        "suffix": " A",
+        "decimals": 2,
+        "step": 0.1,
+        "minimum": 0.0,
+        "maximum": 100.0,
+        "help_template": "Revise between the accept band and {value} A; reject above this unless severe.",
+    },
+    {
+        "key": "string_imbalance_reject_ratio",
+        "label": "R3 string-imbalance reject share",
+        "suffix": " %",
+        "decimals": 0,
+        "step": 1.0,
+        "minimum": 50.0,
+        "maximum": 100.0,
+        "scale": 100.0,
+        "help_template": "Reject when one active string carries at least {value}% of string current.",
+    },
+    {
+        "key": "string_imbalance_revise_ratio",
+        "label": "R3 string-imbalance revise share",
+        "suffix": " %",
+        "decimals": 0,
+        "step": 1.0,
+        "minimum": 50.0,
+        "maximum": 100.0,
+        "scale": 100.0,
+        "help_template": "Revise when one active string carries at least {value}% of string current.",
     },
     {
         "key": "discharge_current_a",
-        "label": "R9 discharge-current band",
+        "label": "R9 legacy discharge-current floor",
         "suffix": " A",
         "decimals": 2,
         "step": 0.1,
         "minimum": 0.0,
         "maximum": 50.0,
-        "help_template": "Largest swing allowed during the test compared to the first reading. "
-                         "Currently {value} A — if a later reading drifts more than this, Rule R9 fails.",
+        "help_template": "Legacy absolute floor still used with the percentage band when both "
+                         "delta and slope look severe. Currently {value} A.",
+    },
+    {
+        "key": "discharge_current_accept_a",
+        "label": "R9 max delta accept band",
+        "suffix": " A",
+        "decimals": 1,
+        "step": 0.5,
+        "minimum": 0.0,
+        "maximum": 100.0,
+        "help_template": "Accepted when max |ΔI| from baseline stays within {value} A and slope is calm.",
+    },
+    {
+        "key": "discharge_slope_accept_a_per_min",
+        "label": "R9 bus-current slope accept band",
+        "suffix": " A/min",
+        "decimals": 2,
+        "step": 0.05,
+        "minimum": 0.0,
+        "maximum": 5.0,
+        "help_template": "Accepted when bus-current slope stays within {value} A/min.",
+    },
+    {
+        "key": "discharge_slope_reject_a_per_min",
+        "label": "R9 bus-current slope reject band",
+        "suffix": " A/min",
+        "decimals": 2,
+        "step": 0.05,
+        "minimum": 0.0,
+        "maximum": 5.0,
+        "help_template": "Reject when bus-current slope reaches {value} A/min or higher.",
+    },
+    {
+        "key": "incomplete_reject_minutes",
+        "label": "R2/R6 incomplete reject floor",
+        "suffix": " min",
+        "decimals": 0,
+        "step": 5.0,
+        "minimum": 0.0,
+        "maximum": 180.0,
+        "help_template": "Reject severe incomplete tests when discharge evidence stops before {value} min.",
+    },
+    {
+        "key": "incomplete_revise_minutes",
+        "label": "R2/R6 short-discharge revise band",
+        "suffix": " min",
+        "decimals": 0,
+        "step": 5.0,
+        "minimum": 0.0,
+        "maximum": 240.0,
+        "help_template": "Revise on weak/short backup evidence when discharge stops before {value} min.",
     },
     {
         "key": "start_ampere_a",
@@ -1064,13 +1156,22 @@ class BdtParametersDialog(QDialog):
                  tolerances: dict | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("BDT Validation Parameters")
-        self.setMinimumSize(520, 600)
+        self.setMinimumSize(520, 720)
         if parent:
             self.setStyleSheet(parent.styleSheet())
         self._tol_spinboxes: dict[str, tuple[QDoubleSpinBox, float]] = {}
+        self._block_checkboxes: dict[str, QCheckBox] = {}
         self._build(health_pct, tolerances or {})
 
     def _build(self, health_pct: int, tolerances: dict):
+        try:
+            from alarm_app.bdt.validator import BDTTolerances
+            from alarm_app.constants import BDT_RULES, format_bdt_rule_label
+        except ImportError:
+            from bdt.validator import BDTTolerances
+            from constants import BDT_RULES, format_bdt_rule_label
+        parsed_tolerances = BDTTolerances.from_dict(tolerances)
+        verdict_policy = parsed_tolerances.verdict_policy
         outer = QVBoxLayout(self)
         outer.setContentsMargins(18, 16, 18, 16)
         outer.setSpacing(12)
@@ -1138,6 +1239,32 @@ class BdtParametersDialog(QDialog):
             row = self._build_tolerance_row(spec, tolerances)
             tol_lay.addLayout(row)
         lay.addWidget(tol_card)
+
+        block_card = QFrame()
+        block_card.setObjectName("workspace_card")
+        block_lay = QVBoxLayout(block_card)
+        block_lay.setContentsMargins(12, 12, 12, 12)
+        block_lay.setSpacing(8)
+        block_title = QLabel("Overall Verdict Blocking")
+        block_title.setObjectName("workspace_card_title")
+        block_lay.addWidget(block_title)
+        block_help = QLabel(
+            "Checked rules can change the overall Verdict when they are Rejected or Revise. "
+            "Unchecked rules still run and appear in the table, but they do not block acceptance."
+        )
+        block_help.setWordWrap(True)
+        block_help.setStyleSheet("color:#6c7086; font-size:11px; background:transparent;")
+        block_lay.addWidget(block_help)
+        for rule_id, rule_name in BDT_RULES:
+            checkbox = QCheckBox(format_bdt_rule_label(rule_id, rule_name))
+            checkbox.setObjectName("filter_inline")
+            checkbox.setChecked(verdict_policy.block_overall.get(rule_id, True))
+            checkbox.setToolTip(
+                "When unchecked, this rule still runs but does not change the overall Verdict."
+            )
+            block_lay.addWidget(checkbox)
+            self._block_checkboxes[rule_id] = checkbox
+        lay.addWidget(block_card)
         lay.addStretch(1)
 
         btn_row = QHBoxLayout()
@@ -1191,9 +1318,16 @@ class BdtParametersDialog(QDialog):
         return row
 
     def _reset_defaults(self) -> None:
+        try:
+            from alarm_app.bdt.validator import BDTVerdictPolicy
+        except ImportError:
+            from bdt.validator import BDTVerdictPolicy
         for spec in _TOLERANCE_FIELD_DEFS:
             spin, scale = self._tol_spinboxes[spec["key"]]
             spin.setValue(_BDTTolerances_default_value(spec["key"]) * scale)
+        defaults = BDTVerdictPolicy.defaults()
+        for rule_id, checkbox in self._block_checkboxes.items():
+            checkbox.setChecked(defaults.block_overall.get(rule_id, True))
 
     def _refresh_health_help(self, value: int) -> None:
         self._lbl_health_help.setText(
@@ -1207,10 +1341,16 @@ class BdtParametersDialog(QDialog):
         return self._spn_health.value()
 
     def get_tolerances(self) -> dict[str, float]:
+        try:
+            from alarm_app.bdt.validator import BDTVerdictPolicy, _verdict_policy_key
+        except ImportError:
+            from bdt.validator import BDTVerdictPolicy, _verdict_policy_key
         out: dict[str, float] = {}
         for key, (spin, scale) in self._tol_spinboxes.items():
             scale = scale if scale else 1.0
             out[key] = float(spin.value()) / scale
+        for rule_id, checkbox in self._block_checkboxes.items():
+            out[_verdict_policy_key(rule_id)] = 1.0 if checkbox.isChecked() else 0.0
         return out
 
 

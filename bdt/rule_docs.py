@@ -40,7 +40,16 @@ def _resolve_context(tolerances: BDTTolerances | None,
     return {
         "power_min": _fmt(tol.power_timing_min, 0),
         "string_a": _fmt(tol.string_ampere_a),
+        "string_pos_accept_a": _fmt(tol.string_ampere_pos_accept_a),
+        "string_pos_revise_a": _fmt(tol.string_ampere_pos_revise_a),
+        "string_imb_reject_pct": _fmt(tol.string_imbalance_reject_ratio * 100.0, 0),
+        "string_imb_revise_pct": _fmt(tol.string_imbalance_revise_ratio * 100.0, 0),
         "discharge_a": _fmt(tol.discharge_current_a),
+        "discharge_accept_a": _fmt(tol.discharge_current_accept_a),
+        "discharge_slope_accept": _fmt(tol.discharge_slope_accept_a_per_min),
+        "discharge_slope_reject": _fmt(tol.discharge_slope_reject_a_per_min),
+        "incomplete_reject_min": _fmt(tol.incomplete_reject_minutes, 0),
+        "incomplete_revise_min": _fmt(tol.incomplete_revise_minutes, 0),
         "start_a": _fmt(tol.start_ampere_a),
         "end_v_min": _fmt(tol.end_voltage_min),
         "end_v_max": _fmt(tol.end_voltage_max),
@@ -71,14 +80,19 @@ one of these outcomes:</p>
   <li><b>Skipped</b> &mdash; the check needs a working battery, but this
   site is flagged as no-battery or faulty.</li>
 </ul>
-<p>The overall verdict for a file is the worst outcome among its checks.
-Any <b>Rejected</b> &rarr; the file is Rejected. Otherwise any
-<b>Revise</b> &rarr; the file is Revise. Otherwise the file is
-<b>Accepted</b>.</p>
-<p>The validator assists human reviewers who already sign off Excel BDT
-submissions. A <b>Revise</b> on R10 means door evidence is present but
-needs a person to confirm sloppy <b>time_in</b>/<b>time_out</b> before
-sign-off.</p>
+<p>The overall verdict follows the worst <b>blocking</b> rule outcome.
+In <b>Open Parameters</b>, each rule has an <b>Overall Verdict Blocking</b>
+checkbox. Checked rules can change the final Accepted / Revise / Rejected
+verdict; unchecked rules still run and appear in the table but do not block
+acceptance.</p>
+<p>Defaults: <b>R1</b> (photos) and <b>R10</b> (door) do not block; all
+other active rules do. Any blocking <b>Rejected</b> &rarr; the file is
+Rejected. Otherwise any blocking <b>Revise</b> &rarr; the file is Revise.
+Otherwise the file is <b>Accepted</b>. Missing Summary (<b>R11</b>) or
+missing starting current / V-A trend data (<b>R5</b>, <b>R7</b>) does not
+block acceptance when those rules return N/A.</p>
+<p>A <b>Revise</b> on R10 means door evidence is present but needs a
+person to confirm sloppy <b>time_in</b>/<b>time_out</b> before sign-off.</p>
 <p>There is no R4. The numbering jumps from R3 to R5 because R4 was
 retired. The active checks are <b>R1, R2, R3, R5, R6, R7, R8, R9, R10,
 R11</b>.</p>
@@ -90,9 +104,11 @@ photos, door alarm, and summary consistency.</p>
 <p>If <b>Network Summary</b> strongly declares no usable backup battery
 (zero backup, stolen, removed, zero strings, or backup below
 <b>{network_min} minutes</b>), the BDT can run as a <b>component check</b>.
-Battery-dependent rules are skipped, infrastructure checks still run, and
-the canonical verdict remains one of Accepted, Revise, or Rejected. When
-the infrastructure checks pass, the table can display
+Most battery-dependent rules are skipped, but <b>R3</b> and <b>R9</b> still
+run when discharge readings exist so amp mismatch and fluctuating current
+cannot be hidden behind a zero-backup declaration. Infrastructure checks
+still run, and the canonical verdict remains one of Accepted, Revise, or
+Rejected. When the infrastructure checks pass, the table can display
 <b>Accepted (component check - no backup battery)</b>.</p>
 <p>The BDT table also shows <b>Insight Status</b> and
 <b>Insight Severity</b>. Those are not extra pass/fail rules. They are
@@ -150,18 +166,22 @@ the alarm system.</p>
 R3_HTML: str = """
 <h2>R3 &mdash; Rectifier vs String Current</h2>
 <p>Compares the rectifier's main current reading against the total of
-all string current readings. They should be close because the strings
-share the same load.</p>
+all string current readings, and checks whether load is shared fairly
+across strings.</p>
 <h3>How R3 decides</h3>
 <ul>
-  <li>Acceptable difference: up to <b>{string_a} A</b>.</li>
-  <li>If the gap is bigger than that on any reading, R3 fails for that
-  reading.</li>
+  <li><b>Accepted</b> when the max positive gap E-(G+I) stays within
+  <b>{string_pos_accept_a} A</b>, strings do not exceed bus by more than
+  <b>{string_a} A</b>, and no string carries more than
+  <b>{string_imb_revise_pct}%</b> of active string current alone.</li>
+  <li><b>Revise</b> when the positive gap is between the accept band and
+  <b>{string_pos_revise_a} A</b>, or imbalance reaches the
+  <b>{string_imb_revise_pct}%</b> assist band.</li>
+  <li><b>Rejected</b> on severe imbalance (&ge; <b>{string_imb_reject_pct}%</b>),
+  strings above bus beyond <b>{string_a} A</b>, positive gap above
+  <b>{string_pos_revise_a} A</b>, or a severe &gt;10 A mismatch.</li>
   <li>If no string-level data is recorded, R3 reports <b>N/A</b>.</li>
 </ul>
-<p>The rectifier reading should never be larger than the sum of the
-strings &mdash; current cannot appear from outside the strings &mdash;
-so R3 only allows the gap to go in one direction.</p>
 """
 
 
@@ -258,17 +278,18 @@ properly judged.</p>
 
 R9_HTML: str = """
 <h2>R9 &mdash; Discharge Current Stability</h2>
-<p>Checks that the discharge current readings stay close to the first
-reading throughout the test. Big swings usually mean the load was
-changed mid-test.</p>
+<p>Checks whether bus current stays stable during the discharge. Human
+reviewers tolerate some absolute drift when the trend is calm, but
+reject climbing or spiking current patterns.</p>
 <h3>How R9 decides</h3>
 <ul>
-  <li>The first reading is treated as the baseline.</li>
-  <li>Every later reading must be within <b>{discharge_a} A</b> of
-  that baseline.</li>
-  <li>The first reading that drifts further &rarr; R9 fails on that
-  reading.</li>
-  <li>If there are fewer than two readings, R9 reports <b>N/A</b>.</li>
+  <li><b>Accepted</b> when max |&Delta;I| &le; <b>{discharge_accept_a} A</b>
+  and bus-current slope &le; <b>{discharge_slope_accept} A/min</b>.</li>
+  <li><b>Revise</b> when one signal drifts beyond the accept band but
+  the pattern is not clearly severe.</li>
+  <li><b>Rejected</b> when slope &ge; <b>{discharge_slope_reject} A/min</b>
+  or a late-interval spike exceeds the configured reject threshold.</li>
+  <li>If there are fewer than two timed readings, R9 reports <b>N/A</b>.</li>
 </ul>
 """
 

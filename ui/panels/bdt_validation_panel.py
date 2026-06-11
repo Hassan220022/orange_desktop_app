@@ -837,8 +837,13 @@ class BdtValidationPanel(QWidget):
         return str(self.cmb_bdt_source.currentData() or "directory")
 
     def _refresh_parameter_summary(self):
+        tolerances = getattr(self._viewer, "_last_bdt_tolerances", None) or BDTTolerances.defaults()
+        blocking_count = sum(
+            1 for enabled in tolerances.verdict_policy.block_overall.values() if enabled
+        )
         self._lbl_param_summary.setText(
-            f"Health {self.spn_health.value()}% for Rule R8 battery sizing."
+            f"Health {self.spn_health.value()}% for Rule R8 battery sizing. "
+            f"{blocking_count} of {len(tolerances.verdict_policy.block_overall)} rules block overall Verdict."
         )
 
     def _show_parameters_dialog(self):

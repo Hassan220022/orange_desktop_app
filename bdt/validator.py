@@ -15,46 +15,128 @@ import pandas as pd
 
 try:
     from alarm_app.bdt.parser import BDTData
+    from alarm_app.bdt.evidence_metrics import (
+        discharge_trend_metrics,
+        has_discharge_evidence,
+        max_reached_discharge_minutes,
+        worst_r3_evidence,
+    )
     from alarm_app.constants import (
         BDT_COMPLETION_MINUTES,
         BDT_DEFAULT_HEALTH_PCT,
         BDT_DEFAULT_TOLERANCE,
+        BDT_DISCHARGE_CURRENT_ACCEPT_A,
         BDT_DISCHARGE_CURRENT_PCT,
         BDT_DISCHARGE_CURRENT_TOLERANCE_A,
+        BDT_DISCHARGE_SLOPE_ACCEPT_A_PER_MIN,
+        BDT_DISCHARGE_SLOPE_REJECT_A_PER_MIN,
+        BDT_DISCHARGE_SPIKE_REJECT_A,
         BDT_END_VOLTAGE_MAX,
         BDT_END_VOLTAGE_MIN,
+        BDT_INCOMPLETE_REJECT_MINUTES,
+        BDT_INCOMPLETE_REVISE_MINUTES,
+        BDT_OVERALL_IGNORE_NA_RULES,
         BDT_POWER_TIMING_TOLERANCE_MIN,
         BDT_REQUIRED_PHOTO_COUNT,
         BDT_SIZING_TOLERANCE_MINUTES,
         BDT_START_AMPERE_THRESHOLD_A,
+        BDT_STRING_AMPERE_POS_ACCEPT_A,
+        BDT_STRING_AMPERE_POS_REVISE_A,
         BDT_STRING_AMPERE_POS_TOLERANCE_A,
         BDT_STRING_AMPERE_TOLERANCE_A,
+        BDT_STRING_IMBALANCE_REJECT_RATIO,
+        BDT_STRING_IMBALANCE_REVISE_RATIO,
     )
     from alarm_app.core.battery_topology import battery_topology_from_bdt
 except ImportError:
     from bdt.parser import BDTData
+    from bdt.evidence_metrics import (
+        discharge_trend_metrics,
+        has_discharge_evidence,
+        max_reached_discharge_minutes,
+        worst_r3_evidence,
+    )
     from constants import (
         BDT_COMPLETION_MINUTES,
         BDT_DEFAULT_HEALTH_PCT,
         BDT_DEFAULT_TOLERANCE,
+        BDT_DISCHARGE_CURRENT_ACCEPT_A,
         BDT_DISCHARGE_CURRENT_PCT,
         BDT_DISCHARGE_CURRENT_TOLERANCE_A,
+        BDT_DISCHARGE_SLOPE_ACCEPT_A_PER_MIN,
+        BDT_DISCHARGE_SLOPE_REJECT_A_PER_MIN,
+        BDT_DISCHARGE_SPIKE_REJECT_A,
         BDT_END_VOLTAGE_MAX,
         BDT_END_VOLTAGE_MIN,
+        BDT_INCOMPLETE_REJECT_MINUTES,
+        BDT_INCOMPLETE_REVISE_MINUTES,
+        BDT_OVERALL_IGNORE_NA_RULES,
         BDT_POWER_TIMING_TOLERANCE_MIN,
         BDT_REQUIRED_PHOTO_COUNT,
         BDT_SIZING_TOLERANCE_MINUTES,
         BDT_START_AMPERE_THRESHOLD_A,
+        BDT_STRING_AMPERE_POS_ACCEPT_A,
+        BDT_STRING_AMPERE_POS_REVISE_A,
         BDT_STRING_AMPERE_POS_TOLERANCE_A,
         BDT_STRING_AMPERE_TOLERANCE_A,
+        BDT_STRING_IMBALANCE_REJECT_RATIO,
+        BDT_STRING_IMBALANCE_REVISE_RATIO,
     )
     from core.battery_topology import battery_topology_from_bdt
 
 
-BDT_TOLERANCE_PROFILE_VERSION = 2
+BDT_TOLERANCE_PROFILE_VERSION = 4
 BDT_TOLERANCE_PROFILE_VERSION_KEY = "_profile_version"
 _LEGACY_START_AMPERE_DEFAULT_A = 0.5
 _LEGACY_FLOAT_EPSILON = 1e-6
+
+BDT_VERDICT_RULE_IDS: tuple[str, ...] = (
+    "R1", "R2", "R3", "R5", "R6", "R7", "R8", "R9", "R10", "R11",
+)
+
+
+@dataclass(frozen=True)
+class BDTVerdictPolicy:
+    """Per-rule switches for whether a rule can block the overall verdict."""
+
+    block_overall: dict[str, bool]
+
+    @classmethod
+    def defaults(cls) -> "BDTVerdictPolicy":
+        return cls(block_overall={
+            rule_id: rule_id not in {"R1", "R10"}
+            for rule_id in BDT_VERDICT_RULE_IDS
+        })
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> "BDTVerdictPolicy":
+        defaults = cls.defaults()
+        block_overall = dict(defaults.block_overall)
+        if not data:
+            return defaults
+        for rule_id in BDT_VERDICT_RULE_IDS:
+            key = _verdict_policy_key(rule_id)
+            if key not in data or data[key] is None:
+                continue
+            try:
+                block_overall[rule_id] = bool(float(data[key]))
+            except (TypeError, ValueError):
+                pass
+        return cls(block_overall=block_overall)
+
+    def to_dict(self) -> dict[str, float]:
+        return {
+            _verdict_policy_key(rule_id): 1.0 if self.block_overall.get(rule_id, True) else 0.0
+            for rule_id in BDT_VERDICT_RULE_IDS
+        }
+
+
+def _verdict_policy_key(rule_id: str) -> str:
+    return f"block_overall_{str(rule_id).strip().lower()}"
+
+
+def rule_blocks_overall_verdict(policy: BDTVerdictPolicy, rule_id: str) -> bool:
+    return policy.block_overall.get(str(rule_id).strip().upper(), True)
 
 
 @dataclass
@@ -81,6 +163,27 @@ class ValidationResult:
     validation_context: dict = field(default_factory=dict)
 
 
+def rule_blocks_overall_verdict_for_result(
+    rule: RuleResult,
+    policy: BDTVerdictPolicy,
+    *,
+    ignore_na_rules: frozenset[str] | set[str] | None = None,
+) -> bool:
+    """Return True when this rule outcome should affect overall Accepted/Revise/Rejected."""
+    if rule.verdict == "Skipped":
+        return False
+    if not rule_blocks_overall_verdict(policy, rule.rule_id):
+        return False
+    if rule.verdict == "N/A":
+        ignored = ignore_na_rules if ignore_na_rules is not None else frozenset(BDT_OVERALL_IGNORE_NA_RULES)
+        if rule.rule_id in ignored:
+            return False
+        if rule.rule_id == "R2" and "no alarm data" in str(rule.detail).lower():
+            return True
+        return False
+    return rule.verdict in {"Rejected", "Revise"}
+
+
 @dataclass
 class BDTTolerances:
     """User-configurable tolerance thresholds applied by the BDT validator.
@@ -95,13 +198,26 @@ class BDTTolerances:
     power_timing_min: float = float(BDT_POWER_TIMING_TOLERANCE_MIN)
     string_ampere_a: float = float(BDT_STRING_AMPERE_TOLERANCE_A)
     string_ampere_pos_a: float = float(BDT_STRING_AMPERE_POS_TOLERANCE_A)
+    string_ampere_pos_accept_a: float = float(BDT_STRING_AMPERE_POS_ACCEPT_A)
+    string_ampere_pos_revise_a: float = float(BDT_STRING_AMPERE_POS_REVISE_A)
+    string_imbalance_reject_ratio: float = float(BDT_STRING_IMBALANCE_REJECT_RATIO)
+    string_imbalance_revise_ratio: float = float(BDT_STRING_IMBALANCE_REVISE_RATIO)
     discharge_current_a: float = float(BDT_DISCHARGE_CURRENT_TOLERANCE_A)
     discharge_current_pct: float = float(BDT_DISCHARGE_CURRENT_PCT)
+    discharge_current_accept_a: float = float(BDT_DISCHARGE_CURRENT_ACCEPT_A)
+    discharge_slope_accept_a_per_min: float = float(
+        BDT_DISCHARGE_SLOPE_ACCEPT_A_PER_MIN)
+    discharge_slope_reject_a_per_min: float = float(
+        BDT_DISCHARGE_SLOPE_REJECT_A_PER_MIN)
+    discharge_spike_reject_a: float = float(BDT_DISCHARGE_SPIKE_REJECT_A)
+    incomplete_reject_minutes: float = float(BDT_INCOMPLETE_REJECT_MINUTES)
+    incomplete_revise_minutes: float = float(BDT_INCOMPLETE_REVISE_MINUTES)
     start_ampere_a: float = float(BDT_START_AMPERE_THRESHOLD_A)
     end_voltage_min: float = float(BDT_END_VOLTAGE_MIN)
     end_voltage_max: float = float(BDT_END_VOLTAGE_MAX)
     completion_minutes: float = float(BDT_COMPLETION_MINUTES)
     min_backup_minutes_for_battery_rules: float = 10.0
+    verdict_policy: BDTVerdictPolicy = field(default_factory=BDTVerdictPolicy.defaults)
 
     @classmethod
     def defaults(cls) -> "BDTTolerances":
@@ -117,6 +233,8 @@ class BDTTolerances:
         has_profile_version = BDT_TOLERANCE_PROFILE_VERSION_KEY in data
         kwargs: dict[str, float] = {}
         for fld in defaults.__dataclass_fields__:
+            if fld == "verdict_policy":
+                continue
             if fld in data and data[fld] is not None:
                 try:
                     kwargs[fld] = float(data[fld])
@@ -128,11 +246,24 @@ class BDTTolerances:
             and abs(kwargs["start_ampere_a"] - _LEGACY_START_AMPERE_DEFAULT_A) <= _LEGACY_FLOAT_EPSILON
         ):
             kwargs.pop("start_ampere_a")
-        default_values = {fld: getattr(defaults, fld) for fld in defaults.__dataclass_fields__}
-        return cls(**{**default_values, **kwargs})
+        default_values = {
+            fld: getattr(defaults, fld)
+            for fld in defaults.__dataclass_fields__
+            if fld != "verdict_policy"
+        }
+        verdict_policy = BDTVerdictPolicy.from_dict(data)
+        return cls(
+            **{**default_values, **kwargs},
+            verdict_policy=verdict_policy,
+        )
 
     def to_dict(self) -> dict[str, float]:
-        values = {fld: getattr(self, fld) for fld in self.__dataclass_fields__}
+        values = {
+            fld: getattr(self, fld)
+            for fld in self.__dataclass_fields__
+            if fld != "verdict_policy"
+        }
+        values.update(self.verdict_policy.to_dict())
         values[BDT_TOLERANCE_PROFILE_VERSION_KEY] = float(BDT_TOLERANCE_PROFILE_VERSION)
         return values
 
@@ -205,17 +336,32 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
         active_r11_groups = {"A"}
 
     result.rules.append(_rule_1_photos(bdt))
-    if battery_skip_reason or component_check:
-        skip_reason = battery_skip_reason
-        if component_check:
-            skip_reason = (
-                "Network Summary declares no usable backup battery; component check only"
+    if battery_skip_reason:
+        result.rules.extend(_skipped_battery_rules(battery_skip_reason))
+    elif component_check:
+        skip_reason = (
+            "Network Summary declares no usable backup battery; component check only"
+        )
+        result.rules.extend(
+            _skipped_battery_rules(
+                skip_reason,
+                only=("R2", "R5", "R6", "R7", "R8"),
             )
-        result.rules.extend(_skipped_battery_rules(skip_reason))
+        )
+        if has_discharge_evidence(bdt):
+            result.rules.append(_rule_3_string_vs_busbar(bdt, tolerances=tolerances))
+            result.rules.append(
+                _rule_9_discharge_current_tolerance(bdt, tolerances=tolerances))
+        else:
+            result.rules.extend(
+                _skipped_battery_rules(skip_reason, only=("R3", "R9")))
     else:
         result.rules.append(
-            _rule_2_power_alarm_match(bdt, alarm_df,
-                                      tol_override=tolerances.power_timing_min))
+            _rule_2_power_alarm_match(
+                bdt, alarm_df,
+                tol_override=tolerances.power_timing_min,
+                tolerances=tolerances,
+            ))
         result.rules.append(_rule_3_string_vs_busbar(bdt, tolerances=tolerances))
         result.rules.append(_rule_5_start_ampere(bdt, tolerances=tolerances))
         result.rules.append(
@@ -228,32 +374,41 @@ def validate_bdt(bdt: BDTData, alarm_df: pd.DataFrame | None,
     result.rules.append(_rule_10_door_alarm_match(bdt, alarm_df))
     result.rules.append(_rule_11_summary_checklist(bdt, active_groups=active_r11_groups))
 
-    # Overall verdict
-    failed = [r for r in result.rules if r.verdict == "Rejected"]
-    revise = [r for r in result.rules if r.verdict == "Revise"]
+    # Overall verdict — per-rule blocking policy from tolerances.verdict_policy.
+    verdict_policy = tolerances.verdict_policy
+    blocking_failed = [
+        r for r in result.rules
+        if r.verdict == "Rejected"
+        and rule_blocks_overall_verdict_for_result(r, verdict_policy)
+    ]
+    blocking_revise = [
+        r for r in result.rules
+        if r.verdict == "Revise"
+        and rule_blocks_overall_verdict_for_result(r, verdict_policy)
+    ]
     no_alarm_data_na = any(
-        r.verdict == "N/A" and "no alarm data" in str(r.detail).lower()
+        r.verdict == "N/A"
+        and r.rule_id == "R2"
+        and rule_blocks_overall_verdict(verdict_policy, "R2")
+        and "no alarm data" in str(r.detail).lower()
         for r in result.rules
     )
 
-    if failed:
+    if blocking_failed:
         result.overall = "Rejected"
     elif battery_skip_reason:
-        # A BDT cannot be accepted as a battery backup test when the BDT
-        # itself reports no usable battery. Keep battery-dependent rules
-        # skipped, but decline the whole file.
         result.overall = "Rejected"
-    elif revise:
+    elif blocking_revise:
         result.overall = "Revise"
     elif no_alarm_data_na:
-        # If alarm-dependent rules are not evaluable due to missing alarm data,
-        # surface as Revise (incomplete evidence), not Accepted.
         result.overall = "Revise"
     else:
         result.overall = "Accepted"
 
     if component_check and result.overall == "Accepted":
         result.validation_context["display_overall"] = "Accepted (component check - no backup battery)"
+
+    result.validation_context["verdict_policy"] = tolerances.verdict_policy.to_dict()
 
     return result
 
@@ -317,7 +472,10 @@ def bdt_battery_status(bdt: BDTData | None) -> str:
     return "Has Battery"
 
 
-def _skipped_battery_rules(reason: str) -> list[RuleResult]:
+def _skipped_battery_rules(
+        reason: str,
+        *,
+        only: tuple[str, ...] | None = None) -> list[RuleResult]:
     rules = (
         ("R2", "Power Alarm + Duration"),
         ("R3", "String vs Bus Bar Ampere"),
@@ -327,6 +485,11 @@ def _skipped_battery_rules(reason: str) -> list[RuleResult]:
         ("R8", "Sizing vs Actual"),
         ("R9", "Discharge Current Tolerance"),
     )
+    selected = [
+        (rule_id, rule_name)
+        for rule_id, rule_name in rules
+        if only is None or rule_id in only
+    ]
     return [
         RuleResult(
             rule_id=rule_id,
@@ -335,7 +498,7 @@ def _skipped_battery_rules(reason: str) -> list[RuleResult]:
             verdict="Skipped",
             detail=f"{reason}; battery-dependent rule not considered",
         )
-        for rule_id, rule_name in rules
+        for rule_id, rule_name in selected
     ]
 
 
@@ -997,10 +1160,13 @@ def _lithium_cadence_violation(bdt: BDTData) -> str | None:
     return None
 
 
-def _rule_2_power_alarm_match(bdt: BDTData,
-                               alarm_df: pd.DataFrame | None,
-                               tol_override: float | None = None) -> RuleResult:
+def _rule_2_power_alarm_match(
+        bdt: BDTData,
+        alarm_df: pd.DataFrame | None,
+        tol_override: float | None = None,
+        tolerances: "BDTTolerances | None" = None) -> RuleResult:
     """R2: Unified Power timing + duration check (Power→Cleared or Power→Down)."""
+    tol_bundle = tolerances or BDTTolerances.defaults()
     tol_min = float(tol_override if tol_override is not None else BDT_POWER_TIMING_TOLERANCE_MIN)
     tol = pd.Timedelta(minutes=tol_min)
 
@@ -1034,6 +1200,23 @@ def _rule_2_power_alarm_match(bdt: BDTData,
             detail=("Cannot validate timing: no reached minute found in discharge table "
                     "(need at least one row with V or A reading)"),
         )
+
+    reject_min = float(tol_bundle.incomplete_reject_minutes)
+    revise_min = float(tol_bundle.incomplete_revise_minutes)
+    if discharge_minutes < reject_min:
+        return RuleResult(
+            rule_id="R2", rule_name="Power Alarm + Duration",
+            passed=False, verdict="Rejected",
+            detail=(f"Incomplete test: discharge table reached only "
+                    f"{discharge_minutes:.0f} min (< {reject_min:.0f} min reject floor)"),
+        )
+    if discharge_minutes < revise_min:
+        short_detail = (
+            f"Short discharge evidence: reached {discharge_minutes:.0f} min "
+            f"(< {revise_min:.0f} min revise band)"
+        )
+    else:
+        short_detail = ""
 
     start_time = _parse_test_time(bdt.time_in)
     if start_time is None:
@@ -1229,15 +1412,30 @@ def _rule_6_end_voltage(bdt: BDTData, health_pct: float,
 
     tol = tolerances or BDTTolerances.defaults()
     completion_min = float(tol.completion_minutes)
+    reject_min = float(tol.incomplete_reject_minutes)
+    revise_min = float(tol.incomplete_revise_minutes)
     v_min = float(tol.end_voltage_min)
     v_max = float(tol.end_voltage_max)
 
     reported = float(bdt.discharge_minutes or 0.0)
+    reached = max_reached_discharge_minutes(bdt)
+    effective_minutes = reported
+    if reached is not None:
+        effective_minutes = max(effective_minutes, reached)
     end_voltage = float(bdt.end_voltage)
-    reached_completion = reported >= completion_min
+    reached_completion = effective_minutes >= completion_min
     in_voltage_range = v_min <= end_voltage <= v_max
     depleted_low_voltage = end_voltage < v_min
     passed = reached_completion or in_voltage_range or depleted_low_voltage
+
+    if effective_minutes < reject_min:
+        return RuleResult(
+            rule_id="R6", rule_name="End Voltage Range",
+            passed=False, verdict="Rejected",
+            detail=(f"Incomplete test: discharge reached only {effective_minutes:.0f} min "
+                    f"(< {reject_min:.0f} min reject floor); "
+                    f"end voltage: {end_voltage:.1f}V"),
+        )
 
     if reached_completion:
         reason = "reached completion target"
@@ -1248,11 +1446,22 @@ def _rule_6_end_voltage(bdt: BDTData, health_pct: float,
     else:
         reason = "short duration with high end voltage suggests early stop"
 
+    if passed:
+        verdict = "Accepted"
+    elif effective_minutes < revise_min:
+        verdict = "Revise"
+        reason = (
+            f"short discharge ({effective_minutes:.0f} min < {revise_min:.0f} min revise band); "
+            f"{reason}"
+        )
+    else:
+        verdict = "Rejected"
+
     return RuleResult(
         rule_id="R6", rule_name="End Voltage Range",
-        passed=passed,
-        verdict="Accepted" if passed else "Rejected",
-        detail=(f"Discharge: {reported:.0f} min (target >= {completion_min:.0f}); "
+        passed=passed if verdict == "Accepted" else False,
+        verdict=verdict,
+        detail=(f"Discharge: {effective_minutes:.0f} min (target >= {completion_min:.0f}); "
                 f"end voltage: {end_voltage:.1f}V (normal range: {v_min:.1f}-{v_max:.1f}V); "
                 f"{reason}"),
     )
@@ -1418,37 +1627,68 @@ def _rule_8_backup_time(bdt: BDTData, health_pct: float,
 def _rule_9_discharge_current_tolerance(
         bdt: BDTData,
         tolerances: "BDTTolerances | None" = None) -> RuleResult:
-    """R9: Discharge current should stay within ±``discharge_current_a`` of baseline."""
-    readings = [(label, a) for label, _, a in bdt.discharge_readings if a is not None]
-    if len(readings) < 2:
+    """R9: Discharge current stability using max delta, slope, and late spikes."""
+    metrics = discharge_trend_metrics(bdt)
+    if metrics is None:
+        count = sum(1 for _, _, a in bdt.discharge_readings if a is not None)
         return RuleResult(
             rule_id="R9", rule_name="Discharge Current Tolerance",
             passed=None, verdict="N/A",
-            detail=f"Insufficient discharge current readings ({len(readings)}, need 2+)",
+            detail=f"Insufficient discharge current readings ({count}, need 2+)",
         )
 
     tol = tolerances or BDTTolerances.defaults()
+    accept_delta = float(tol.discharge_current_accept_a)
+    accept_slope = float(tol.discharge_slope_accept_a_per_min)
+    reject_slope = float(tol.discharge_slope_reject_a_per_min)
+    reject_spike = float(tol.discharge_spike_reject_a)
     abs_floor = float(tol.discharge_current_a)
     pct = float(tol.discharge_current_pct)
+    legacy_band = max(abs(metrics.baseline_amp) * pct, abs_floor)
 
-    baseline_label, baseline = readings[0]
-    band = max(abs(baseline) * pct, abs_floor)
+    verdict = "Accepted"
+    reasons: list[str] = []
 
-    for label, current in readings[1:]:
-        diff = abs(current - baseline)
-        if diff > band:
-            return RuleResult(
-                rule_id="R9", rule_name="Discharge Current Tolerance",
-                passed=False, verdict="Rejected",
-                detail=(f"Baseline at {baseline_label}: {baseline:.2f}A; "
-                        f"{label}: {current:.2f}A (|Δ|={diff:.2f}A > {band:.2f}A)"),
-            )
+    if metrics.bus_amp_slope >= reject_slope:
+        verdict = "Rejected"
+        reasons.append(
+            f"bus current trend {metrics.bus_amp_slope:.2f} A/min "
+            f"(>= {reject_slope:.2f} reject slope)")
+    if metrics.late_delta >= reject_spike:
+        verdict = "Rejected"
+        reasons.append(
+            f"late-interval spike |Δ|={metrics.late_delta:.2f}A "
+            f"(>= {reject_spike:.1f}A)")
+    if metrics.max_delta > legacy_band and verdict != "Rejected":
+        if (
+            metrics.max_delta > accept_delta
+            and metrics.bus_amp_slope > accept_slope
+        ):
+            verdict = "Rejected"
+            reasons.append(
+                f"max |Δ|={metrics.max_delta:.2f}A with slope "
+                f"{metrics.bus_amp_slope:.2f} A/min beyond accept bands")
+        elif metrics.max_delta > accept_delta or metrics.bus_amp_slope > accept_slope:
+            if verdict != "Rejected":
+                verdict = "Revise"
+            reasons.append(
+                f"max |Δ|={metrics.max_delta:.2f}A (accept <= {accept_delta:.1f}A) "
+                f"or slope {metrics.bus_amp_slope:.2f} A/min (accept <= {accept_slope:.2f})")
+
+    if verdict == "Accepted":
+        detail = (
+            f"Bus current stable: max |Δ|={metrics.max_delta:.2f}A, "
+            f"slope={metrics.bus_amp_slope:.2f} A/min "
+            f"(accept bands: {accept_delta:.1f}A / {accept_slope:.2f} A/min)"
+        )
+    else:
+        detail = "; ".join(reasons)
 
     return RuleResult(
         rule_id="R9", rule_name="Discharge Current Tolerance",
-        passed=True, verdict="Accepted",
-        detail=(f"All discharge currents stayed within ±{band:.2f}A from baseline "
-                f"({baseline:.2f}A, tolerance: {pct*100:.0f}% or ±{abs_floor:.1f}A floor)"),
+        passed=verdict == "Accepted",
+        verdict=verdict,
+        detail=detail,
     )
 
 
@@ -1494,59 +1734,76 @@ def _rule_10_door_alarm_match(bdt: BDTData,
 
 def _rule_3_string_vs_busbar(bdt: BDTData,
                              tolerances: "BDTTolerances | None" = None) -> RuleResult:
-    """R3: Rectifier amp minus summed string amps must stay within the
-    configured ampere band ``[-string_ampere_a, 0]``."""
-    if not bdt.string_discharge_readings or not bdt.discharge_readings:
+    """R3: Rectifier vs string amps with E−Σ bands and string-imbalance checks."""
+    evidence = worst_r3_evidence(bdt)
+    if evidence is None:
+        if not bdt.string_discharge_readings or not bdt.discharge_readings:
+            detail = "No per-string discharge data available"
+        else:
+            detail = "No valid paired readings found"
         return RuleResult(
             rule_id="R3", rule_name="String vs Bus Bar Ampere",
             passed=None, verdict="N/A",
-            detail="No per-string discharge data available",
+            detail=detail,
         )
 
     tol = tolerances or BDTTolerances.defaults()
-    tolerance = float(tol.string_ampere_a)
-    pos_tol = float(tol.string_ampere_pos_a)
-    checked = 0
+    neg_reject = float(tol.string_ampere_a)
+    pos_accept = float(tol.string_ampere_pos_accept_a)
+    pos_revise = float(tol.string_ampere_pos_revise_a)
+    imb_reject = float(tol.string_imbalance_reject_ratio)
+    imb_revise = float(tol.string_imbalance_revise_ratio)
 
-    # string_discharge_readings[0] is the "Before disconnecting" row,
-    # while discharge_readings starts at the first timed row (10 min, etc.).
-    # Slice off index 0 to align the two lists.
-    string_readings = bdt.string_discharge_readings[1:]
+    verdict = "Accepted"
+    reasons: list[str] = []
 
-    for dr, sr in zip(bdt.discharge_readings, string_readings):
-        bus_a = dr[2]  # bus bar ampere
-        string_pairs = sr
-        string_amps = [a for _, a in string_pairs if a is not None]
+    if evidence.worst_imbalance_ratio >= imb_reject:
+        verdict = "Rejected"
+        reasons.append(
+            f"string imbalance {evidence.worst_imbalance_ratio:.0%} at "
+            f"{evidence.worst_imbalance_label} (>= {imb_reject:.0%})")
+    elif evidence.worst_imbalance_ratio >= imb_revise:
+        verdict = "Revise"
+        reasons.append(
+            f"string imbalance {evidence.worst_imbalance_ratio:.0%} at "
+            f"{evidence.worst_imbalance_label} (revise band >= {imb_revise:.0%})")
 
-        if bus_a is None or not string_amps:
-            continue
+    if evidence.max_neg_delta > neg_reject:
+        verdict = "Rejected"
+        reasons.append(
+            f"strings exceed bus by {evidence.max_neg_delta:.2f}A "
+            f"(> {neg_reject:.1f}A reject bound)")
+    elif evidence.max_pos_delta > 10.0:
+        verdict = "Rejected"
+        reasons.append(
+            f"severe bus-above-strings gap {evidence.max_pos_delta:.2f}A (> 10A)")
+    elif evidence.max_pos_delta > pos_revise:
+        verdict = "Rejected"
+        reasons.append(
+            f"max positive E-(G+I)={evidence.max_pos_delta:.2f}A "
+            f"(> {pos_revise:.1f}A reject bound)")
+    elif evidence.max_pos_delta > pos_accept:
+        if verdict != "Rejected":
+            verdict = "Revise"
+        reasons.append(
+            f"max positive E-(G+I)={evidence.max_pos_delta:.2f}A "
+            f"(revise band > {pos_accept:.1f}A)")
 
-        string_sum = sum(string_amps)
-        diff = bus_a - string_sum
-        checked += 1
-
-        if diff > pos_tol or diff < -tolerance:
-            return RuleResult(
-                rule_id="R3", rule_name="String vs Bus Bar Ampere",
-                passed=False, verdict="Rejected",
-                detail=(f"Batteries Amp not matched with the rectifier summation Amp "
-                        f"at {dr[0]}: rectifier={bus_a:.2f}A, "
-                        f"strings_sum={string_sum:.2f}A "
-                        f"(E-(G+I)={diff:.2f}A, required -{tolerance:.1f}A to +{pos_tol:.1f}A)"),
-            )
-
-    if checked == 0:
-        return RuleResult(
-            rule_id="R3", rule_name="String vs Bus Bar Ampere",
-            passed=None, verdict="N/A",
-            detail="No valid paired readings found",
+    if verdict == "Accepted":
+        detail = (
+            f"All {evidence.checked_points} time points within accept bands "
+            f"(E-(G+I) +<={pos_accept:.1f}A / -<={neg_reject:.1f}A; "
+            f"imbalance < {imb_revise:.0%})"
         )
+    else:
+        detail = "Batteries Amp not matched with the rectifier summation Amp; " + "; ".join(
+            reasons)
 
     return RuleResult(
         rule_id="R3", rule_name="String vs Bus Bar Ampere",
-        passed=True, verdict="Accepted",
-        detail=(f"All {checked} time points within tolerance "
-                f"(E-(G+I) between -{tolerance:.1f}A and +{pos_tol:.1f}A)"),
+        passed=verdict == "Accepted",
+        verdict=verdict,
+        detail=detail,
     )
 
 
