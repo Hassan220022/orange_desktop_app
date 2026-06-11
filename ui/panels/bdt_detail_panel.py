@@ -7,21 +7,31 @@ from datetime import datetime
 
 import pandas as pd
 from PyQt5.QtCore import Qt, QTimer, QUrl
-from PyQt5.QtGui import QColor, QDesktopServices, QPixmap
+from PyQt5.QtGui import (
+    QBrush,
+    QColor,
+    QDesktopServices,
+    QFont,
+    QPalette,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PyQt5.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QSplitter,
     QStyle,
-    QStyleOptionButton,
-    QStylePainter,
+    QStyleOptionViewItem,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -44,25 +54,243 @@ except ImportError:
     from data.alarm_store import load_alarm_slice_for_bdt
 
 
-class _VerticalExpandButton(QPushButton):
-    """Vertical expand/collapse button that fills the table height."""
+class _DischargeTrendChart(QWidget):
+    """Compact REC BUS V sparkline above the discharge table."""
 
-    def sizeHint(self):
-        size = super().sizeHint()
-        return size.transposed()
+    _LEFT_LABEL = "Before disconnecting Rectifier"
+    _RIGHT_LABEL = "After Connecting power"
 
-    def minimumSizeHint(self):
-        size = super().minimumSizeHint()
-        return size.transposed()
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._points: list[float] = []
+        self._theme_mode = "dark"
+        self.setObjectName("bdt_discharge_chart")
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self.setAutoFillBackground(False)
+        self.setMinimumHeight(108)
+        self.setMaximumHeight(128)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def set_theme_mode(self, theme_mode: str):
+        self._theme_mode = "light" if theme_mode == "light" else "dark"
+        self.update()
+
+    def set_points(self, points: list[float]):
+        self._points = list(points)
+        self.setVisible(bool(self._points))
+        self.update()
+
+    def _palette(self) -> dict[str, QColor]:
+        if self._theme_mode == "light":
+            return {
+                "bg": QColor("#ffffff"),
+                "border": QColor("#cbd5e1"),
+                "line": QColor("#2563eb"),
+                "axis": QColor("#94a3b8"),
+                "label": QColor("#334155"),
+            }
+        return {
+            "bg": QColor("#12151f"),
+            "border": QColor("#3a4158"),
+            "line": QColor("#82aaff"),
+            "axis": QColor("#4b526d"),
+            "label": QColor("#9ca3af"),
+        }
 
     def paintEvent(self, event):
-        painter = QStylePainter(self)
-        painter.rotate(-90)
-        painter.translate(-self.height(), 0)
-        option = QStyleOptionButton()
-        self.initStyleOption(option)
-        option.rect = self.rect().transposed()
-        painter.drawControl(QStyle.CE_PushButton, option)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        colors = self._palette()
+        rect = self.rect().adjusted(1, 1, -1, -1)
+
+        painter.setPen(QPen(colors["border"], 1))
+        painter.setBrush(colors["bg"])
+        painter.drawRoundedRect(rect, 10, 10)
+
+        if len(self._points) < 1:
+            painter.end()
+            return
+
+        plot_left = 14
+        plot_right = rect.width() - 14
+        plot_top = 16
+        plot_bottom = rect.height() - 30
+        plot_width = max(1, plot_right - plot_left)
+        plot_height = max(1, plot_bottom - plot_top)
+
+        axis_y = plot_bottom
+        painter.setPen(QPen(colors["axis"], 1))
+        painter.drawLine(plot_left, axis_y, plot_right, axis_y)
+
+        vmin = min(self._points)
+        vmax = max(self._points)
+        if vmin == vmax:
+            vmin -= 1.0
+            vmax += 1.0
+        span = vmax - vmin
+        pad = span * 0.08
+        vmin -= pad
+        vmax += pad
+        span = max(vmax - vmin, 0.01)
+
+        coords: list[tuple[int, int]] = []
+        count = len(self._points)
+        for idx, value in enumerate(self._points):
+            if count == 1:
+                x = plot_left + plot_width // 2
+            else:
+                x = plot_left + int(round((idx / (count - 1)) * plot_width))
+            ratio = (float(value) - vmin) / span
+            y = plot_bottom - int(round(ratio * plot_height))
+            coords.append((x, y))
+
+        line_pen = QPen(colors["line"], 2)
+        painter.setPen(line_pen)
+        for idx in range(1, len(coords)):
+            painter.drawLine(coords[idx - 1][0], coords[idx - 1][1], coords[idx][0], coords[idx][1])
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(colors["line"])
+        for x, y in coords:
+            painter.drawEllipse(x - 4, y - 4, 8, 8)
+
+        label_font = QFont("Menlo")
+        if not label_font.exactMatch():
+            label_font = QFont("Courier New")
+        label_font.setPointSize(8)
+        painter.setFont(label_font)
+        painter.setPen(colors["label"])
+        painter.drawText(plot_left, rect.height() - 8, self._LEFT_LABEL)
+        right_width = painter.fontMetrics().horizontalAdvance(self._RIGHT_LABEL)
+        painter.drawText(plot_right - right_width, rect.height() - 8, self._RIGHT_LABEL)
+        painter.end()
+
+
+class _DischargeTableHeader(QHeaderView):
+    """Paint paired column-group colors; global QSS would otherwise flatten headers."""
+
+    def __init__(self, panel: "BdtDetailPanel", parent=None):
+        super().__init__(Qt.Horizontal, parent)
+        self._panel = panel
+        self.setDefaultAlignment(Qt.AlignCenter)
+        self.setMinimumHeight(panel._DISCHARGE_HEADER_HEIGHT)
+        self.setFixedHeight(panel._DISCHARGE_HEADER_HEIGHT)
+        self.setStretchLastSection(False)
+
+    def paintSection(self, painter, rect, logical_index):
+        table = self.parent()
+        theme_mode = self._panel._resolved_theme_mode()
+        section_index = self._panel._discharge_section_index_for_column(logical_index)
+        header_bg, _ = self._panel._discharge_section_palette(section_index, theme_mode)
+        if theme_mode == "light":
+            header_fg = QColor("#1f2937") if section_index == 0 else QColor("#ffffff")
+            grid = QColor("#9ca3af")
+        else:
+            header_fg = QColor("#e8edf7")
+            grid = QColor("#4b526d")
+
+        painter.save()
+        painter.fillRect(rect, header_bg)
+        painter.setPen(QPen(grid, 1))
+        painter.drawRect(rect.adjusted(0, 0, -1, -1))
+
+        text = ""
+        if isinstance(table, QTableWidget):
+            item = table.horizontalHeaderItem(logical_index)
+            if item is not None:
+                text = item.text()
+
+        font = QFont(self.font())
+        font.setBold(True)
+        font.setPointSize(9)
+        painter.setFont(font)
+        painter.setPen(header_fg)
+        painter.drawText(rect, Qt.AlignCenter, text)
+        painter.restore()
+
+
+class _DischargeCellDelegate(QStyledItemDelegate):
+    """Paint section tints and a clear, non-faded row selection state."""
+
+    def __init__(self, panel: "BdtDetailPanel", parent=None):
+        super().__init__(parent)
+        self._panel = panel
+
+    @staticmethod
+    def _paint_color(base: QColor, *, selected: bool, light_mode: bool) -> QColor:
+        if not selected:
+            return base
+        if light_mode:
+            tinted = base.darker(108)
+            if tinted == base:
+                tinted = QColor(
+                    max(0, base.red() - 18),
+                    max(0, base.green() - 18),
+                    max(0, base.blue() - 18),
+                )
+            return tinted
+        tinted = base.lighter(135)
+        if tinted.lightnessF() <= base.lightnessF():
+            tinted = QColor(
+                min(255, base.red() + 36),
+                min(255, base.green() + 36),
+                min(255, base.blue() + 36),
+            )
+        return tinted
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        selected = bool(opt.state & QStyle.State_Selected)
+        light_mode = self._panel._resolved_theme_mode() == "light"
+        accent = QColor("#2563eb") if light_mode else QColor("#89b4fa")
+        edge = QColor("#4f46e5") if light_mode else QColor("#cba6f7")
+
+        bg = index.data(Qt.BackgroundRole)
+        base = None
+        if isinstance(bg, QBrush) and bg.style() != Qt.NoBrush:
+            base = bg.color()
+        elif isinstance(bg, QColor):
+            base = bg
+
+        if base is not None and base.isValid():
+            paint_color = self._paint_color(
+                base, selected=selected, light_mode=light_mode,
+            )
+            painter.save()
+            painter.fillRect(opt.rect, paint_color)
+            if selected:
+                painter.fillRect(
+                    opt.rect.left(), opt.rect.top(), 3, opt.rect.height(),
+                    accent,
+                )
+                painter.setPen(QPen(edge, 2))
+                painter.drawLine(
+                    opt.rect.left(), opt.rect.top(),
+                    opt.rect.right(), opt.rect.top(),
+                )
+                painter.drawLine(
+                    opt.rect.left(), opt.rect.bottom(),
+                    opt.rect.right(), opt.rect.bottom(),
+                )
+            painter.restore()
+            opt.backgroundBrush = QBrush()
+
+        if selected:
+            opt.state &= ~QStyle.State_Selected
+
+        custom_fg = index.data(Qt.ForegroundRole)
+        has_custom_fg = False
+        if isinstance(custom_fg, QBrush) and custom_fg.style() != Qt.NoBrush:
+            has_custom_fg = custom_fg.color().isValid()
+        elif isinstance(custom_fg, QColor):
+            has_custom_fg = custom_fg.isValid()
+        if not has_custom_fg:
+            text_color = QColor("#111827") if light_mode else QColor("#f8fafc")
+            opt.palette.setColor(QPalette.Text, text_color)
+            opt.palette.setColor(QPalette.HighlightedText, text_color)
+
+        super().paint(painter, opt, index)
 
 
 class BdtDetailPanel(QWidget):
@@ -101,6 +329,46 @@ class BdtDetailPanel(QWidget):
         "Δ Σ-Bus",
     ]
     _DISCHARGE_MAX_STRINGS = 8
+    # (header, body) per section: time, rect V+A, Σ+Δ, then each string V+A pair.
+    _DISCHARGE_SECTION_PALETTES_DARK = [
+        (QColor("#4b5563"), QColor("#2a3140")),
+        (QColor("#2563eb"), QColor("#1a3a6e")),
+        (QColor("#7c3aed"), QColor("#3d2a6e")),
+        (QColor("#10b981"), QColor("#14543f")),
+        (QColor("#f59e0b"), QColor("#5c3d0a")),
+        (QColor("#ec4899"), QColor("#5c1f40")),
+        (QColor("#06b6d4"), QColor("#0e4f5c")),
+        (QColor("#6366f1"), QColor("#2a2d6e")),
+    ]
+    _DISCHARGE_SECTION_PALETTES_LIGHT = [
+        (QColor("#6b7280"), QColor("#f3f4f6")),
+        (QColor("#2563eb"), QColor("#dbeafe")),
+        (QColor("#7c3aed"), QColor("#ede9fe")),
+        (QColor("#059669"), QColor("#d1fae5")),
+        (QColor("#d97706"), QColor("#fef3c7")),
+        (QColor("#db2777"), QColor("#fce7f3")),
+        (QColor("#0891b2"), QColor("#cffafe")),
+        (QColor("#4f46e5"), QColor("#e0e7ff")),
+    ]
+    _DISCHARGE_EDGE_ROW_BG = {
+        "dark": {
+            "before": QColor("#1a2744"),
+            "after": QColor("#2e1a22"),
+        },
+        "light": {
+            "before": QColor("#e0e7ff"),
+            "after": QColor("#ffe4e6"),
+        },
+    }
+    _DISCHARGE_DELTA_COLORS = {
+        "dark": {"ok": QColor("#a6e3a1"), "bad": QColor("#f38ba8")},
+        "light": {"ok": QColor("#15803d"), "bad": QColor("#b91c1c")},
+    }
+    _DISCHARGE_ROW_HEIGHT = 16
+    _DISCHARGE_HEADER_HEIGHT = 28
+    _DISCHARGE_COL_TIME = 76
+    _DISCHARGE_COL_NUMERIC = 58
+    _DISCHARGE_COL_STRING = 54
 
     def __init__(self, viewer, parent=None):
         super().__init__(parent)
@@ -108,8 +376,10 @@ class BdtDetailPanel(QWidget):
         self._current_bdt = None
         self._current_bdt_photos = None
         self._bdt_photo_last_viewport_w = 0
-        self._bdt_discharge_expanded = False
         self._bdt_active_discharge_strings = 0
+        self._last_validation_result = None
+        self._fullscreen_dialog = None
+        self._fullscreen_restore_parent = None
         self._build()
 
     @staticmethod
@@ -142,9 +412,15 @@ class BdtDetailPanel(QWidget):
     def _build(self):
         """Build BDT detail panel: info+discharge (left) | rules (center) | photos (right)."""
         self.setObjectName("bdt_detail_panel")
-        outer = QHBoxLayout(self)
-        outer.setContentsMargins(0, 2, 0, 0)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+
+        self._btn_bdt_fullscreen = QPushButton("Full Screen")
+        self._btn_bdt_fullscreen.setObjectName("btn_search")
+        self._mark_compact(self._btn_bdt_fullscreen)
+        self._btn_bdt_fullscreen.setToolTip("Open this BDT test in full screen")
+        self._btn_bdt_fullscreen.clicked.connect(self._toggle_bdt_fullscreen)
 
         # Horizontal splitter for resizable sections
         self._bdt_detail_splitter = QSplitter(Qt.Horizontal)
@@ -244,60 +520,46 @@ class BdtDetailPanel(QWidget):
         discharge_section_lay.setContentsMargins(0, 0, 0, 0)
         discharge_section_lay.setSpacing(4)
 
+        discharge_hdr = QWidget()
+        discharge_hdr_lay = QHBoxLayout(discharge_hdr)
+        discharge_hdr_lay.setContentsMargins(0, 0, 0, 0)
+        discharge_hdr_lay.setSpacing(8)
+
         lbl_dis = QLabel("DISCHARGE READINGS")
         lbl_dis.setObjectName("bdt_section_title")
-        discharge_section_lay.addWidget(lbl_dis)
+        discharge_hdr_lay.addWidget(lbl_dis)
+        discharge_section_lay.addWidget(discharge_hdr)
 
-        discharge_wrap = QWidget()
-        discharge_wrap_lay = QHBoxLayout(discharge_wrap)
-        discharge_wrap_lay.setContentsMargins(0, 0, 0, 0)
-        discharge_wrap_lay.setSpacing(8)
+        self._bdt_discharge_chart = _DischargeTrendChart(self)
+        discharge_section_lay.addWidget(self._bdt_discharge_chart)
 
         self._bdt_discharge_table = QTableWidget(0, len(self._discharge_headers(0)))
+        self._bdt_discharge_table.setObjectName("bdt_discharge_table")
+        self._bdt_discharge_table.setHorizontalHeader(
+            _DischargeTableHeader(self, self._bdt_discharge_table),
+        )
         self._apply_discharge_header_items(self._bdt_discharge_table, 0)
+        self._bdt_discharge_table.setItemDelegate(
+            _DischargeCellDelegate(self, self._bdt_discharge_table),
+        )
         self._bdt_discharge_table.setEditTriggers(
             QAbstractItemView.NoEditTriggers)
         self._bdt_discharge_table.setSelectionBehavior(
             QAbstractItemView.SelectRows)
-        self._bdt_discharge_table.setAlternatingRowColors(True)
-        self._bdt_discharge_table.verticalHeader().setVisible(False)
-        self._bdt_discharge_table.verticalHeader().setDefaultSectionSize(24)
-        self._bdt_discharge_table.setMinimumHeight(120)
+        self._bdt_discharge_table.setAlternatingRowColors(False)
+        self._bdt_discharge_table.setWordWrap(False)
+        v_hdr = self._bdt_discharge_table.verticalHeader()
+        v_hdr.setVisible(False)
+        v_hdr.setSectionResizeMode(QHeaderView.Fixed)
+        v_hdr.setDefaultSectionSize(self._DISCHARGE_ROW_HEIGHT)
+        self._bdt_discharge_table.setMinimumHeight(80)
         self._bdt_discharge_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self._bdt_discharge_table.setStyleSheet(
-            "QTableWidget { gridline-color: #c7cfdf; }"
-            "QTableWidget::item { padding: 6px 8px; }"
-        )
-        dis_hdr = self._bdt_discharge_table.horizontalHeader()
-        dis_hdr.setDefaultAlignment(Qt.AlignCenter)
-        dis_hdr.setMinimumHeight(56)
-        dis_hdr.setFixedHeight(74)
-        dis_hdr.resizeSection(0, 190)
-        dis_hdr.resizeSection(1, 122)
-        dis_hdr.resizeSection(2, 122)
-        dis_hdr.resizeSection(3, 132)
-        dis_hdr.resizeSection(4, 118)
-        dis_hdr.setStretchLastSection(True)
-        discharge_wrap_lay.addWidget(self._bdt_discharge_table, 1)
-
-        self._btn_discharge_expand = _VerticalExpandButton("EXPAND STRINGS ⇲")
-        self._btn_discharge_expand.setObjectName("btn_discharge_expand")
-        self._btn_discharge_expand.setMinimumWidth(54)
-        self._btn_discharge_expand.setMaximumWidth(54)
-        self._btn_discharge_expand.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        self._btn_discharge_expand.setCursor(Qt.PointingHandCursor)
-        self._btn_discharge_expand.setToolTip("Show or hide per-string discharge columns")
-        self._btn_discharge_expand.setStyleSheet(
-            "QPushButton#btn_discharge_expand {"
-            "background-color: #274060; color: #ffffff; border: 1px solid #36557e; "
-            "border-radius: 14px; padding: 12px 8px; font-weight: 800; font-size: 11px; "
-            "letter-spacing: 1px; }"
-            "QPushButton#btn_discharge_expand:hover {"
-            "background-color: #36557e; border-color: #4a6fa5; }"
-        )
-        self._btn_discharge_expand.clicked.connect(self._toggle_discharge_table_expanded)
-        discharge_wrap_lay.addWidget(self._btn_discharge_expand)
-        discharge_section_lay.addWidget(discharge_wrap, 1)
+        self._bdt_discharge_table.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._apply_discharge_table_theme()
+        self._bdt_discharge_chart.set_theme_mode(self._resolved_theme_mode())
+        self._apply_discharge_column_widths()
+        discharge_section_lay.addWidget(self._bdt_discharge_table, 1)
         left_splitter.addWidget(discharge_section)
         left_splitter.setSizes([280, 320])
         self._apply_discharge_column_visibility()
@@ -331,6 +593,7 @@ class BdtDetailPanel(QWidget):
         # always claims the leftover vertical space (stretch=1) and has a
         # real minimum height so empty history sections can't squish it.
         self._bdt_rules_table = QTableWidget(0, 4)
+        self._bdt_rules_table.setObjectName("bdt_rules_table")
         self._bdt_rules_table.setHorizontalHeaderLabels(
             ["Rule", "Name", "Verdict", "Detail"])
         self._bdt_rules_table.setEditTriggers(
@@ -341,11 +604,8 @@ class BdtDetailPanel(QWidget):
         self._bdt_rules_table.verticalHeader().setVisible(False)
         self._bdt_rules_table.verticalHeader().setDefaultSectionSize(24)
         self._bdt_rules_table.setMinimumHeight(170)
-        rules_hdr = self._bdt_rules_table.horizontalHeader()
-        rules_hdr.resizeSection(0, 50)
-        rules_hdr.resizeSection(1, 140)
-        rules_hdr.resizeSection(2, 80)
-        rules_hdr.setStretchLastSection(True)
+        self._bdt_rules_table.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding)
         rules_section_lay.addWidget(self._bdt_rules_table, 1)
 
         # Parse errors label (hidden by default)
@@ -355,18 +615,18 @@ class BdtDetailPanel(QWidget):
         self._bdt_parse_errors_lbl.setWordWrap(True)
         self._bdt_parse_errors_lbl.setVisible(False)
         rules_section_lay.addWidget(self._bdt_parse_errors_lbl)
+        rules_section.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         center_splitter.addWidget(rules_section)
 
         history_section = QWidget()
+        history_section.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         history_section_lay = QVBoxLayout(history_section)
         history_section_lay.setContentsMargins(0, 0, 0, 0)
         history_section_lay.setSpacing(4)
 
         # ── Door Alarm History ─────────────────────────────────────
-        # Kept visually minimal when empty — section cap + single-line
-        # placeholder. Only expands to a real table when door alarms
-        # actually exist, so the Validation Rules section above keeps
-        # the vertical real estate.
+        # Always shown while a BDT is open so human reviewers can compare
+        # alarm evidence against R10 without hunting exports elsewhere.
         self._bdt_door_section_label = QLabel("DOOR ALARM HISTORY")
         self._bdt_door_section_label.setObjectName("bdt_section_title")
         self._bdt_door_section_label.setVisible(False)
@@ -379,6 +639,7 @@ class BdtDetailPanel(QWidget):
         history_section_lay.addWidget(self._bdt_door_window_hint)
 
         self._bdt_door_table = QTableWidget(0, 6)
+        self._bdt_door_table.setObjectName("bdt_door_table")
         self._bdt_door_table.setHorizontalHeaderLabels(
             ["Site", "Occurred", "Cleared", "Alarm", "R10 Status", "Overlap"])
         self._bdt_door_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -386,13 +647,8 @@ class BdtDetailPanel(QWidget):
         self._bdt_door_table.setAlternatingRowColors(True)
         self._bdt_door_table.verticalHeader().setVisible(False)
         self._bdt_door_table.verticalHeader().setDefaultSectionSize(24)
-        self._bdt_door_table.setColumnWidth(0, 80)
-        self._bdt_door_table.setColumnWidth(1, 130)
-        self._bdt_door_table.setColumnWidth(2, 130)
-        self._bdt_door_table.setColumnWidth(3, 120)
-        self._bdt_door_table.setColumnWidth(4, 90)
-        self._bdt_door_table.setColumnWidth(5, 70)
-        self._bdt_door_table.horizontalHeader().setStretchLastSection(True)
+        self._bdt_door_table.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._bdt_door_table.setMaximumHeight(160)
         self._bdt_door_table.setVisible(False)
         history_section_lay.addWidget(self._bdt_door_table)
@@ -402,6 +658,38 @@ class BdtDetailPanel(QWidget):
         self._bdt_door_empty.setVisible(False)
         history_section_lay.addWidget(self._bdt_door_empty)
 
+        # ── Power Alarm History ────────────────────────────────────
+        self._bdt_power_section_label = QLabel("POWER ALARM HISTORY")
+        self._bdt_power_section_label.setObjectName("bdt_section_title")
+        self._bdt_power_section_label.setVisible(False)
+        history_section_lay.addWidget(self._bdt_power_section_label)
+
+        self._bdt_power_window_hint = QLabel("")
+        self._bdt_power_window_hint.setObjectName("bdt_empty_hint")
+        self._bdt_power_window_hint.setWordWrap(True)
+        self._bdt_power_window_hint.setVisible(False)
+        history_section_lay.addWidget(self._bdt_power_window_hint)
+
+        self._bdt_power_table = QTableWidget(0, 5)
+        self._bdt_power_table.setObjectName("bdt_power_table")
+        self._bdt_power_table.setHorizontalHeaderLabels(
+            ["Site", "Occurred", "Cleared", "Alarm", "Duration"])
+        self._bdt_power_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._bdt_power_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self._bdt_power_table.setAlternatingRowColors(True)
+        self._bdt_power_table.verticalHeader().setVisible(False)
+        self._bdt_power_table.verticalHeader().setDefaultSectionSize(24)
+        self._bdt_power_table.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._bdt_power_table.setMaximumHeight(160)
+        self._bdt_power_table.setVisible(False)
+        history_section_lay.addWidget(self._bdt_power_table)
+
+        self._bdt_power_empty = QLabel("—  no power alarms for this test date")
+        self._bdt_power_empty.setObjectName("bdt_empty_hint")
+        self._bdt_power_empty.setVisible(False)
+        history_section_lay.addWidget(self._bdt_power_empty)
+
         # ── Test History Comparison ────────────────────────────────
         self._bdt_hist_section_label = QLabel("TEST HISTORY COMPARISON")
         self._bdt_hist_section_label.setObjectName("bdt_section_title")
@@ -409,6 +697,7 @@ class BdtDetailPanel(QWidget):
         history_section_lay.addWidget(self._bdt_hist_section_label)
 
         self._bdt_history_table = QTableWidget(0, 3)
+        self._bdt_history_table.setObjectName("bdt_history_table")
         self._bdt_history_table.setHorizontalHeaderLabels(
             ["Field", "Previous", "Current"])
         self._bdt_history_table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -416,9 +705,8 @@ class BdtDetailPanel(QWidget):
         self._bdt_history_table.setAlternatingRowColors(True)
         self._bdt_history_table.verticalHeader().setVisible(False)
         self._bdt_history_table.verticalHeader().setDefaultSectionSize(24)
-        self._bdt_history_table.setColumnWidth(0, 130)
-        self._bdt_history_table.setColumnWidth(1, 130)
-        self._bdt_history_table.horizontalHeader().setStretchLastSection(True)
+        self._bdt_history_table.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred)
         self._bdt_history_table.setMaximumHeight(200)
         self._bdt_history_table.setVisible(False)
         history_section_lay.addWidget(self._bdt_history_table)
@@ -442,9 +730,16 @@ class BdtDetailPanel(QWidget):
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(4)
 
+        self._photos_header_widget = QWidget()
+        photos_hdr_lay = QHBoxLayout(self._photos_header_widget)
+        photos_hdr_lay.setContentsMargins(0, 0, 0, 0)
+        photos_hdr_lay.setSpacing(8)
         lbl_photos = QLabel("PHOTOS")
         lbl_photos.setObjectName("bdt_section_title")
-        right_lay.addWidget(lbl_photos)
+        photos_hdr_lay.addWidget(lbl_photos)
+        photos_hdr_lay.addStretch(1)
+        photos_hdr_lay.addWidget(self._btn_bdt_fullscreen)
+        right_lay.addWidget(self._photos_header_widget)
 
         scroll = QScrollArea()
         scroll.setObjectName("bdt_photo_scroll")
@@ -482,41 +777,189 @@ class BdtDetailPanel(QWidget):
         self._bdt_photo_relayout_timer.setInterval(120)
         self._bdt_photo_relayout_timer.timeout.connect(
             self._relayout_bdt_photos_if_needed)
-        self._bdt_detail_splitter.splitterMoved.connect(
-            lambda *_: self._bdt_photo_relayout_timer.start())
+        self._bdt_detail_splitter.splitterMoved.connect(self._on_detail_splitter_moved)
 
-        outer.addWidget(self._bdt_detail_splitter)
+        outer.addWidget(self._bdt_detail_splitter, 1)
         self._apply_responsive_splitters()
+        self._apply_center_table_layouts()
+
+    # ------------------------------------------------------------------
+    # Full screen
+    # ------------------------------------------------------------------
+    def _bdt_fullscreen_window_title(self) -> str:
+        bdt = getattr(self, "_current_bdt", None)
+        if not bdt:
+            return "BDT Test Detail"
+        site = (bdt.site_code or "").strip() or "Unknown site"
+        if bdt.test_date:
+            date_txt = bdt.test_date.strftime("%Y-%m-%d")
+        else:
+            date_txt = "unknown date"
+        return f"BDT Test — {site} — {date_txt}"
+
+    def _toggle_bdt_fullscreen(self):
+        if getattr(self, "_fullscreen_dialog", None):
+            self._exit_bdt_fullscreen()
+            return
+        self._enter_bdt_fullscreen()
+
+    def _enter_bdt_fullscreen(self):
+        parent = self.parentWidget()
+        if parent is None or getattr(self, "_fullscreen_dialog", None):
+            return
+
+        dlg = QDialog(self._viewer)
+        dlg.setObjectName("bdt_fullscreen_dialog")
+        dlg.setWindowTitle(self._bdt_fullscreen_window_title())
+        dlg.setModal(False)
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        dlg.setWindowFlags(
+            Qt.Window | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+        dlg.finished.connect(self._exit_bdt_fullscreen)
+
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
+        bar = QHBoxLayout()
+        title = QLabel(self._bdt_fullscreen_window_title())
+        title.setObjectName("bdt_section_title")
+        bar.addWidget(title)
+        bar.addStretch(1)
+
+        btn_exit = QPushButton("Exit Full Screen")
+        btn_exit.setObjectName("btn_clear")
+        self._mark_compact(btn_exit)
+        btn_exit.clicked.connect(self._exit_bdt_fullscreen)
+        bar.addWidget(btn_exit)
+        root.addLayout(bar)
+        root.addWidget(self, 1)
+
+        self._fullscreen_dialog = dlg
+        self._fullscreen_restore_parent = parent
+        self._btn_bdt_fullscreen.setVisible(False)
+        dlg.showMaximized()
+        QTimer.singleShot(0, self._after_fullscreen_layout)
+
+    def _after_fullscreen_layout(self):
+        self._apply_responsive_splitters()
+        self._relayout_bdt_tables()
+
+    def _exit_bdt_fullscreen(self):
+        dlg = getattr(self, "_fullscreen_dialog", None)
+        parent = getattr(self, "_fullscreen_restore_parent", None)
+        self._fullscreen_dialog = None
+        self._fullscreen_restore_parent = None
+
+        if parent is not None:
+            self.setParent(parent)
+            parent.addWidget(self)
+            panel_idx = parent.indexOf(self)
+            if panel_idx >= 0:
+                parent.setStretchFactor(panel_idx, 1)
+            self.setVisible(True)
+            validation_panel = getattr(self._viewer, "_bdt_validation_panel", None)
+            if validation_panel and hasattr(validation_panel, "_apply_bdt_splitter_ratio"):
+                validation_panel._apply_bdt_splitter_ratio()
+
+        if dlg is not None:
+            dlg.blockSignals(True)
+            dlg.close()
+            dlg.deleteLater()
+
+        if hasattr(self, "_btn_bdt_fullscreen"):
+            self._btn_bdt_fullscreen.setVisible(True)
+
+        QTimer.singleShot(0, self._relayout_bdt_tables)
 
     # ------------------------------------------------------------------
     # Data population
     # ------------------------------------------------------------------
+    def _is_bdt_fullscreen(self) -> bool:
+        return bool(getattr(self, "_fullscreen_dialog", None))
+
+    @staticmethod
+    def _stretch_table_columns(table: QTableWidget):
+        table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        hdr = table.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        hdr.setMinimumSectionSize(48)
+        for col in range(table.columnCount()):
+            hdr.setSectionResizeMode(col, QHeaderView.Stretch)
+
+    def _center_bdt_tables(self) -> list[QTableWidget]:
+        tables: list[QTableWidget] = []
+        for name in (
+            "_bdt_rules_table",
+            "_bdt_door_table",
+            "_bdt_power_table",
+            "_bdt_history_table",
+        ):
+            table = getattr(self, name, None)
+            if table is not None:
+                tables.append(table)
+        return tables
+
+    def _apply_center_table_layouts(self):
+        for table in self._center_bdt_tables():
+            self._stretch_table_columns(table)
+
+    def _apply_history_table_heights(self):
+        if self._is_bdt_fullscreen():
+            door_cap, power_cap, hist_cap = 240, 240, 280
+        else:
+            door_cap, power_cap, hist_cap = 160, 160, 200
+        self._bdt_door_table.setMaximumHeight(door_cap)
+        self._bdt_power_table.setMaximumHeight(power_cap)
+        self._bdt_history_table.setMaximumHeight(hist_cap)
+
+    def _relayout_bdt_tables(self):
+        self._apply_center_table_layouts()
+        self._apply_history_table_heights()
+        self._apply_discharge_column_widths()
+        if hasattr(self, "_bdt_photo_relayout_timer"):
+            self._bdt_photo_relayout_timer.start()
+
+    def _on_detail_splitter_moved(self, *_args):
+        self._relayout_bdt_tables()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._apply_responsive_splitters()
-        if hasattr(self, "_bdt_photo_relayout_timer"):
-            self._bdt_photo_relayout_timer.start()
+        self._relayout_bdt_tables()
 
     def _apply_responsive_splitters(self):
         if not hasattr(self, "_bdt_detail_splitter"):
             return
         total = max(1, self._bdt_detail_splitter.width())
-        left = int(total * 0.26)
-        center = int(total * 0.25)
+        if self._is_bdt_fullscreen():
+            left = int(total * 0.24)
+            center = int(total * 0.34)
+        else:
+            left = int(total * 0.26)
+            center = int(total * 0.25)
         right = max(1, total - left - center)
         self._bdt_detail_splitter.setSizes([left, center, max(1, right)])
 
         if hasattr(self, "_bdt_left_splitter"):
             left_total = max(1, self._bdt_left_splitter.height())
-            info_h = max(90, int(left_total * 0.48))
+            if self._is_bdt_fullscreen():
+                info_h = max(120, int(left_total * 0.40))
+            else:
+                info_h = max(90, int(left_total * 0.48))
             self._bdt_left_splitter.setSizes([info_h, max(1, left_total - info_h)])
         if hasattr(self, "_bdt_center_splitter"):
             center_total = max(1, self._bdt_center_splitter.height())
-            rules_h = max(120, int(center_total * 0.68))
+            if self._is_bdt_fullscreen():
+                rules_h = max(160, int(center_total * 0.44))
+            else:
+                rules_h = max(120, int(center_total * 0.68))
             self._bdt_center_splitter.setSizes([rules_h, max(1, center_total - rules_h)])
 
     def populate(self, res: ValidationResult):
         """Fill the detail panel from the selected validation result."""
+        self._last_validation_result = res
+        self._apply_discharge_table_theme()
         bdt = res.bdt_data
 
         # ── Info grid ──
@@ -555,39 +998,44 @@ class BdtDetailPanel(QWidget):
         # ── Discharge table ──
         self._bdt_discharge_table.setRowCount(0)
         self._bdt_active_discharge_strings = 0
+        self._bdt_discharge_chart.set_points([])
         self._bdt_discharge_table.setColumnCount(len(self._discharge_headers(0)))
         self._apply_discharge_header_items(self._bdt_discharge_table, 0)
         self._apply_discharge_column_visibility()
         if bdt:
             rows = self._build_discharge_detail_rows(bdt)
             theme_mode = self._resolved_theme_mode()
+            self._bdt_discharge_chart.set_theme_mode(theme_mode)
+            self._bdt_discharge_chart.set_points(self._discharge_chart_points(rows))
             self._bdt_active_discharge_strings = max(
                 (len(row["strings"]) for row in rows),
                 default=0,
             )
             self._bdt_discharge_table.setRowCount(len(rows))
-            start_bg = QColor("#1a2744")
-            end_bg = QColor("#2e1a22")
-            string_headers = self._discharge_display_headers(self._bdt_active_discharge_strings)
+            edge_bg = self._DISCHARGE_EDGE_ROW_BG.get(
+                theme_mode, self._DISCHARGE_EDGE_ROW_BG["dark"],
+            )
+            start_bg = edge_bg["before"]
+            end_bg = edge_bg["after"]
+            delta_colors = self._DISCHARGE_DELTA_COLORS.get(
+                theme_mode, self._DISCHARGE_DELTA_COLORS["dark"],
+            )
+            body_fg = QColor("#111827") if theme_mode == "light" else QColor("#f8fafc")
+            string_headers = self._discharge_display_headers(
+                self._bdt_active_discharge_strings,
+            )
             if self._bdt_discharge_table.columnCount() != len(string_headers):
                 self._bdt_discharge_table.setColumnCount(len(string_headers))
             self._apply_discharge_header_items(
                 self._bdt_discharge_table,
                 self._bdt_active_discharge_strings,
             )
-            dis_hdr = self._bdt_discharge_table.horizontalHeader()
-            dis_hdr.setStretchLastSection(False)
-            for col in range(self._bdt_discharge_table.columnCount()):
-                if col == 0:
-                    dis_hdr.resizeSection(col, 270)
-                elif col < len(self._DISCHARGE_FIXED_HEADERS):
-                    dis_hdr.resizeSection(col, 160)
-                else:
-                    dis_hdr.resizeSection(col, 138)
+            self._apply_discharge_column_widths()
+            self._apply_discharge_row_heights(len(rows))
 
             for r, row in enumerate(rows):
                 values = [
-                    row["label"],
+                    self._compact_discharge_label(row["label"]),
                     self._format_discharge_value(row["bus_v"]),
                     self._format_discharge_value(row["bus_a"]),
                     self._format_discharge_value(row["sum_string_a"]),
@@ -609,21 +1057,25 @@ class BdtDetailPanel(QWidget):
                         self._discharge_section_index_for_column(c),
                         theme_mode,
                     )
-                    if row["row_kind"] == "before":
-                        item.setBackground(start_bg)
-                    elif row["row_kind"] == "after":
-                        item.setBackground(end_bg)
+                    if c == 0 and row["row_kind"] == "before":
+                        cell_bg = start_bg
+                    elif c == 0 and row["row_kind"] == "after":
+                        cell_bg = end_bg
                     else:
-                        item.setBackground(section_bg)
+                        cell_bg = section_bg
+                    item.setBackground(QBrush(cell_bg))
                     if c == 4 and row["delta_sum_minus_bus"] is not None:
                         delta = float(row["delta_sum_minus_bus"])
                         if -3.0 <= delta <= 0.0:
-                            item.setForeground(QColor("#a6e3a1"))
+                            item.setForeground(delta_colors["ok"])
                         else:
-                            item.setForeground(QColor("#f38ba8"))
+                            item.setForeground(delta_colors["bad"])
+                    else:
+                        item.setForeground(body_fg)
                     self._bdt_discharge_table.setItem(r, c, item)
 
             self._apply_discharge_column_visibility()
+            self._bdt_discharge_table.horizontalHeader().viewport().update()
 
         # ── Rules table ──
         verdict_colors = {
@@ -657,80 +1109,141 @@ class BdtDetailPanel(QWidget):
         else:
             self._bdt_parse_errors_lbl.setVisible(False)
 
-        # ── Populate door alarm history ──────────────────────────
+        # ── Populate door + power alarm history for human review ───
+        has_doors = False
+        has_power = False
+        show_alarm_review = bdt is not None
         self._bdt_door_table.setRowCount(0)
+        self._bdt_power_table.setRowCount(0)
         self._bdt_door_window_hint.setText("")
         self._bdt_door_window_hint.setVisible(False)
+        self._bdt_power_window_hint.setText("")
+        self._bdt_power_window_hint.setVisible(False)
         if bdt and bdt.test_date:
             try:
                 try:
-                    from alarm_app.bdt.validator import _evaluate_door_evidence
+                    from alarm_app.bdt.validator import (
+                        _build_test_window,
+                        _evaluate_door_evidence,
+                        _find_power_alarms,
+                    )
                 except ImportError:
-                    from bdt.validator import _evaluate_door_evidence
+                    from bdt.validator import (
+                        _build_test_window,
+                        _evaluate_door_evidence,
+                        _find_power_alarms,
+                    )
                 test_date_ts = pd.Timestamp(bdt.test_date).normalize()
-                alarm_df = self._load_door_alarm_subset(bdt.site_code, test_date_ts)
-                if not alarm_df.empty:
-                    evidence = _evaluate_door_evidence(bdt, alarm_df)
-                    if evidence.window_start is not None and evidence.window_end is not None:
-                        window_text = (
-                            f"Onsite window: {evidence.window_start.strftime('%H:%M')} → "
-                            f"{evidence.window_end.strftime('%H:%M')}"
-                        )
-                        if evidence.best is not None and evidence.best.status_label == "Revise":
-                            window_text += (
-                                " — door evidence overlaps the visit but extends outside "
-                                "recorded time_in/time_out; reviewer decision"
-                            )
-                        self._bdt_door_window_hint.setText(window_text)
-                        self._bdt_door_window_hint.setVisible(True)
+                alarm_df = self._load_alarm_subset(bdt.site_code, test_date_ts)
 
-                    if evidence.rows:
-                        sorted_rows = sorted(
-                            evidence.rows,
-                            key=lambda row: (
-                                0 if evidence.best is not None and row.row_index == evidence.best.row_index else 1,
-                                -row.overlap_min,
-                            ),
+                evidence = _evaluate_door_evidence(bdt, alarm_df)
+                if evidence.window_start is not None and evidence.window_end is not None:
+                    window_text = (
+                        f"Onsite window: {evidence.window_start.strftime('%H:%M')} → "
+                        f"{evidence.window_end.strftime('%H:%M')}"
+                    )
+                    if evidence.best is not None and evidence.best.status_label == "Revise":
+                        window_text += (
+                            " — door evidence overlaps the visit but extends outside "
+                            "recorded time_in/time_out; reviewer decision"
                         )
-                        status_colors = {
-                            "Accepted": QColor("#a6e3a1"),
-                            "Revise": QColor("#fab387"),
-                            "No overlap": QColor("#f38ba8"),
-                        }
-                        self._bdt_door_table.setRowCount(len(sorted_rows))
-                        for i, door_row in enumerate(sorted_rows):
-                            occ = door_row.occurred_on
-                            clr = door_row.cleared_on
-                            self._bdt_door_table.setItem(
-                                i, 0, QTableWidgetItem(door_row.site_id))
-                            self._bdt_door_table.setItem(
-                                i, 1, QTableWidgetItem(occ.strftime("%Y-%m-%d %H:%M")))
-                            cleared_text = (
-                                clr.strftime("%Y-%m-%d %H:%M")
-                                if clr is not None and hasattr(clr, "strftime")
-                                else "—"
-                            )
-                            self._bdt_door_table.setItem(
-                                i, 2, QTableWidgetItem(cleared_text))
-                            self._bdt_door_table.setItem(
-                                i, 3, QTableWidgetItem(door_row.alarm_name))
-                            status_item = QTableWidgetItem(door_row.status_label)
-                            status_item.setForeground(
-                                status_colors.get(door_row.status_label, QColor("#cdd6f4"))
-                            )
-                            self._bdt_door_table.setItem(i, 4, status_item)
-                            overlap_text = (
-                                f"{door_row.overlap_min:.0f}m"
-                                if door_row.overlap_min > 0
-                                else "—"
-                            )
-                            self._bdt_door_table.setItem(
-                                i, 5, QTableWidgetItem(overlap_text))
+                    self._bdt_door_window_hint.setText(window_text)
+                    self._bdt_door_window_hint.setVisible(True)
+
+                if evidence.rows:
+                    sorted_rows = sorted(
+                        evidence.rows,
+                        key=lambda row: (
+                            0 if evidence.best is not None and row.row_index == evidence.best.row_index else 1,
+                            -row.overlap_min,
+                        ),
+                    )
+                    status_colors = {
+                        "Accepted": QColor("#a6e3a1"),
+                        "Revise": QColor("#fab387"),
+                        "No overlap": QColor("#f38ba8"),
+                    }
+                    self._bdt_door_table.setRowCount(len(sorted_rows))
+                    for i, door_row in enumerate(sorted_rows):
+                        occ = door_row.occurred_on
+                        clr = door_row.cleared_on
+                        self._bdt_door_table.setItem(
+                            i, 0, QTableWidgetItem(door_row.site_id))
+                        self._bdt_door_table.setItem(
+                            i, 1, QTableWidgetItem(occ.strftime("%Y-%m-%d %H:%M")))
+                        cleared_text = (
+                            clr.strftime("%Y-%m-%d %H:%M")
+                            if clr is not None and hasattr(clr, "strftime")
+                            else "—"
+                        )
+                        self._bdt_door_table.setItem(
+                            i, 2, QTableWidgetItem(cleared_text))
+                        self._bdt_door_table.setItem(
+                            i, 3, QTableWidgetItem(door_row.alarm_name))
+                        status_item = QTableWidgetItem(door_row.status_label)
+                        status_item.setForeground(
+                            status_colors.get(door_row.status_label, QColor("#cdd6f4"))
+                        )
+                        self._bdt_door_table.setItem(i, 4, status_item)
+                        overlap_text = (
+                            f"{door_row.overlap_min:.0f}m"
+                            if door_row.overlap_min > 0
+                            else "—"
+                        )
+                        self._bdt_door_table.setItem(
+                            i, 5, QTableWidgetItem(overlap_text))
+                has_doors = self._bdt_door_table.rowCount() > 0
+
+                window_start, window_end = _build_test_window(bdt)
+                discharge_mins = getattr(bdt, "discharge_minutes", None)
+                if window_start is not None and window_end is not None:
+                    power_hint = (
+                        f"R2 checks power alarms on {test_date_ts.date()} against "
+                        f"time_in {window_start.strftime('%H:%M')}"
+                    )
+                    if discharge_mins:
+                        power_hint += f" and discharge duration {discharge_mins:.0f} min"
+                    self._bdt_power_window_hint.setText(power_hint)
+                    self._bdt_power_window_hint.setVisible(True)
+
+                power_rows = self._power_alarms_for_test_date(
+                    alarm_df, bdt.site_code, test_date_ts, _find_power_alarms
+                )
+                self._bdt_power_table.setRowCount(len(power_rows))
+                for i, (_, row) in enumerate(power_rows.iterrows()):
+                    occ = row.get("occurred_on", "")
+                    clr = row.get("cleared_on", "")
+                    self._bdt_power_table.setItem(
+                        i, 0, QTableWidgetItem(str(row.get("site_id", ""))))
+                    self._bdt_power_table.setItem(
+                        i, 1, QTableWidgetItem(
+                            occ.strftime("%Y-%m-%d %H:%M")
+                            if hasattr(occ, "strftime") else str(occ)))
+                    self._bdt_power_table.setItem(
+                        i, 2, QTableWidgetItem(
+                            clr.strftime("%Y-%m-%d %H:%M")
+                            if hasattr(clr, "strftime") and pd.notna(clr) else "—"))
+                    self._bdt_power_table.setItem(
+                        i, 3, QTableWidgetItem(str(row.get("alarm_name", ""))))
+                    self._bdt_power_table.setItem(
+                        i, 4, QTableWidgetItem(str(row.get("duration", "") or "—")))
+                has_power = self._bdt_power_table.rowCount() > 0
             except Exception:
                 pass  # Graceful fallback if alarm data unavailable
+        elif bdt:
+            self._bdt_door_window_hint.setText(
+                "—  cannot load door alarms: BDT test date is missing")
+            self._bdt_door_window_hint.setVisible(True)
+            self._bdt_power_window_hint.setText(
+                "—  cannot load power alarms: BDT test date is missing")
+            self._bdt_power_window_hint.setVisible(True)
 
-        has_doors = self._bdt_door_table.rowCount() > 0
-        self._sync_optional_sections(has_doors=has_doors, has_history=False)
+        self._sync_optional_sections(
+            show_alarm_review=show_alarm_review,
+            has_doors=has_doors,
+            has_power=has_power,
+            has_history=False,
+        )
 
         # ── Populate test history comparison ──────────────────
         self._bdt_history_table.setRowCount(0)
@@ -810,13 +1323,22 @@ class BdtDetailPanel(QWidget):
                     "History comparison failed for site %s", bdt.site_code, exc_info=True)
 
         has_history = self._bdt_history_table.rowCount() > 0
-        self._sync_optional_sections(has_doors=has_doors, has_history=has_history)
+        self._sync_optional_sections(
+            show_alarm_review=show_alarm_review,
+            has_doors=has_doors,
+            has_power=has_power,
+            has_history=has_history,
+        )
 
         # ── Photos (lazy-load if skipped during batch validation) ──
         if bdt:
             load_bdt_photos(bdt)
         self._populate_bdt_photos(bdt)
         self._current_bdt = bdt
+        if hasattr(self, "_btn_bdt_fullscreen"):
+            self._btn_bdt_fullscreen.setEnabled(
+                bool(bdt) and not getattr(self, "_fullscreen_dialog", None))
+        QTimer.singleShot(0, self._relayout_bdt_tables)
 
     @classmethod
     def _discharge_headers(cls, active_strings: int | None = None) -> list[str]:
@@ -830,88 +1352,37 @@ class BdtDetailPanel(QWidget):
     def _discharge_display_headers(cls, active_strings: int | None = None) -> list[str]:
         headers = [
             "TIME: MIN (H)",
-            "REC BUS\nV",
-            "REC BUS\nA",
-            "Σ STRING\nA",
+            "REC BUS V",
+            "REC BUS A",
+            "Σ STR A",
             "Δ Σ-BUS",
         ]
         limit = cls._DISCHARGE_MAX_STRINGS if active_strings is None else max(0, min(cls._DISCHARGE_MAX_STRINGS, int(active_strings)))
         for idx in range(1, limit + 1):
-            headers.extend([f"STRING {idx}\nV", f"STRING {idx}\nA"])
+            headers.extend([f"S{idx} V", f"S{idx} A"])
         return headers
 
     @classmethod
     def _discharge_section_index_for_column(cls, col: int) -> int:
+        if col == 0:
+            return 0
+        if col <= 2:
+            return 1
         if col <= 4:
-            return col
-        return 5 + ((col - 5) // 2)
+            return 2
+        return 3 + ((col - 5) // 2)
 
     @classmethod
     def _discharge_section_palette(cls, section_index: int, theme_mode: str = "dark") -> tuple[QColor, QColor]:
-        if theme_mode == "light":
-            header_palette = [
-                QColor("#edf2ff"),
-                QColor("#eaf2ff"),
-                QColor("#eef4ff"),
-                QColor("#f4efff"),
-                QColor("#fff0f6"),
-                QColor("#eef5ff"),
-                QColor("#f4f9ff"),
-                QColor("#eef5ff"),
-                QColor("#f4f9ff"),
-                QColor("#eef5ff"),
-                QColor("#f4f9ff"),
-            ]
-            body_palette = [
-                QColor("#fbfcff"),
-                QColor("#f6f9ff"),
-                QColor("#f8faff"),
-                QColor("#faf8ff"),
-                QColor("#fff8fb"),
-                QColor("#f4f8ff"),
-                QColor("#f8fbff"),
-                QColor("#f4f8ff"),
-                QColor("#f8fbff"),
-                QColor("#f4f8ff"),
-                QColor("#f8fbff"),
-                QColor("#f4f8ff"),
-                QColor("#f8fbff"),
-            ]
-            header = header_palette[section_index] if section_index < len(header_palette) else QColor("#eef5ff" if section_index % 2 == 0 else "#f4f9ff")
-            body = body_palette[section_index] if section_index < len(body_palette) else QColor("#f4f8ff" if section_index % 2 == 0 else "#f8fbff")
-            return header, body
-
-        header_palette = [
-            QColor("#1f2134"),
-            QColor("#18263d"),
-            QColor("#1d2940"),
-            QColor("#2a2240"),
-            QColor("#3a2230"),
-            QColor("#15283d"),
-            QColor("#1b3143"),
-            QColor("#15283d"),
-            QColor("#1b3143"),
-            QColor("#15283d"),
-            QColor("#1b3143"),
-        ]
-        body_palette = [
-            QColor("#171825"),
-            QColor("#121d2f"),
-            QColor("#152235"),
-            QColor("#1e1930"),
-            QColor("#281720"),
-            QColor("#101d2c"),
-            QColor("#142430"),
-            QColor("#101d2c"),
-            QColor("#142430"),
-            QColor("#101d2c"),
-            QColor("#142430"),
-            QColor("#101d2c"),
-            QColor("#142430"),
-        ]
-        header = header_palette[section_index] if section_index < len(header_palette) else QColor("#15283d" if section_index % 2 == 0 else "#1b3143")
-        body = body_palette[section_index] if section_index < len(body_palette) else QColor("#101d2c" if section_index % 2 == 0 else "#142430")
-        return header, body
+        palettes = (
+            cls._DISCHARGE_SECTION_PALETTES_LIGHT
+            if theme_mode == "light"
+            else cls._DISCHARGE_SECTION_PALETTES_DARK
+        )
+        if section_index < len(palettes):
+            return palettes[section_index]
+        string_slot = (section_index - 3) % max(1, len(palettes) - 3)
+        return palettes[3 + string_slot]
 
     def _resolved_theme_mode(self) -> str:
         mode = str(getattr(self._viewer, "_theme_mode", "dark") or "dark")
@@ -922,21 +1393,64 @@ class BdtDetailPanel(QWidget):
                 return "dark"
         return mode
 
+    def refresh_theme(self):
+        """Re-apply discharge styling when the app theme changes."""
+        self._apply_discharge_table_theme()
+        if hasattr(self, "_bdt_discharge_chart"):
+            self._bdt_discharge_chart.set_theme_mode(self._resolved_theme_mode())
+        if self._last_validation_result is not None:
+            self.populate(self._last_validation_result)
+
+    def _apply_discharge_table_theme(self):
+        if not hasattr(self, "_bdt_discharge_table"):
+            return
+        if self._resolved_theme_mode() == "light":
+            self._bdt_discharge_table.setStyleSheet(
+                "QTableWidget#bdt_discharge_table {"
+                "  gridline-color: #cbd5e1; alternate-background-color: transparent;"
+                "  background-color: #ffffff; color: #111827; font-size: 11px; }"
+                "QTableWidget#bdt_discharge_table::item {"
+                "  padding: 0px 3px; border: none; background: transparent;"
+                "  color: #111827; }"
+                "QTableWidget#bdt_discharge_table::item:selected {"
+                "  background: transparent; color: #111827; }"
+                "QTableWidget#bdt_discharge_table::item:selected:active {"
+                "  background: transparent; color: #111827; }"
+                "QTableWidget#bdt_discharge_table QHeaderView::section {"
+                "  padding: 0px; border: none; background: transparent; }"
+            )
+            return
+        self._bdt_discharge_table.setStyleSheet(
+            "QTableWidget#bdt_discharge_table {"
+            "  gridline-color: #4b526d; alternate-background-color: transparent;"
+            "  background-color: #12151f; color: #f8fafc; font-size: 11px; }"
+            "QTableWidget#bdt_discharge_table::item {"
+            "  padding: 0px 3px; border: none; background: transparent;"
+            "  color: #f8fafc; }"
+            "QTableWidget#bdt_discharge_table::item:selected {"
+            "  background: transparent; color: #f8fafc; }"
+            "QTableWidget#bdt_discharge_table::item:selected:active {"
+            "  background: transparent; color: #f8fafc; }"
+            "QTableWidget#bdt_discharge_table QHeaderView::section {"
+            "  padding: 0px; border: none; background: transparent; }"
+        )
+
     def _apply_discharge_header_items(self, table: QTableWidget, active_strings: int):
         theme_mode = self._resolved_theme_mode()
-        header_fg = QColor("#5c6784") if theme_mode == "light" else QColor("#a6c8ff")
         for col, text in enumerate(self._discharge_display_headers(active_strings)):
             item = QTableWidgetItem(text)
             item.setTextAlignment(Qt.AlignCenter)
-            header_bg, _ = self._discharge_section_palette(
-                self._discharge_section_index_for_column(col),
-                theme_mode,
-            )
+            section_index = self._discharge_section_index_for_column(col)
+            header_bg, _ = self._discharge_section_palette(section_index, theme_mode)
+            if theme_mode == "light":
+                header_fg = QColor("#1f2937") if section_index == 0 else QColor("#ffffff")
+            else:
+                header_fg = QColor("#e8edf7")
             item.setBackground(header_bg)
             item.setForeground(header_fg)
             font = item.font()
             font.setBold(True)
-            font.setPointSize(max(font.pointSize(), 10))
+            font.setPointSize(9)
             item.setFont(font)
             table.setHorizontalHeaderItem(col, item)
 
@@ -1051,38 +1565,122 @@ class BdtDetailPanel(QWidget):
             "row_kind": row_kind,
         }
 
-    def _toggle_discharge_table_expanded(self):
-        self._bdt_discharge_expanded = not getattr(self, "_bdt_discharge_expanded", False)
-        self._apply_discharge_column_visibility()
+    @classmethod
+    def _discharge_chart_points(cls, rows: list[dict]) -> list[float]:
+        """REC BUS V series for the sparkline (before → timed → after)."""
+        points: list[float] = []
+        for row in rows:
+            value = row.get("bus_v")
+            if value is None:
+                continue
+            try:
+                points.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        return points
+
+    @staticmethod
+    def _compact_discharge_label(label: str) -> str:
+        text = str(label).strip()
+        lowered = text.lower()
+        if lowered.startswith("before disconnecting"):
+            return "Before …"
+        if lowered.startswith("after connecting"):
+            return "After …"
+        return text
+
+    @classmethod
+    def _discharge_col_minimum_width(cls, col: int) -> int:
+        first_string_col = len(cls._DISCHARGE_FIXED_HEADERS)
+        if col == 0:
+            return cls._DISCHARGE_COL_TIME
+        if col < first_string_col:
+            return cls._DISCHARGE_COL_NUMERIC
+        return cls._DISCHARGE_COL_STRING
+
+    def _apply_discharge_column_widths(self):
+        table = self._bdt_discharge_table
+        col_count = table.columnCount()
+        if col_count == 0:
+            return
+
+        hdr = table.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        min_widths = [self._discharge_col_minimum_width(col) for col in range(col_count)]
+        min_total = sum(min_widths)
+        viewport_w = table.viewport().width()
+        if viewport_w <= 0:
+            viewport_w = table.width()
+
+        if viewport_w >= min_total:
+            scale = viewport_w / min_total
+            table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        else:
+            scale = 1.0
+            table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+        for col, base_width in enumerate(min_widths):
+            hdr.setSectionResizeMode(col, QHeaderView.Fixed)
+            hdr.resizeSection(col, max(base_width, int(round(base_width * scale))))
+
+    def _apply_discharge_row_heights(self, row_count: int):
+        v_hdr = self._bdt_discharge_table.verticalHeader()
+        v_hdr.setSectionResizeMode(QHeaderView.Fixed)
+        for row in range(row_count):
+            v_hdr.resizeSection(row, self._DISCHARGE_ROW_HEIGHT)
 
     def _apply_discharge_column_visibility(self):
-        expanded = getattr(self, "_bdt_discharge_expanded", False)
-        first_string_col = len(self._DISCHARGE_FIXED_HEADERS)
-        active_strings = max(0, min(self._DISCHARGE_MAX_STRINGS, int(getattr(self, "_bdt_active_discharge_strings", 0) or 0)))
-        total_string_cols = max(0, self._bdt_discharge_table.columnCount() - first_string_col)
-        for idx in range(total_string_cols):
-            self._bdt_discharge_table.setColumnHidden(first_string_col + idx, not expanded)
-        self._btn_discharge_expand.setText("COLLAPSE ⇱" if expanded else "EXPAND STRINGS ⇲")
-        self._btn_discharge_expand.setVisible(active_strings > 0)
+        """Discharge table always shows every column."""
+        for col in range(self._bdt_discharge_table.columnCount()):
+            self._bdt_discharge_table.setColumnHidden(col, False)
 
-    def _sync_optional_sections(self, *, has_doors: bool, has_history: bool):
-        self._bdt_door_section_label.setVisible(has_doors)
+    def _sync_optional_sections(
+        self,
+        *,
+        show_alarm_review: bool,
+        has_doors: bool,
+        has_power: bool,
+        has_history: bool,
+    ):
+        self._bdt_door_section_label.setVisible(show_alarm_review)
         self._bdt_door_window_hint.setVisible(
-            has_doors and bool(self._bdt_door_window_hint.text().strip())
+            show_alarm_review and bool(self._bdt_door_window_hint.text().strip())
         )
-        self._bdt_door_table.setVisible(has_doors)
-        self._bdt_door_empty.setVisible(False)
+        self._bdt_door_table.setVisible(show_alarm_review)
+        self._bdt_door_empty.setVisible(show_alarm_review and not has_doors)
+        self._bdt_power_section_label.setVisible(show_alarm_review)
+        self._bdt_power_window_hint.setVisible(
+            show_alarm_review and bool(self._bdt_power_window_hint.text().strip())
+        )
+        self._bdt_power_table.setVisible(show_alarm_review)
+        self._bdt_power_empty.setVisible(show_alarm_review and not has_power)
         self._bdt_hist_section_label.setVisible(has_history)
         self._bdt_history_table.setVisible(has_history)
         self._bdt_history_label.setVisible(has_history)
 
     @staticmethod
-    def _load_door_alarm_subset(site_code: str, test_date: pd.Timestamp) -> pd.DataFrame:
+    def _load_alarm_subset(site_code: str, test_date: pd.Timestamp) -> pd.DataFrame:
         if not site_code or pd.isna(test_date):
             return pd.DataFrame()
         date_from = (pd.Timestamp(test_date) - pd.Timedelta(days=1)).to_pydatetime()
         date_to = (pd.Timestamp(test_date) + pd.Timedelta(days=1)).to_pydatetime()
         return load_alarm_slice_for_bdt([site_code], date_from, date_to)
+
+    @staticmethod
+    def _load_door_alarm_subset(site_code: str, test_date: pd.Timestamp) -> pd.DataFrame:
+        return BdtDetailPanel._load_alarm_subset(site_code, test_date)
+
+    @staticmethod
+    def _power_alarms_for_test_date(
+        alarm_df: pd.DataFrame,
+        site_code: str,
+        test_date: pd.Timestamp,
+        find_power_alarms,
+    ) -> pd.DataFrame:
+        power = find_power_alarms(alarm_df, site_code)
+        if power.empty or "occurred_on" not in power.columns:
+            return power
+        return power[power["occurred_on"].dt.normalize() == test_date].sort_values("occurred_on")
 
     # ------------------------------------------------------------------
     # File opener

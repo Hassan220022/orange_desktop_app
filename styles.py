@@ -1179,7 +1179,7 @@ QLabel#bdt_section_title {
     font-weight: 700;
     letter-spacing: 1.6px;
     background: transparent;
-    padding: 6px 0 4px 0;
+    padding: 2px 0 2px 0;
 }
 QLabel#bdt_empty_hint {
     color: {270};
@@ -2507,7 +2507,7 @@ QLabel#bdt_section_title {
     font-weight: 700;
     letter-spacing: 1.6px;
     background: transparent;
-    padding: 6px 0 4px 0;
+    padding: 2px 0 2px 0;
 }
 QLabel#bdt_empty_hint {
     color: {270};

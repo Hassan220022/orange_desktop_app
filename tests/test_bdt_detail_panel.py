@@ -1,6 +1,8 @@
 from datetime import datetime
 from types import SimpleNamespace
 
+import pandas as pd
+
 from alarm_app.ui.panels.bdt_detail_panel import BdtDetailPanel
 
 
@@ -24,46 +26,111 @@ class _Hint:
         self.visible = visible
 
 
-def test_sync_optional_sections_hides_empty_sections():
-    panel = SimpleNamespace(
+def _alarm_review_panel(*, door_hint_text=""):
+    return SimpleNamespace(
         _bdt_door_section_label=_Widget(),
-        _bdt_door_window_hint=_Hint(),
+        _bdt_door_window_hint=_Hint(door_hint_text),
         _bdt_door_table=_Widget(),
         _bdt_door_empty=_Widget(),
+        _bdt_power_section_label=_Widget(),
+        _bdt_power_window_hint=_Hint(),
+        _bdt_power_table=_Widget(),
+        _bdt_power_empty=_Widget(),
         _bdt_hist_section_label=_Widget(),
         _bdt_history_table=_Widget(),
         _bdt_history_label=_Widget(),
     )
 
-    BdtDetailPanel._sync_optional_sections(panel, has_doors=False, has_history=False)
+
+def test_sync_optional_sections_hides_alarm_review_when_no_bdt():
+    panel = _alarm_review_panel()
+
+    BdtDetailPanel._sync_optional_sections(
+        panel,
+        show_alarm_review=False,
+        has_doors=False,
+        has_power=False,
+        has_history=False,
+    )
 
     assert panel._bdt_door_section_label.visible is False
     assert panel._bdt_door_table.visible is False
     assert panel._bdt_door_empty.visible is False
+    assert panel._bdt_power_section_label.visible is False
+    assert panel._bdt_power_table.visible is False
+    assert panel._bdt_power_empty.visible is False
     assert panel._bdt_hist_section_label.visible is False
     assert panel._bdt_history_table.visible is False
     assert panel._bdt_history_label.visible is False
 
 
-def test_sync_optional_sections_shows_only_sections_with_content():
-    panel = SimpleNamespace(
-        _bdt_door_section_label=_Widget(),
-        _bdt_door_window_hint=_Hint(),
-        _bdt_door_table=_Widget(),
-        _bdt_door_empty=_Widget(),
-        _bdt_hist_section_label=_Widget(),
-        _bdt_history_table=_Widget(),
-        _bdt_history_label=_Widget(),
-    )
+def test_sync_optional_sections_always_shows_alarm_tables_for_open_bdt():
+    panel = _alarm_review_panel(door_hint_text="Onsite window: 11:05 → 13:42")
 
-    BdtDetailPanel._sync_optional_sections(panel, has_doors=True, has_history=False)
+    BdtDetailPanel._sync_optional_sections(
+        panel,
+        show_alarm_review=True,
+        has_doors=False,
+        has_power=False,
+        has_history=False,
+    )
 
     assert panel._bdt_door_section_label.visible is True
     assert panel._bdt_door_table.visible is True
-    assert panel._bdt_door_empty.visible is False
+    assert panel._bdt_door_empty.visible is True
+    assert panel._bdt_door_window_hint.visible is True
+    assert panel._bdt_power_section_label.visible is True
+    assert panel._bdt_power_table.visible is True
+    assert panel._bdt_power_empty.visible is True
     assert panel._bdt_hist_section_label.visible is False
-    assert panel._bdt_history_table.visible is False
-    assert panel._bdt_history_label.visible is False
+
+
+def test_sync_optional_sections_hides_empty_hints_when_rows_exist():
+    panel = _alarm_review_panel()
+
+    BdtDetailPanel._sync_optional_sections(
+        panel,
+        show_alarm_review=True,
+        has_doors=True,
+        has_power=True,
+        has_history=True,
+    )
+
+    assert panel._bdt_door_empty.visible is False
+    assert panel._bdt_power_empty.visible is False
+    assert panel._bdt_hist_section_label.visible is True
+    assert panel._bdt_history_table.visible is True
+    assert panel._bdt_history_label.visible is True
+
+
+def test_power_alarms_for_test_date_filters_same_day_rows():
+    alarm_df = pd.DataFrame(
+        {
+            "site_id": ["4528CA", "4528CA", "4528CA"],
+            "occurred_on": pd.to_datetime(
+                ["2026-04-02 10:00", "2026-04-01 09:00", "2026-04-02 11:05"]
+            ),
+            "cleared_on": pd.to_datetime(
+                ["2026-04-02 12:00", "2026-04-01 10:00", "2026-04-02 13:00"]
+            ),
+            "alarm_category": ["Power", "Power", "Power"],
+            "alarm_name": ["Mains Fail", "Mains Fail", "Mains Fail"],
+            "duration": ["02:00:00", "01:00:00", "01:55:00"],
+        }
+    )
+
+    def _find_power(df, site):
+        return df[df["alarm_category"].str.lower() == "power"]
+
+    rows = BdtDetailPanel._power_alarms_for_test_date(
+        alarm_df,
+        "4528CA",
+        pd.Timestamp("2026-04-02"),
+        _find_power,
+    )
+
+    assert len(rows) == 2
+    assert rows.iloc[0]["occurred_on"].strftime("%Y-%m-%d %H:%M") == "2026-04-02 10:00"
 
 
 def test_display_rule_verdict_normalizes_non_primary_statuses():
@@ -155,37 +222,49 @@ def test_discharge_display_headers_expand_group_labels():
 
     assert headers[:5] == [
         "TIME: MIN (H)",
-        "REC BUS\nV",
-        "REC BUS\nA",
-        "Σ STRING\nA",
+        "REC BUS V",
+        "REC BUS A",
+        "Σ STR A",
         "Δ Σ-BUS",
     ]
-    assert headers[5:] == ["STRING 1\nV", "STRING 1\nA", "STRING 2\nV", "STRING 2\nA"]
+    assert headers[5:] == ["S1 V", "S1 A", "S2 V", "S2 A"]
 
 
-def test_discharge_section_index_groups_string_pairs_together():
+def test_discharge_section_index_groups_related_column_pairs():
     assert BdtDetailPanel._discharge_section_index_for_column(0) == 0
-    assert BdtDetailPanel._discharge_section_index_for_column(4) == 4
-    assert BdtDetailPanel._discharge_section_index_for_column(5) == 5
-    assert BdtDetailPanel._discharge_section_index_for_column(6) == 5
-    assert BdtDetailPanel._discharge_section_index_for_column(7) == 6
-    assert BdtDetailPanel._discharge_section_index_for_column(8) == 6
+    assert BdtDetailPanel._discharge_section_index_for_column(1) == 1
+    assert BdtDetailPanel._discharge_section_index_for_column(2) == 1
+    assert BdtDetailPanel._discharge_section_index_for_column(3) == 2
+    assert BdtDetailPanel._discharge_section_index_for_column(4) == 2
+    assert BdtDetailPanel._discharge_section_index_for_column(5) == 3
+    assert BdtDetailPanel._discharge_section_index_for_column(6) == 3
+    assert BdtDetailPanel._discharge_section_index_for_column(7) == 4
+    assert BdtDetailPanel._discharge_section_index_for_column(8) == 4
 
 
 def test_discharge_section_palette_keeps_sections_visually_distinct():
-    rec_bus_header, rec_bus_body = BdtDetailPanel._discharge_section_palette(1, "dark")
-    string_one_header, string_one_body = BdtDetailPanel._discharge_section_palette(5, "dark")
+    rect_header, rect_body = BdtDetailPanel._discharge_section_palette(1, "dark")
+    string_one_header, string_one_body = BdtDetailPanel._discharge_section_palette(3, "dark")
 
-    assert rec_bus_header != string_one_header
-    assert rec_bus_body != string_one_body
+    assert rect_header != string_one_header
+    assert rect_body != string_one_body
+    rect_bus_v, _ = BdtDetailPanel._discharge_section_palette(
+        BdtDetailPanel._discharge_section_index_for_column(1),
+        "dark",
+    )
+    rect_bus_a, _ = BdtDetailPanel._discharge_section_palette(
+        BdtDetailPanel._discharge_section_index_for_column(2),
+        "dark",
+    )
+    assert rect_bus_v == rect_bus_a
 
 
 def test_discharge_section_palette_supports_light_and_dark_modes():
     light_header, light_body = BdtDetailPanel._discharge_section_palette(1, "light")
     dark_header, dark_body = BdtDetailPanel._discharge_section_palette(1, "dark")
 
-    assert light_header != dark_header
     assert light_body != dark_body
+    assert light_header.name() == dark_header.name()
 
 
 class _FakeTable:
@@ -208,39 +287,45 @@ class _FakeButton:
         self.visible = visible
 
 
-def test_apply_discharge_column_visibility_collapses_and_expands_string_columns():
+def test_discharge_chart_points_uses_rec_bus_voltage_series():
+    rows = [
+        {"bus_v": 53.5, "bus_a": 44.0},
+        {"bus_v": 47.7, "bus_a": 48.6},
+        {"bus_v": None, "bus_a": 12.0},
+        {"bus_v": 51.1, "bus_a": 44.0},
+    ]
+
+    assert BdtDetailPanel._discharge_chart_points(rows) == [53.5, 47.7, 51.1]
+
+
+def test_discharge_col_minimum_width_uses_fixed_and_string_defaults():
+    assert BdtDetailPanel._discharge_col_minimum_width(0) == BdtDetailPanel._DISCHARGE_COL_TIME
+    assert BdtDetailPanel._discharge_col_minimum_width(3) == BdtDetailPanel._DISCHARGE_COL_NUMERIC
+    assert BdtDetailPanel._discharge_col_minimum_width(5) == BdtDetailPanel._DISCHARGE_COL_STRING
+
+
+def test_apply_discharge_column_visibility_always_shows_all_columns():
     panel = SimpleNamespace(
-        _bdt_discharge_expanded=False,
-        _bdt_active_discharge_strings=2,
         _bdt_discharge_table=_FakeTable(),
-        _btn_discharge_expand=_FakeButton(),
-        _DISCHARGE_FIXED_HEADERS=BdtDetailPanel._DISCHARGE_FIXED_HEADERS,
-        _DISCHARGE_MAX_STRINGS=BdtDetailPanel._DISCHARGE_MAX_STRINGS,
     )
 
     panel._bdt_discharge_table.columnCount = lambda: len(BdtDetailPanel._DISCHARGE_FIXED_HEADERS) + 4
     BdtDetailPanel._apply_discharge_column_visibility(panel)
-    first_string_col = len(BdtDetailPanel._DISCHARGE_FIXED_HEADERS)
-    assert panel._bdt_discharge_table.hidden[first_string_col] is True
-    assert panel._btn_discharge_expand.text == "EXPAND STRINGS ⇲"
-    assert panel._btn_discharge_expand.visible is True
 
-    panel._bdt_discharge_expanded = True
-    BdtDetailPanel._apply_discharge_column_visibility(panel)
-    assert panel._bdt_discharge_table.hidden[first_string_col] is False
-    assert panel._btn_discharge_expand.text == "COLLAPSE ⇱"
+    for col in range(len(BdtDetailPanel._DISCHARGE_FIXED_HEADERS) + 4):
+        assert panel._bdt_discharge_table.hidden[col] is False
 
 
-def test_apply_discharge_column_visibility_hides_button_when_no_strings():
-    panel = SimpleNamespace(
-        _bdt_discharge_expanded=False,
-        _bdt_active_discharge_strings=0,
-        _bdt_discharge_table=_FakeTable(),
-        _btn_discharge_expand=_FakeButton(),
-        _DISCHARGE_FIXED_HEADERS=BdtDetailPanel._DISCHARGE_FIXED_HEADERS,
-        _DISCHARGE_MAX_STRINGS=BdtDetailPanel._DISCHARGE_MAX_STRINGS,
-    )
+def test_bdt_fullscreen_window_title_uses_site_and_date():
+    bdt = SimpleNamespace(site_code="3406CA", test_date=datetime(2026, 4, 1))
+    panel = SimpleNamespace(_current_bdt=bdt)
 
-    panel._bdt_discharge_table.columnCount = lambda: len(BdtDetailPanel._DISCHARGE_FIXED_HEADERS)
-    BdtDetailPanel._apply_discharge_column_visibility(panel)
-    assert panel._btn_discharge_expand.visible is False
+    title = BdtDetailPanel._bdt_fullscreen_window_title(panel)
+
+    assert title == "BDT Test — 3406CA — 2026-04-01"
+
+
+def test_compact_discharge_label_shortens_long_boundary_rows():
+    assert BdtDetailPanel._compact_discharge_label("Before disconnecting Rectifier") == "Before …"
+    assert BdtDetailPanel._compact_discharge_label("After Connecting power") == "After …"
+    assert BdtDetailPanel._compact_discharge_label("30 Mins") == "30 Mins"

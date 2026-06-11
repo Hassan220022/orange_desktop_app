@@ -1708,6 +1708,8 @@ class AlarmViewer(QMainWindow):
         for widget in self.findChildren(QWidget):
             widget.setProperty("_zoom_base_style", None)
         self._set_app_zoom(self._app_zoom_pct)
+        if hasattr(self, "_bdt_detail_panel_obj"):
+            self._bdt_detail_panel_obj.refresh_theme()
 
     def _toggle_theme(self):
         """Cycle through: auto -> dark -> light -> auto."""
