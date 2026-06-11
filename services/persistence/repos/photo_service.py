@@ -5,13 +5,15 @@ import logging
 from sqlalchemy.orm import Session
 
 try:
-    from ..hashing import compute_perceptual_hash
     from alarm_app.db.repos.bdt_repo import save_bdt_photo
     from alarm_app.db.repos.blob_repo import store_blob
-except ImportError:
+
     from ..hashing import compute_perceptual_hash
+except ImportError:
     from db.repos.bdt_repo import save_bdt_photo
     from db.repos.blob_repo import store_blob
+
+    from ..hashing import compute_perceptual_hash
 
 _log = logging.getLogger(__name__)
 

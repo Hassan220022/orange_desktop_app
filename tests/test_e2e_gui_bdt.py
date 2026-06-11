@@ -277,7 +277,7 @@ class TestBDTValidationGUI:
         assert filtered == 2
 
     def test_bdt_export_triggers_file_dialog(self, gui_app, monkeypatch):
-        from PyQt5.QtCore import QObject, Qt, pyqtSignal
+        from PyQt5.QtCore import QObject, pyqtSignal
         from PyQt5.QtWidgets import QFileDialog
         results = [_mock_result("S01", "2026-05-10", "Accepted", "exp.xlsx")]
         _inject_results(gui_app, results)

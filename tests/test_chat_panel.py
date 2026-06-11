@@ -3,14 +3,15 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-import alarm_app.ui.panels.chat_panel as chat_panel_mod
 from PyQt5.QtCore import QEvent
 from PyQt5.QtWidgets import QApplication, QLabel, QTableWidget
+
+import alarm_app.ui.panels.chat_panel as chat_panel_mod
 from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
 from alarm_app.ui.panels.chat_panel import (
     ChatPanel,
-    _graph_pixmap_from_result,
     _alarm_row_columns,
+    _graph_pixmap_from_result,
     _json_output_text,
     _materialize_base64_png,
     _normalize_message_text,

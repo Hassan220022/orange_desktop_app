@@ -4,8 +4,6 @@ Each test uses a fresh in-memory-ish SQLite engine (via tmp_path STATE_DIR)
 so the suite is hermetic.
 """
 
-import json
-from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -157,7 +155,7 @@ def test_pm_rule_catalog_seed(engine_and_session):
 
 def test_sync_outbox_roundtrip(engine_and_session):
     _, session = engine_and_session
-    evt = sync_repo.append_outbox_event(
+    sync_repo.append_outbox_event(
         session,
         entity_type="alarm",
         entity_local_id="42",

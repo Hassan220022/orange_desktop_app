@@ -1,7 +1,6 @@
 """Tests for content hashing utilities (canonical normalization, SHA-256, dHash)."""
 
 import hashlib
-from pathlib import Path
 
 import pandas as pd
 import pytest

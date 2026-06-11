@@ -30,8 +30,8 @@ def jsonable(value: Any) -> Any:
         return value.isoformat()
     if isinstance(value, Path):
         return str(value)
-    if is_dataclass(value):
-        return jsonable(asdict(value))
+    if is_dataclass(value) and not isinstance(value, type):
+        return jsonable(asdict(value))  # type: ignore[arg-type]
     if isinstance(value, dict):
         return {str(k): jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set)):
@@ -192,8 +192,11 @@ def section_total(payload: dict[str, Any], name: str) -> int:
     section = payload.get(name) if isinstance(payload, dict) else None
     if not isinstance(section, dict):
         return 0
+    raw = section.get("total")
+    if raw is None:
+        raw = section.get("returned") or 0
     try:
-        return int(section.get("total") if section.get("total") is not None else section.get("returned") or 0)
+        return int(raw)
     except (TypeError, ValueError):
         return 0
 

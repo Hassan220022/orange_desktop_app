@@ -263,12 +263,12 @@ def _alarm_table_models() -> dict[str, Any]:
 
 def _bdt_table_models() -> dict[str, Any]:
     from .models import (
-        BDTTest,
         BDTPhoto,
-        BlobAsset,
-        PMValidationRun,
-        PMRuleResult,
         BDTSummaryCatalog,
+        BDTTest,
+        BlobAsset,
+        PMRuleResult,
+        PMValidationRun,
     )
 
     return {

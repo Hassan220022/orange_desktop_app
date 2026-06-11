@@ -1,4 +1,3 @@
-import sys
 from types import SimpleNamespace
 
 import pandas as pd
@@ -490,6 +489,7 @@ def test_viewer_has_scoped_clear_cache_methods():
 
 def test_viewer_clear_alarm_caches_resets_only_alarm_state(monkeypatch):
     from unittest.mock import MagicMock
+
     from PyQt5.QtWidgets import QMessageBox
 
     viewer = _make_minimal_viewer(monkeypatch)
@@ -533,6 +533,7 @@ def test_viewer_clear_alarm_caches_resets_only_alarm_state(monkeypatch):
 
 def test_viewer_clear_bdt_caches_resets_only_bdt_state(monkeypatch):
     from unittest.mock import MagicMock
+
     from PyQt5.QtWidgets import QMessageBox
 
     viewer = _make_minimal_viewer(monkeypatch)
@@ -601,6 +602,7 @@ def test_clear_alarm_caches_cancels_when_user_says_no(monkeypatch):
 
 def test_clear_bdt_caches_cancels_when_user_says_no(monkeypatch):
     from unittest.mock import MagicMock
+
     from PyQt5.QtWidgets import QMessageBox
 
     viewer = _make_minimal_viewer(monkeypatch)
@@ -661,7 +663,8 @@ def test_clear_bdt_caches_refuses_while_background_thread_running(monkeypatch):
 def test_viewer_clear_caches_resets_pagination_and_in_memory_state(monkeypatch):
     """Calling _clear_caches() must reset _full_df, _page_offset,
     _bdt_results, _bdt_by_site, _page_total_rows, and the alarm model."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
+
     from PyQt5.QtWidgets import QMessageBox
 
     viewer = _make_minimal_viewer(monkeypatch)
@@ -725,7 +728,8 @@ def test_viewer_clear_caches_cancels_when_user_says_no(monkeypatch):
     """If the user clicks 'No' in the confirm dialog, _clear_caches()
     must NOT touch any persistent state and must NOT call
     clear_all_caches()."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
+
     from PyQt5.QtWidgets import QMessageBox
 
     viewer = _make_minimal_viewer(monkeypatch)

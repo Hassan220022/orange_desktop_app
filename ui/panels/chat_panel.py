@@ -1750,7 +1750,6 @@ class ChatPanel(QWidget):
         viewer = self._viewer
         result = event["result"]
         args = event["args"]
-        rows = result["rows"]
         if hasattr(viewer, "_set_workspace_view"):
             viewer._set_workspace_view(0)
 

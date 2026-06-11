@@ -216,12 +216,18 @@ def _seed_clearable_tables(session, *, salt: str = "") -> None:
     assert they get wiped. ``salt`` is used to prefix the file_sha256 /
     row_hash / blob sha256 so multiple tests can run in the same
     process without hitting the UNIQUE constraints."""
-    from datetime import date as _date
     import hashlib
+    from datetime import date as _date
 
     from services.persistence.models import (
-        AlarmRecord, BDTTest, BDTPhoto, BlobAsset,
-        PMRuleCatalog, PMRuleResult, PMValidationRun, UploadedFile,
+        AlarmRecord,
+        BDTPhoto,
+        BDTTest,
+        BlobAsset,
+        PMRuleCatalog,
+        PMRuleResult,
+        PMValidationRun,
+        UploadedFile,
     )
 
     def _h(prefix: str, length: int = 64) -> str:
@@ -257,9 +263,15 @@ def _seed_clearable_tables(session, *, salt: str = "") -> None:
 
 def _count_clearable_rows(session) -> dict[str, int]:
     from services.persistence.models import (
-        AlarmRecord, BDTTest, BDTPhoto, BlobAsset,
-        PMRuleResult, PMValidationRun, UploadedFile, PMRuleCatalog,
+        AlarmRecord,
+        BDTPhoto,
         BDTSummaryCatalog,
+        BDTTest,
+        BlobAsset,
+        PMRuleCatalog,
+        PMRuleResult,
+        PMValidationRun,
+        UploadedFile,
     )
 
     return {
@@ -276,8 +288,8 @@ def _count_clearable_rows(session) -> dict[str, int]:
 
 
 def _seed_bdt_summary_catalog(session, *, salt: str = "") -> None:
-    from datetime import date as _date
     import hashlib
+    from datetime import date as _date
 
     from services.persistence.models import BDTSummaryCatalog
 
@@ -429,8 +441,14 @@ def test_clear_all_caches_wipes_clearable_tables(clear_all_caches_home):
     """Every clearable SQLite table is wiped; preserved tables keep their rows."""
     from services.persistence.engine import init_db
     from services.persistence.models import (
-        AlarmRecord, BDTTest, BDTPhoto, BlobAsset,
-        PMRuleResult, PMValidationRun, UploadedFile, PMRuleCatalog,
+        AlarmRecord,
+        BDTPhoto,
+        BDTTest,
+        BlobAsset,
+        PMRuleCatalog,
+        PMRuleResult,
+        PMValidationRun,
+        UploadedFile,
     )
 
     init_db(alarm_cache._get_app_engine_for_test(), include_alarm_records=True)
@@ -480,7 +498,6 @@ def test_clear_all_caches_respects_fk_order(clear_all_caches_home):
     are children of bdt_tests and must be removed BEFORE bdt_tests, otherwise
     SQLite (PRAGMA foreign_keys=ON) raises IntegrityError."""
     from services.persistence.engine import init_db
-    from services.persistence.models import BDTTest, BDTPhoto, PMValidationRun, UploadedFile
 
     init_db(alarm_cache._get_app_engine_for_test(), include_alarm_records=True)
     session = alarm_cache._get_shared_session_for_test()

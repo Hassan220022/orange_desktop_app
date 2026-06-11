@@ -475,9 +475,12 @@ class TestValidateBDTOverall:
             summary_data={"Short Code": "SITE001", "Test Date": "2026-01-15"},
         )
 
+        # Power alarm loaded but no door alarm on test day => R10 Rejected.
+        alarm_df = _make_alarm_df([_power_alarm(site_id="SITE001")])
+
         result = validate_bdt(
             bdt,
-            _make_alarm_df([]),
+            alarm_df,
             network_no_usable_backup=True,
             network_backup_reasons=["Network Summary strings are zero"],
         )

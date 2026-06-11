@@ -20,11 +20,13 @@ from sqlalchemy import inspect as sa_inspect
 
 try:
     from alarm_app.bdt.export import build_bdt_export_sheets
+    from alarm_app.core.backup_time import compute_backup_times
     from alarm_app.core.battery_backup_insights import (
         build_battery_backup_insight,
+    )
+    from alarm_app.core.battery_backup_insights import (
         coerce_number as _insight_number,
     )
-    from alarm_app.core.backup_time import compute_backup_times
     from alarm_app.core.temp_alarm import (
         DEFAULT_HT_HISTORY_START_WEEK,
         _compute_ht_meet_frames,
@@ -58,11 +60,13 @@ try:
     from alarm_app.llm_tools.charts import CHART_SPECS, chart_specs_payload
 except ImportError:
     from bdt.export import build_bdt_export_sheets
+    from core.backup_time import compute_backup_times
     from core.battery_backup_insights import (
         build_battery_backup_insight,
+    )
+    from core.battery_backup_insights import (
         coerce_number as _insight_number,
     )
-    from core.backup_time import compute_backup_times
     from core.temp_alarm import (
         DEFAULT_HT_HISTORY_START_WEEK,
         _compute_ht_meet_frames,
@@ -2768,7 +2772,7 @@ class LocalDataService:
         colors = ["#7aa2ff", "#a6e3a1", "#f9e2af", "#f38ba8", "#cba6f7", "#89dceb", "#fab387", "#94e2d5"]
         box = (120, 150, 620, 650)
         start = -90.0
-        for idx, (label, value) in enumerate(clean):
+        for idx, (_label, value) in enumerate(clean):
             extent = 360.0 * value / total
             draw.pieslice(box, start, start + extent, fill=colors[idx % len(colors)])
             start += extent
@@ -4267,273 +4271,6 @@ class LocalDataService:
             min_backup_minutes=min_backup_minutes,
             backup_minutes_tolerance=backup_minutes_tolerance,
         ))
-
-        site_id = str(site_row.get("site_id") or site_row.get("site_code") or "").strip()
-        network_row = dict(network_rows[0]) if network_rows else dict(site_row)
-
-        def _section_rows(name: str) -> list[dict[str, Any]]:
-            section = bdt_payload.get(name) if isinstance(bdt_payload, dict) else None
-            rows = section.get("rows", []) if isinstance(section, dict) else []
-            return rows if isinstance(rows, list) else []
-
-        def _section_total(name: str) -> int:
-            section = bdt_payload.get(name) if isinstance(bdt_payload, dict) else None
-            if not isinstance(section, dict):
-                return 0
-            try:
-                return int(section.get("total") if section.get("total") is not None else section.get("returned") or 0)
-            except (TypeError, ValueError):
-                return 0
-
-        bdt_tests = _section_rows("bdt_tests")
-        validation_runs = _section_rows("validation_runs")
-        rule_results = _section_rows("rule_results")
-        photos = _section_rows("photos")
-        bdt_summary = _section_rows("bdt_summary")
-
-        latest_test = bdt_tests[0] if bdt_tests else {}
-        latest_run = validation_runs[0] if validation_runs else {}
-
-        battery_type = _insight_first(
-            network_row,
-            "battery_type",
-            "Battery Type",
-            "installed_battery_type",
-            "Installed Battery Type",
-            "battery_status",
-        )
-        installed_battery_type = _insight_first(
-            network_row,
-            "installed_battery_type",
-            "Installed Battery Type",
-        )
-        backup_status = _insight_first(network_row, "backup_status", "Backup Status")
-        backup_minutes = _insight_number(_insight_first(network_row, "backup_minutes", "Backup Minutes"))
-        no_of_strings = _insight_int(_insight_first(network_row, "no_of_strings", "No of Strings", "num_strings"))
-        batt_reason = _insight_first(network_row, "batt_reason", "Batt Reason")
-        power_source = _insight_first(network_row, "power_source", "Power Source")
-        nodal = _insight_first(network_row, "nodal", "Nodal")
-        vip = _insight_first(network_row, "vip", "VIP")
-        five_g = _insight_first(network_row, "5g", "5G")
-        site_type = _insight_first(network_row, "site_type", "Site Type")
-        load_ampere = _insight_number(_insight_first(
-            network_row,
-            "load_ampere_from_power_sheet_or_pms",
-            "Load Ampere  (From Power Sheet Or PMs)",
-            "load_ampere",
-        ))
-        recent_network_date = _insight_first(
-            network_row,
-            "recent_test_date_or_reporting_date",
-            "Recent Test Date Or Reporting Date",
-        )
-
-        bdt_battery_brand = _insight_first(latest_test, "battery_brand")
-        bdt_discharge_minutes = _insight_number(_insight_first(latest_test, "discharge_minutes"))
-        bdt_num_strings = _insight_int(_insight_first(latest_test, "num_strings"))
-        bdt_num_batteries = _insight_int(_insight_first(latest_test, "num_batteries"))
-        bdt_end_voltage = _insight_number(_insight_first(latest_test, "end_voltage"))
-        latest_bdt_test_date = _insight_first(latest_test, "test_date") or _insight_first(latest_run, "test_date")
-        overall_verdict = _insight_first(latest_run, "overall_verdict")
-
-        critical_markers: list[str] = []
-        vip_text = _insight_upper(vip)
-        nodal_text = _insight_upper(nodal)
-        five_g_text = _insight_upper(five_g)
-        if vip_text and vip_text != "_":
-            critical_markers.append("vip")
-        if five_g_text and five_g_text != "_":
-            critical_markers.append("5g")
-        if nodal_text and nodal_text not in {"", "_", "END POINT", "VIP (END POINT )"}:
-            critical_markers.append("nodal_or_tx")
-
-        battery_type_missing = _insight_placeholder(battery_type) and _insight_placeholder(installed_battery_type)
-        declared_no_battery = (
-            battery_type_missing
-            or (no_of_strings is not None and no_of_strings <= 0)
-            or (backup_minutes is not None and backup_minutes <= 0)
-            or "ZERO BACKUP" in _insight_upper(backup_status)
-            or "ZERO BACKUP" in _insight_upper(batt_reason)
-            or "STOLEN" in _insight_upper(batt_reason)
-            or "REMOVED" in _insight_upper(batt_reason)
-        )
-        battery_declared = bool(network_rows) and not declared_no_battery
-        has_bdt = bool(bdt_summary or bdt_tests or validation_runs)
-        has_validation = bool(validation_runs)
-        has_photos = bool(photos)
-
-        failed_rule_verdicts = {"REJECTED", "REVISE", "NO DATA", "FAILED"}
-        failed_rules = [
-            rule
-            for rule in rule_results
-            if _insight_upper(rule.get("verdict")) in failed_rule_verdicts
-        ]
-
-        differences: list[dict[str, Any]] = []
-        reasons: list[str] = []
-        flags: list[str] = []
-        severity = "low"
-
-        def _add_flag(flag: str, reason: str, candidate_severity: str = "medium") -> None:
-            nonlocal severity
-            if flag not in flags:
-                flags.append(flag)
-            if reason not in reasons:
-                reasons.append(reason)
-            severity = _insight_max_severity(severity, candidate_severity)
-
-        if not network_rows:
-            _add_flag("missing_network_summary", "No Network Summary metadata row was found for this site.", "high")
-
-        if not battery_declared:
-            _add_flag("no_usable_battery_declared", "Network Summary does not declare a usable battery setup.", "high" if critical_markers else "medium")
-
-        if battery_declared and not has_bdt:
-            _add_flag("missing_bdt", "Network Summary declares battery backup, but no BDT summary/test/validation was found.", "high" if critical_markers else "medium")
-
-        if battery_declared and (
-            "NEED PM" in _insight_upper(backup_status)
-            or "NEED PM" in _insight_upper(batt_reason)
-            or "UPGRADE NEEDED" in _insight_upper(backup_status)
-        ):
-            _add_flag("network_summary_action_needed", "Network Summary marks the battery/backup state as needing PM or upgrade.", "medium")
-
-        if has_bdt and not has_validation:
-            _add_flag("bdt_not_validated", "BDT data exists, but no validation run was found.", "medium")
-
-        if has_bdt and not has_photos:
-            _add_flag("missing_photo_evidence", "BDT data exists, but no photo metadata was found.", "medium")
-
-        overall_text = _insight_upper(overall_verdict)
-        if overall_text in {"REJECTED", "REVISE", "NO DATA", "FAILED"}:
-            _add_flag("bdt_failed", f"Latest BDT validation verdict is {overall_verdict}.", "high")
-
-        if failed_rules:
-            _add_flag("failed_bdt_rules", f"{len(failed_rules)} BDT validation rule(s) are rejected/revise/no-data.", "high")
-
-        if bdt_discharge_minutes is not None and bdt_discharge_minutes < min_backup_minutes:
-            _add_flag(
-                "weak_measured_backup",
-                f"Measured BDT discharge is {bdt_discharge_minutes:g} minutes, below the {min_backup_minutes:g} minute threshold.",
-                "high" if critical_markers else "medium",
-            )
-
-        if battery_declared and bdt_battery_brand and battery_type and not _insight_strings_match(battery_type, bdt_battery_brand):
-            differences.append({
-                "field": "battery_type",
-                "network_summary": _insight_text(battery_type),
-                "bdt": _insight_text(bdt_battery_brand),
-                "difference_type": "mismatch",
-            })
-            _add_flag("network_bdt_mismatch", "Network Summary battery type does not match the latest BDT battery brand.", "high")
-
-        if no_of_strings is not None and bdt_num_strings is not None and no_of_strings != bdt_num_strings:
-            differences.append({
-                "field": "no_of_strings",
-                "network_summary": no_of_strings,
-                "bdt": bdt_num_strings,
-                "difference_type": "mismatch",
-            })
-            _add_flag("network_bdt_mismatch", "Network Summary string count does not match the latest BDT test.", "medium")
-
-        if backup_minutes is not None and bdt_discharge_minutes is not None:
-            minutes_delta = abs(float(backup_minutes) - float(bdt_discharge_minutes))
-            if minutes_delta > backup_minutes_tolerance:
-                differences.append({
-                    "field": "backup_minutes",
-                    "network_summary": backup_minutes,
-                    "bdt": bdt_discharge_minutes,
-                    "difference_type": "mismatch",
-                    "delta_minutes": round(minutes_delta, 2),
-                })
-                _add_flag("network_bdt_mismatch", "Network Summary backup minutes differ materially from measured BDT discharge.", "medium")
-
-        if "GOOD" in _insight_upper(backup_status) and bdt_discharge_minutes is not None and bdt_discharge_minutes < min_backup_minutes:
-            differences.append({
-                "field": "backup_status",
-                "network_summary": _insight_text(backup_status),
-                "bdt": f"{bdt_discharge_minutes:g} measured minutes",
-                "difference_type": "contradiction",
-            })
-            _add_flag("network_bdt_mismatch", "Network Summary says backup is good, but measured BDT backup is weak.", "high")
-
-        if not flags and battery_declared and overall_text == "ACCEPTED":
-            flags.append("bdt_passed")
-            reasons.append("Battery exists, BDT validation is accepted, and no configured mismatch was detected.")
-        elif not flags and battery_declared and has_bdt:
-            flags.append("bdt_present")
-            reasons.append("Battery exists and BDT data is present, but there is not enough validation evidence for a stronger verdict.")
-
-        if "weak_measured_backup" in flags and critical_markers:
-            insight_status = "Critical Site With Weak Backup"
-            severity = "high"
-        elif "network_bdt_mismatch" in flags:
-            insight_status = "Network Summary / BDT Mismatch"
-        elif "bdt_failed" in flags or "failed_bdt_rules" in flags:
-            insight_status = "Battery Exists - BDT Failed"
-        elif "missing_bdt" in flags:
-            insight_status = "Battery Exists - No BDT"
-        elif "bdt_not_validated" in flags:
-            insight_status = "Battery Exists - BDT Not Validated"
-        elif "no_usable_battery_declared" in flags:
-            insight_status = "No Battery Declared"
-        elif "bdt_passed" in flags:
-            insight_status = "Battery Exists - BDT Passed"
-        elif "bdt_present" in flags:
-            insight_status = "Battery Exists - BDT Present"
-        else:
-            insight_status = "Insufficient Data"
-
-        row = {
-            "site_id": site_id,
-            "site_code": site_id,
-            "site_name": _insight_first(network_row, "site_name", "Site Name") or site_row.get("site_name"),
-            "area": _insight_first(network_row, "area", "area_code", "Area Code", "orange_area", "Orange Area") or site_row.get("area"),
-            "subcontractor": _insight_first(network_row, "subcontractor", "Subcontractor") or site_row.get("subcontractor"),
-            "office": _insight_first(network_row, "office", "Office") or site_row.get("office"),
-            "insight_status": insight_status,
-            "severity": severity,
-            "insight_flags": flags,
-            "reasons": reasons,
-            "differences": differences,
-            "critical_markers": critical_markers,
-            "network_summary": {
-                "battery_declared": battery_declared,
-                "battery_type": _insight_text(battery_type),
-                "installed_battery_type": _insight_text(installed_battery_type),
-                "backup_status": _insight_text(backup_status),
-                "backup_minutes": backup_minutes,
-                "no_of_strings": no_of_strings,
-                "batt_reason": _insight_text(batt_reason),
-                "power_source": _insight_text(power_source),
-                "site_type": _insight_text(site_type),
-                "vip": _insight_text(vip),
-                "5g": _insight_text(five_g),
-                "nodal": _insight_text(nodal),
-                "load_ampere": load_ampere,
-                "recent_test_date_or_reporting_date": _jsonable(recent_network_date),
-                "row_count": len(network_rows),
-            },
-            "bdt": {
-                "has_bdt": has_bdt,
-                "has_validation": has_validation,
-                "has_photo_evidence": has_photos,
-                "bdt_summary_count": _section_total("bdt_summary"),
-                "bdt_test_count": _section_total("bdt_tests"),
-                "validation_run_count": _section_total("validation_runs"),
-                "rule_result_count": _section_total("rule_results"),
-                "failed_rule_count": len(failed_rules),
-                "photo_count": _section_total("photos"),
-                "latest_test_date": _jsonable(latest_bdt_test_date),
-                "latest_validation_verdict": _insight_text(overall_verdict),
-                "battery_brand": _insight_text(bdt_battery_brand),
-                "num_strings": bdt_num_strings,
-                "num_batteries": bdt_num_batteries,
-                "measured_discharge_minutes": bdt_discharge_minutes,
-                "end_voltage": bdt_end_voltage,
-            },
-        }
-        return _sanitize_mcp_record(row)
 
     def query_battery_backup_insights(self, **kwargs) -> dict[str, Any]:
         site_text = str(kwargs.get("site_text") or kwargs.get("site_code") or kwargs.get("site_id") or "").strip()

@@ -1481,7 +1481,7 @@ def _rule_10_door_alarm_match(bdt: BDTData,
         )
 
     evidence = _evaluate_door_evidence(bdt, alarm_df)
-    passed = evidence.verdict == "Accepted"
+    passed: bool | None = evidence.verdict == "Accepted"
     if evidence.verdict == "N/A":
         passed = None
     return RuleResult(

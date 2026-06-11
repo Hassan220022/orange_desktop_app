@@ -65,8 +65,8 @@ try:
     from alarm_app.data.sync import LocalSyncWorker
     from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorManager
     from alarm_app.services.persistence.alarm_cache import (
-        clear_all_caches,
         clear_alarm_caches,
+        clear_all_caches,
         clear_bdt_caches,
     )
     from alarm_app.styles import STYLE_DARK, STYLE_LIGHT
@@ -112,8 +112,8 @@ except ImportError:
     from data.sync import LocalSyncWorker
     from runtime.chatgpt_connector import ChatGPTConnectorManager
     from services.persistence.alarm_cache import (
-        clear_all_caches,
         clear_alarm_caches,
+        clear_all_caches,
         clear_bdt_caches,
     )
     from styles import STYLE_DARK, STYLE_LIGHT

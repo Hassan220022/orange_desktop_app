@@ -6,7 +6,6 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
-
 LEAD_ACID_MARKERS = (
     "agm",
     "enersys",

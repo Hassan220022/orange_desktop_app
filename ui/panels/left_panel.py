@@ -16,7 +16,6 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-
 ALARM_SOURCE_TOOLTIPS = {
     "directory": (
         "Directory mode: reads selected CSV/XLSX alarm files from the folder, "

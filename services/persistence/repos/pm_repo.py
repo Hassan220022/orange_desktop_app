@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 _log = logging.getLogger(__name__)
 try:
     from alarm_app.constants import BDT_RULE_NAME_BY_CODE
+
     from ..hashing import compute_canonical_json_sha256
     from ..models import (
         PMParameterSet,
@@ -19,6 +20,7 @@ try:
     from ..retry import safe_flush
 except ImportError:
     from constants import BDT_RULE_NAME_BY_CODE
+
     from ..hashing import compute_canonical_json_sha256
     from ..models import (
         PMParameterSet,
