@@ -445,9 +445,10 @@ def build_battery_backup_insight(
     bdt_end_voltage = coerce_number(first(latest_test, "end_voltage"))
     latest_bdt_test_date = first(latest_test, "test_date") or first(latest_run, "test_date")
     overall_verdict = first(latest_run, "overall_verdict")
-    validation_context = (
-        bdt_payload.get("validation_context")
-        if isinstance(bdt_payload.get("validation_context"), dict)
+    raw_validation_context = bdt_payload.get("validation_context")
+    validation_context: dict[str, Any] = (
+        raw_validation_context
+        if isinstance(raw_validation_context, dict)
         else {}
     )
     component_check_mode = is_component_check_accepted(validation_context, overall_verdict)

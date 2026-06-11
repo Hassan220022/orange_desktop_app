@@ -201,7 +201,7 @@ def build_human_aligned_profile(rows: list[SiteCalibrationRow]) -> dict[str, Any
         stats = _metric_stats(rejected, metric, reason_contains=reason)
         return stats["min"]
 
-    profile = {
+    profile: dict[str, Any] = {
         "version": 3,
         "sample_count": len(rows),
         "accepted_count": len(accepted),
