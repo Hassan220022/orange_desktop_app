@@ -874,6 +874,34 @@ class BdtDetailPanel(QWidget):
         for col in range(table.columnCount()):
             hdr.setSectionResizeMode(col, QHeaderView.Stretch)
 
+    @staticmethod
+    def _apply_alarm_history_table_layout(table: QTableWidget) -> None:
+        """Let reviewers drag column widths; scroll when content is wider."""
+        table.setWordWrap(False)
+        table.setTextElideMode(Qt.ElideNone)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        hdr = table.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        hdr.setHighlightSections(False)
+        hdr.setMinimumSectionSize(40)
+        for col in range(table.columnCount()):
+            hdr.setSectionResizeMode(col, QHeaderView.Interactive)
+
+    def _fit_alarm_history_columns(self, table: QTableWidget) -> None:
+        BdtDetailPanel._apply_alarm_history_table_layout(table)
+        if table.rowCount() <= 0:
+            return
+        table.resizeColumnsToContents()
+        min_widths = {0: 72, 1: 128, 2: 128, 3: 160}
+        if table.columnCount() >= 6:
+            min_widths[4] = 88
+            min_widths[5] = 64
+        elif table.columnCount() == 5:
+            min_widths[4] = 72
+        for col, min_width in min_widths.items():
+            if col < table.columnCount():
+                table.setColumnWidth(col, max(table.columnWidth(col), min_width))
+
     def _center_bdt_tables(self) -> list[QTableWidget]:
         tables: list[QTableWidget] = []
         for name in (
@@ -904,6 +932,9 @@ class BdtDetailPanel(QWidget):
         self._apply_rules_table_layout()
         for table in self._center_bdt_tables():
             if table is self._bdt_rules_table:
+                continue
+            if table in (self._bdt_door_table, self._bdt_power_table):
+                self._fit_alarm_history_columns(table)
                 continue
             self._stretch_table_columns(table)
 
@@ -1233,6 +1264,8 @@ class BdtDetailPanel(QWidget):
                     self._bdt_power_table.setItem(
                         i, 4, QTableWidgetItem(str(row.get("duration", "") or "—")))
                 has_power = self._bdt_power_table.rowCount() > 0
+                self._fit_alarm_history_columns(self._bdt_door_table)
+                self._fit_alarm_history_columns(self._bdt_power_table)
             except Exception:
                 pass  # Graceful fallback if alarm data unavailable
         elif bdt:

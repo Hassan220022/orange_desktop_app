@@ -167,6 +167,7 @@ class AlarmViewer(QMainWindow):
         self._alarm_table_columns: list[str] = []
         self._alarm_query_active = False
         self._file_infos: list[dict] = []
+        self._file_path_hashes: dict[str, str] = {}
         self._loader     = None
         self._col_filters: dict[str, set | None] = {}  # col -> selected values
         self._both_pd_active = False  # "Both P+D" filter flag
@@ -438,11 +439,24 @@ class AlarmViewer(QMainWindow):
 
     def _set_workspace_view(self, index: int, persist: bool = True):
         target = max(0, min(index, len(self._workspace_defs) - 1))
-        if self._tabs.currentIndex() != target:
-            self._tabs.setCurrentIndex(target)
-        self._apply_workspace_state(target)
+        self.setUpdatesEnabled(False)
+        try:
+            if self._tabs.currentIndex() != target:
+                self._tabs.setCurrentIndex(target)
+            else:
+                self._apply_workspace_state(target)
+        finally:
+            self.setUpdatesEnabled(True)
         if persist:
-            self._save_ui_state()
+            self._save_workspace_view()
+
+    def _save_workspace_view(self):
+        """Persist only the active workspace tab — avoids full session save on switch."""
+        StateManager.persist_partial({"workspace_view": self._tabs.currentIndex()})
+
+    def _refresh_file_path_hashes(self):
+        """Recompute source-file hashes after discover/load; used for session restore checks."""
+        self._file_path_hashes = StateManager.file_hashes_for_viewer(self)
 
     def _apply_workspace_state(self, index: int):
         is_bdt = index == 1
@@ -457,6 +471,10 @@ class AlarmViewer(QMainWindow):
             btn.setChecked(btn_index == index)
         if is_bdt and hasattr(self, "_bdt_sidebar"):
             self._bdt_sidebar._sync_skip_photos_from_viewer()
+        if is_bdt and hasattr(self, "_bdt_panel"):
+            panel = self._bdt_panel
+            if hasattr(panel, "_update_bdt_pagination_controls"):
+                panel._update_bdt_pagination_controls()
 
     def _on_workspace_changed(self, index: int):
         if 0 <= index < len(self._workspace_defs):
@@ -619,6 +637,7 @@ class AlarmViewer(QMainWindow):
                     {"path": p, "filename": os.path.basename(p)}
                     for p in restored_paths
                 ]
+                self._refresh_file_path_hashes()
                 total = self._current_alarm_total()
                 self._ui.lbl_loaded.setText(f"✓  {total:,} cached records")
                 self._ui.lbl_loaded.setStyleSheet("color:#a6e3a1; font-size:11px;")
@@ -647,6 +666,7 @@ class AlarmViewer(QMainWindow):
             {"path": p, "filename": os.path.basename(p)}
             for p in restored_paths
         ]
+        self._refresh_file_path_hashes()
 
         self._ui.lbl_loaded.setText(f"✓  {len(df):,} records (restored)")
         self._ui.lbl_loaded.setStyleSheet("color:#a6e3a1; font-size:11px;")
@@ -1540,7 +1560,13 @@ class AlarmViewer(QMainWindow):
             self._content_splitter.setSizes([total - target, target])
         self._apply_assistant_constraints()
         if persist:
-            self._save_ui_state()
+            self._save_assistant_layout()
+
+    def _save_assistant_layout(self):
+        StateManager.persist_partial({
+            "assistant_open": bool(getattr(self, "_assistant_open", True)),
+            "assistant_width": int(getattr(self, "_assistant_width", 420) or 420),
+        })
 
     def _apply_assistant_constraints(self):
         if not hasattr(self, "_content_splitter"):
@@ -1898,6 +1924,7 @@ class AlarmViewer(QMainWindow):
                 "❌  No .csv / .xlsx files found")
             self._ui.lbl_file_count.setStyleSheet(
                 "color:#f38ba8; font-size:11px;")
+            self._refresh_file_path_hashes()
             self._on_alarm_source_changed()
             return
 
@@ -1925,6 +1952,7 @@ class AlarmViewer(QMainWindow):
         self._sbar.showMessage(
             f"Found {n} file(s) — select files to load, "
             "then click 'Load Selected Files'.")
+        self._refresh_file_path_hashes()
 
     def _on_alarm_source_changed(self):
         mode = self._get_alarm_load_mode()
@@ -2099,6 +2127,9 @@ class AlarmViewer(QMainWindow):
         self._reset_date_range(df)
         self._page_offset = 0
         self._full_df = pd.DataFrame()
+        refresh_hashes = getattr(self, "_refresh_file_path_hashes", None)
+        if callable(refresh_hashes):
+            refresh_hashes()
         if self._has_query_backed_alarm_data():
             if self._load_alarm_page(offset=0, status_message=msg) and self._current_alarm_total() > 0:
                 return
@@ -2389,6 +2420,8 @@ class AlarmViewer(QMainWindow):
         self._page_total_rows = 0
         self._alarm_query_active = False
         self._col_filters.clear()
+        self._file_infos = []
+        self._file_path_hashes = {}
         self._model.clear()
 
         lbl_count = getattr(self, "_lbl_count", None)

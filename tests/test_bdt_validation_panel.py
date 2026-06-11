@@ -107,6 +107,48 @@ def test_filter_bdt_table_combines_search_and_column_filters():
     assert panel._lbl_bdt_page_range.text == "Rows 1-1 of 1"
 
 
+def test_filter_bdt_table_accepts_space_separated_site_list():
+    results = [
+        _result("0167DE", "2026-04-19", "Accepted", "a.xlsx"),
+        _result("0167CA", "2026-04-20", "Rejected", "b.xlsx"),
+        _result("ZZZ999", "2026-04-21", "Accepted", "c.xlsx"),
+    ]
+    panel = _panel_for(results)
+    panel.bdt_search = SimpleNamespace(text=lambda: "0167DE 0167CA CAIROISM")
+
+    BdtValidationPanel._populate_bdt_table(panel)
+
+    assert [result.site_code for result in panel._bdt_filtered_results] == ["0167DE", "0167CA"]
+    assert panel.bdt_table.rowCount() == 2
+
+
+def test_filter_bdt_table_accepts_comma_and_newline_site_lists():
+    results = [
+        _result("AAA001", "2026-04-19", "Accepted", "a.xlsx"),
+        _result("BBB002", "2026-04-20", "Rejected", "b.xlsx"),
+        _result("CCC003", "2026-04-21", "Accepted", "c.xlsx"),
+    ]
+    panel = _panel_for(results)
+    panel.bdt_search = SimpleNamespace(text=lambda: "AAA001,\nBBB002")
+
+    BdtValidationPanel._populate_bdt_table(panel)
+
+    assert [result.site_code for result in panel._bdt_filtered_results] == ["AAA001", "BBB002"]
+
+
+def test_filter_bdt_table_keeps_single_term_substring_search():
+    results = [
+        _result("0941AL", "2026-04-19", "Accepted", "a.xlsx"),
+        _result("1941AL", "2026-04-20", "Rejected", "b.xlsx"),
+    ]
+    panel = _panel_for(results)
+    panel.bdt_search = SimpleNamespace(text=lambda: "941A")
+
+    BdtValidationPanel._populate_bdt_table(panel)
+
+    assert [result.site_code for result in panel._bdt_filtered_results] == ["0941AL", "1941AL"]
+
+
 def test_sort_bdt_column_reorders_backing_results():
     results = [
         _result("CCC003", "2026-04-21", "Accepted", "c.xlsx"),

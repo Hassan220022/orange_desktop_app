@@ -329,3 +329,25 @@ def test_compact_discharge_label_shortens_long_boundary_rows():
     assert BdtDetailPanel._compact_discharge_label("Before disconnecting Rectifier") == "Before …"
     assert BdtDetailPanel._compact_discharge_label("After Connecting power") == "After …"
     assert BdtDetailPanel._compact_discharge_label("30 Mins") == "30 Mins"
+
+
+def test_alarm_history_tables_use_interactive_column_headers():
+    from PyQt5.QtWidgets import QApplication, QHeaderView, QTableWidget, QTableWidgetItem
+
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+
+    door_table = QTableWidget(1, 6)
+    door_table.setHorizontalHeaderLabels(
+        ["Site", "Occurred", "Cleared", "Alarm", "R10 Status", "Overlap"],
+    )
+    door_table.setItem(0, 0, QTableWidgetItem("3724CA"))
+    door_table.setItem(0, 1, QTableWidgetItem("2026-05-17 13:57"))
+    door_table.setItem(0, 3, QTableWidgetItem("Shelter Door Open"))
+
+    panel = SimpleNamespace()
+    BdtDetailPanel._fit_alarm_history_columns(panel, door_table)
+
+    hdr = door_table.horizontalHeader()
+    assert hdr.sectionResizeMode(1) == QHeaderView.Interactive
+    assert door_table.columnWidth(1) >= 128
+    assert door_table.columnWidth(3) >= 160

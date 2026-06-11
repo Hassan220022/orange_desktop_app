@@ -209,7 +209,7 @@ class BdtValidationPanel(QWidget):
         self.bdt_search = QLineEdit()
         self.bdt_search.setObjectName("filter_input")
         self.bdt_search.setPlaceholderText(
-            "Search by site ID or date  \u2014  e.g.  ABC123, 2025-01-12, 2025")
+            "Site IDs (comma/space list), date, or year  \u2014  e.g.  ABC123, DEF456")
         self.bdt_search.setClearButtonEnabled(True)
         self.bdt_search.setMinimumWidth(220)
         self.bdt_search.setSizePolicy(
@@ -946,28 +946,69 @@ class BdtValidationPanel(QWidget):
             return "--"
         return f"{soh:.0f}"
 
-    def _filtered_bdt_results_for_text(self, text: str) -> list:
-        text = text.strip()
+    @staticmethod
+    def _normalize_bdt_site_key(value: str) -> str:
+        return "".join(ch for ch in str(value or "").strip().upper() if ch.isalnum())
 
-        text_lower = text.lower()
-        is_year = re.fullmatch(r"\d{4}", text)
-        is_date = re.fullmatch(r"\d{4}-\d{2}-\d{2}", text)
+    @classmethod
+    def _parse_bdt_search_terms(cls, text: str) -> tuple[str | None, list[str]]:
+        """Return optional year/date mode plus site/file search terms."""
+        text = text.strip()
+        if not text:
+            return None, []
+        if re.fullmatch(r"\d{4}", text):
+            return "year", [text]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            return "date", [text]
+
+        terms = [part.strip() for part in re.split(r"[,;\n\r\t]+", text) if part.strip()]
+        if len(terms) <= 1:
+            terms = [part.strip() for part in text.split() if part.strip()]
+        return None, terms
+
+    @classmethod
+    def _bdt_row_matches_search(cls, row_map: dict[str, str], *, mode: str | None, terms: list[str]) -> bool:
+        if not terms and mode is None:
+            return True
+
+        test_date = str(row_map.get("Test Date", "") or "")
+        if mode == "year":
+            return test_date.startswith(terms[0])
+        if mode == "date":
+            return test_date == terms[0]
+
+        site_code = str(row_map.get("Site Code", "") or "")
+        file_name = str(row_map.get("File", "") or "")
+        site_lower = site_code.lower()
+        file_lower = file_name.lower()
+        site_key = cls._normalize_bdt_site_key(site_code)
+
+        if len(terms) > 1:
+            for term in terms:
+                term_key = cls._normalize_bdt_site_key(term)
+                term_lower = term.lower()
+                if not term_key and not term_lower:
+                    continue
+                if term_key and site_key == term_key:
+                    return True
+                if term_lower and (term_lower in site_lower or term_lower in file_lower):
+                    return True
+            return False
+
+        term = terms[0]
+        term_lower = term.lower()
+        return term_lower in site_lower or term_lower in file_lower
+
+    def _filtered_bdt_results_for_text(self, text: str) -> list:
+        mode, terms = BdtValidationPanel._parse_bdt_search_terms(text)
         filtered: list = []
 
         for res in self._viewer._bdt_results:
             row_map = self._row_map_for_result(res)
             show = True
 
-            if text:
-                if is_year:
-                    show = str(getattr(res, "test_date", "") or "").startswith(text)
-                elif is_date:
-                    show = str(getattr(res, "test_date", "") or "") == text
-                else:
-                    show = (
-                        text_lower in str(row_map.get("Site Code", "")).lower()
-                        or text_lower in str(row_map.get("File", "")).lower()
-                    )
+            if text.strip():
+                show = BdtValidationPanel._bdt_row_matches_search(row_map, mode=mode, terms=terms)
 
             if show and self._bdt_col_filters:
                 for col_name, allowed in self._bdt_col_filters.items():
@@ -1055,6 +1096,23 @@ class BdtValidationPanel(QWidget):
         self._lbl_bdt_page_range.setText(f"Rows {start:,}-{end:,} of {total:,}")
         self._btn_bdt_prev_page.setEnabled(offset > 0)
         self._btn_bdt_next_page.setEnabled(total > 0 and offset + self.bdt_table.rowCount() < total)
+        BdtValidationPanel._sync_bdt_header_count(
+            self, start=start, end=end, filtered_total=total,
+        )
+
+    def _sync_bdt_header_count(self, *, start: int, end: int, filtered_total: int) -> None:
+        lbl_count = getattr(self._viewer, "_lbl_count", None)
+        if lbl_count is None:
+            return
+        all_total = len(getattr(self._viewer, "_bdt_results", []) or [])
+        if filtered_total <= 0:
+            if all_total:
+                lbl_count.setText(f"Showing  0  of  {all_total:,} validated files")
+            else:
+                lbl_count.setText("")
+            return
+        range_text = f"{start:,}" if start == end else f"{start:,}-{end:,}"
+        lbl_count.setText(f"Showing  {range_text}  of  {filtered_total:,} validated files")
 
     def _load_previous_bdt_page(self):
         self._bdt_page_offset = max(self._bdt_page_offset - self._bdt_page_size, 0)

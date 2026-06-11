@@ -334,6 +334,7 @@ def test_apply_loaded_alarm_dataframe_keeps_in_memory_results_when_db_render_una
         _populate=lambda df: populated.append(df.copy()),
         _refresh_stats=lambda df: refreshed.append(df.copy()),
         _reset_date_range=lambda df: None,
+        _refresh_file_path_hashes=lambda: None,
     )
 
     monkeypatch.setattr("alarm_app.ui.viewer.state.load_alarm_ids", lambda: {})

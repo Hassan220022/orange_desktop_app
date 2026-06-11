@@ -14,6 +14,24 @@ class StateManager:
     """Handles save/restore of UI state to/from persistent storage."""
 
     @staticmethod
+    def persist_partial(updates: dict) -> None:
+        """Persist only the provided UI-state keys (fast path for tab/layout toggles)."""
+        if not updates:
+            return
+        state.save_state(dict(updates))
+
+    @staticmethod
+    def file_hashes_for_viewer(viewer) -> dict[str, str]:
+        """Return cached source-file hashes; recompute only when the file list changes."""
+        file_paths = [info["path"] for info in viewer._file_infos]
+        cached = getattr(viewer, "_file_path_hashes", None)
+        if isinstance(cached, dict) and set(cached.keys()) == set(file_paths):
+            return cached
+        hashes = state.compute_file_hashes(file_paths)
+        viewer._file_path_hashes = hashes
+        return hashes
+
+    @staticmethod
     def collect(viewer) -> dict:
         """Collect ALL UI state from an AlarmViewer into a dict for persistence."""
         ui = viewer._ui
@@ -35,7 +53,7 @@ class StateManager:
             "bdt_load_source": viewer._bdt_validation_panel.cmb_bdt_source.currentData(),
             "workspace_view": viewer._tabs.currentIndex(),
             "file_paths": file_paths,
-            "file_hashes": state.compute_file_hashes(file_paths),
+            "file_hashes": StateManager.file_hashes_for_viewer(viewer),
             "sync_on": viewer._sync_flags.get("sync_on", False),
             "cloud_read_on": viewer._sync_flags.get("cloud_read_on", False),
             "bootstrap_on": viewer._sync_flags.get("bootstrap_on", False),
@@ -102,6 +120,10 @@ class StateManager:
             viewer._assistant_width = max(120, min(340, int(s.get("assistant_width") or viewer._assistant_width)))
         if "assistant_open" in s:
             viewer._assistant_open = bool(s.get("assistant_open"))
+
+        saved_hashes = s.get("file_hashes")
+        if isinstance(saved_hashes, dict):
+            viewer._file_path_hashes = dict(saved_hashes)
 
         workspace_view = int(s.get("workspace_view", 0) or 0)
         viewer._set_workspace_view(workspace_view, persist=False)
