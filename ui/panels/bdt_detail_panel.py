@@ -818,21 +818,8 @@ class BdtDetailPanel(QWidget):
         dlg.finished.connect(self._exit_bdt_fullscreen)
 
         root = QVBoxLayout(dlg)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
-
-        bar = QHBoxLayout()
-        title = QLabel(self._bdt_fullscreen_window_title())
-        title.setObjectName("bdt_section_title")
-        bar.addWidget(title)
-        bar.addStretch(1)
-
-        btn_exit = QPushButton("Exit Full Screen")
-        btn_exit.setObjectName("btn_clear")
-        self._mark_compact(btn_exit)
-        btn_exit.clicked.connect(self._exit_bdt_fullscreen)
-        bar.addWidget(btn_exit)
-        root.addLayout(bar)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
         root.addWidget(self, 1)
 
         self._fullscreen_dialog = dlg
@@ -900,8 +887,24 @@ class BdtDetailPanel(QWidget):
                 tables.append(table)
         return tables
 
+    def _apply_rules_table_layout(self):
+        table = self._bdt_rules_table
+        table.setWordWrap(False)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        hdr = table.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        hdr.setMinimumSectionSize(40)
+        for col in range(table.columnCount()):
+            hdr.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        if table.rowCount() > 0:
+            table.resizeColumnsToContents()
+            table.setColumnWidth(0, max(table.columnWidth(0), 44))
+
     def _apply_center_table_layouts(self):
+        self._apply_rules_table_layout()
         for table in self._center_bdt_tables():
+            if table is self._bdt_rules_table:
+                continue
             self._stretch_table_columns(table)
 
     def _apply_history_table_heights(self):
@@ -1094,8 +1097,10 @@ class BdtDetailPanel(QWidget):
                 QTableWidgetItem(rule.detail),
             ]
             for c, item in enumerate(items):
-                if c < 3:
+                if c in {0, 2}:
                     item.setTextAlignment(Qt.AlignCenter)
+                elif c in {1, 3}:
+                    item.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
                 if c == 2:
                     item.setForeground(
                         verdict_colors.get(visible_verdict, QColor("#cdd6f4")))
