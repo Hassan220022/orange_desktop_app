@@ -401,10 +401,12 @@ def test_clear_bdt_caches_removes_only_bdt_targets(clear_all_caches_home, monkey
         assert after[key] == 0, key
 
 
-def test_clear_all_caches_returns_expected_keys(tmp_path, monkeypatch):
+def test_clear_all_caches_returns_expected_keys(clear_all_caches_home):
     """clear_all_caches returns a summary dict with one entry per target
     (DuckDB files, BDT history files, and each SQLite table)."""
-    monkeypatch.setattr(alarm_cache, "STATE_DIR", tmp_path)
+    from services.persistence.engine import init_db
+
+    init_db(alarm_cache._get_app_engine_for_test(), include_alarm_records=True)
 
     summary = alarm_cache.clear_all_caches()
 
@@ -424,9 +426,11 @@ def test_clear_all_caches_returns_expected_keys(tmp_path, monkeypatch):
         assert v >= 0, f"clear_all_caches: {k} failed (value={v})"
 
 
-def test_clear_all_caches_removes_duckdb_files(tmp_path, monkeypatch):
+def test_clear_all_caches_removes_duckdb_files(clear_all_caches_home):
     """The DuckDB alarm cache files (primary + fallback) are removed."""
-    monkeypatch.setattr(alarm_cache, "STATE_DIR", tmp_path)
+    from services.persistence.engine import init_db
+
+    init_db(alarm_cache._get_app_engine_for_test(), include_alarm_records=True)
 
     df = pd.DataFrame({"site_id": ["A"], "alarm_id": ["X"]})
     alarm_cache.save_dataframe(df)
@@ -515,10 +519,13 @@ def test_clear_all_caches_respects_fk_order(clear_all_caches_home):
         assert v != -1, f"{k} raised during clear_all_caches"
 
 
-def test_clear_all_caches_removes_bdt_history_files(tmp_path, monkeypatch):
+def test_clear_all_caches_removes_bdt_history_files(clear_all_caches_home, monkeypatch):
     """Per-site BDT history JSON files are removed."""
     from bdt import history as bdt_history
-    history_dir = tmp_path / "bdt_history"
+    from services.persistence.engine import init_db
+
+    init_db(alarm_cache._get_app_engine_for_test(), include_alarm_records=True)
+    history_dir = clear_all_caches_home / "bdt_history"
     history_dir.mkdir()
     site_dir = history_dir / "0167DE"
     site_dir.mkdir()
@@ -538,11 +545,14 @@ def test_clear_all_caches_removes_bdt_history_files(tmp_path, monkeypatch):
     assert all(not p.is_file() for p in remaining)
 
 
-def test_clear_all_caches_handles_missing_bdt_history_dir(tmp_path, monkeypatch):
+def test_clear_all_caches_handles_missing_bdt_history_dir(clear_all_caches_home, monkeypatch):
     """If the BDT history dir does not exist (clean install), the call still
     succeeds and reports 0 files removed."""
     from bdt import history as bdt_history
-    history_dir = tmp_path / "no_such_dir"
+    from services.persistence.engine import init_db
+
+    init_db(alarm_cache._get_app_engine_for_test(), include_alarm_records=True)
+    history_dir = clear_all_caches_home / "no_such_dir"
     monkeypatch.setattr(bdt_history, "HISTORY_DIR", history_dir)
 
     summary = alarm_cache.clear_all_caches()

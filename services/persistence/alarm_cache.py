@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from sqlalchemy.exc import OperationalError
 
 from .exceptions import AlarmCacheError
 
@@ -238,6 +239,18 @@ def _clear_sqlite_tables(table_to_model: dict[str, Any], clear_order: tuple[str,
             session.commit()
             summary[table_name] = int(count or 0)
             _log.info("Cleared %d rows from %s", int(count or 0), table_name)
+        except OperationalError as exc:
+            if session is not None:
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+            if "no such table" in str(exc).lower():
+                summary[table_name] = 0
+                _log.debug("Skipped clear for missing table %s", table_name)
+            else:
+                _log.error("Failed to clear %s: %s", table_name, exc, exc_info=True)
+                summary[table_name] = -1  # marker: error
         except Exception as exc:
             _log.error("Failed to clear %s: %s", table_name, exc, exc_info=True)
             if session is not None:
