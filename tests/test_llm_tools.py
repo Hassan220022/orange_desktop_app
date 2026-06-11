@@ -8853,7 +8853,7 @@ def test_query_battery_backup_insights_flags_network_bdt_mismatch_and_weak_criti
                 "overall_verdict": "Rejected",
                 "test_date": "2026-03-01",
             }], "returned": 1, "limit": 50, "offset": 0, "has_more": False, "total": 1},
-            "rule_results": {"rows": [{"site_code": "S1", "rule_id": "R1", "verdict": "Rejected"}], "returned": 1, "limit": 50, "offset": 0, "has_more": False, "total": 1},
+            "rule_results": {"rows": [{"site_code": "S1", "rule_id": "R8", "verdict": "Rejected"}], "returned": 1, "limit": 50, "offset": 0, "has_more": False, "total": 1},
             "photos": {"rows": [], "returned": 0, "limit": 50, "offset": 0, "has_more": False, "total": 0},
             "review_events": {"rows": [], "returned": 0, "limit": 50, "offset": 0, "has_more": False, "total": 0},
         },

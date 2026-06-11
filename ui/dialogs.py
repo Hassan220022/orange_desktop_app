@@ -1342,9 +1342,9 @@ class BdtParametersDialog(QDialog):
 
     def get_tolerances(self) -> dict[str, float]:
         try:
-            from alarm_app.bdt.validator import BDTVerdictPolicy, _verdict_policy_key
+            from alarm_app.bdt.validator import _verdict_policy_key
         except ImportError:
-            from bdt.validator import BDTVerdictPolicy, _verdict_policy_key
+            from bdt.validator import _verdict_policy_key
         out: dict[str, float] = {}
         for key, (spin, scale) in self._tol_spinboxes.items():
             scale = scale if scale else 1.0

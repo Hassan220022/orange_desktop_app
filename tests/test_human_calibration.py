@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from alarm_app.bdt.evidence_metrics import discharge_trend_metrics, worst_r3_evidence
 from alarm_app.bdt.human_calibration import (
-    build_calibration_rows,
     find_bdt_file,
     parse_book1,
     run_calibration,

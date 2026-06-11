@@ -145,7 +145,7 @@ def discharge_trend_metrics(bdt: BDTData) -> DischargeTrendMetrics | None:
     max_delta = 0.0
     late_delta = 0.0
     ten_min_amp: float | None = None
-    for label, minute, ampere in readings:
+    for _label, minute, ampere in readings:
         delta = abs(ampere - baseline)
         if delta > max_delta:
             max_delta = delta

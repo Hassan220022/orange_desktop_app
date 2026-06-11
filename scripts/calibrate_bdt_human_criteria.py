@@ -23,14 +23,9 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from bdt.human_calibration import (  # noqa: E402
-    build_calibration_rows,
-    build_human_aligned_profile,
-    parse_book1,
     render_report_markdown,
     run_calibration,
-    load_auto_export_index,
 )
-
 
 DEFAULT_BOOK1 = Path("/Users/mikawi/Desktop/Book1.xlsx")
 DEFAULT_AUTO = Path(

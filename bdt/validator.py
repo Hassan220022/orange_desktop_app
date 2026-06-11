@@ -14,13 +14,13 @@ import numpy as np
 import pandas as pd
 
 try:
-    from alarm_app.bdt.parser import BDTData
     from alarm_app.bdt.evidence_metrics import (
         discharge_trend_metrics,
         has_discharge_evidence,
         max_reached_discharge_minutes,
         worst_r3_evidence,
     )
+    from alarm_app.bdt.parser import BDTData
     from alarm_app.constants import (
         BDT_COMPLETION_MINUTES,
         BDT_DEFAULT_HEALTH_PCT,
@@ -49,13 +49,13 @@ try:
     )
     from alarm_app.core.battery_topology import battery_topology_from_bdt
 except ImportError:
-    from bdt.parser import BDTData
     from bdt.evidence_metrics import (
         discharge_trend_metrics,
         has_discharge_evidence,
         max_reached_discharge_minutes,
         worst_r3_evidence,
     )
+    from bdt.parser import BDTData
     from constants import (
         BDT_COMPLETION_MINUTES,
         BDT_DEFAULT_HEALTH_PCT,
@@ -1202,7 +1202,6 @@ def _rule_2_power_alarm_match(
         )
 
     reject_min = float(tol_bundle.incomplete_reject_minutes)
-    revise_min = float(tol_bundle.incomplete_revise_minutes)
     if discharge_minutes < reject_min:
         return RuleResult(
             rule_id="R2", rule_name="Power Alarm + Duration",
@@ -1210,14 +1209,6 @@ def _rule_2_power_alarm_match(
             detail=(f"Incomplete test: discharge table reached only "
                     f"{discharge_minutes:.0f} min (< {reject_min:.0f} min reject floor)"),
         )
-    if discharge_minutes < revise_min:
-        short_detail = (
-            f"Short discharge evidence: reached {discharge_minutes:.0f} min "
-            f"(< {revise_min:.0f} min revise band)"
-        )
-    else:
-        short_detail = ""
-
     start_time = _parse_test_time(bdt.time_in)
     if start_time is None:
         return RuleResult(
