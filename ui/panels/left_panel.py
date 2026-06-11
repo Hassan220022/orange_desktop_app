@@ -16,6 +16,11 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+try:
+    from alarm_app.constants import APP_NAME, APP_VERSION
+except ImportError:
+    from constants import APP_NAME, APP_VERSION
+
 ALARM_SOURCE_TOOLTIPS = {
     "directory": (
         "Directory mode: reads selected CSV/XLSX alarm files from the folder, "
@@ -52,7 +57,7 @@ class LeftPanel(QWidget):
             "font-size:18px; background:transparent;")
         brand_row.addWidget(icon_lbl)
         brand_row.addSpacing(4)
-        t = QLabel("Alarm Viewer")
+        t = QLabel(f"{APP_NAME} v{APP_VERSION}")
         t.setObjectName("lbl_app_name")
         brand_row.addWidget(t)
         brand_row.addStretch()

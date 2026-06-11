@@ -19,7 +19,9 @@ try:
 except ImportError:
     from constants import APP_VERSION
 
-GITHUB_API = "https://api.github.com/repos/Hassan220022/orange_desktop_app/releases/latest"
+_DEFAULT_GITHUB_REPO = "orange-power-operation-team/python_app"
+GITHUB_REPO = os.environ.get("ALARM_APP_GITHUB_REPO", _DEFAULT_GITHUB_REPO).strip()
+GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
 
 @dataclass
