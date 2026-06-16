@@ -44,7 +44,7 @@ _TEMP_X_DURATION_TOOLTIP = (
     "X — Power-cleared→Temp gap\n"
     "Minimum clearance gap between prior same-site Power cleared_on and Temp occurred_on. "
     "Temps with gap ≤ X are excluded from Meet preview and alarm sheets (strict > X keeps). "
-    "Default 2 hours."
+    "Uncheck to disable X filtering. Default 2 hours."
 )
 _TEMP_Y_DURATION_TOOLTIP = (
     "Y — minimum HT Duration on W21 + Consolidated\n"
@@ -65,11 +65,13 @@ try:
         DEFAULT_HT_CLEARANCE_GAP_X_SECS,
         DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
         HtWorkbookFilterSettings,
+        HtWorkbookPrecomputed,
         _filter_source_to_week,
         compute_ht_meet_rows,
         describe_meet_preview_empty_state,
         enrich_source_with_site_metadata,
         export_temp_alarm_workbook,
+        filter_ht_source_for_metadata,
         ht_export_filename,
         ht_export_week_from_date,
         ht_export_week_range,
@@ -86,11 +88,13 @@ except ImportError:
         DEFAULT_HT_CLEARANCE_GAP_X_SECS,
         DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
         HtWorkbookFilterSettings,
+        HtWorkbookPrecomputed,
         _filter_source_to_week,
         compute_ht_meet_rows,
         describe_meet_preview_empty_state,
         enrich_source_with_site_metadata,
         export_temp_alarm_workbook,
+        filter_ht_source_for_metadata,
         ht_export_filename,
         ht_export_week_from_date,
         ht_export_week_range,
@@ -1888,6 +1892,7 @@ class BackupTimeDialog(QDialog):
 class _TempAlarmExportThread(QThread):
     succeeded = pyqtSignal(str)
     failed = pyqtSignal(str)
+    progress = pyqtSignal(str)
 
     def __init__(
         self,
@@ -1897,6 +1902,8 @@ class _TempAlarmExportThread(QThread):
         week_label: str | None,
         site_metadata_df: pd.DataFrame | None = None,
         filter_settings: HtWorkbookFilterSettings | None = None,
+        precomputed: HtWorkbookPrecomputed | None = None,
+        metadata_filter_text: str = "",
         parent=None,
     ):
         super().__init__(parent)
@@ -1906,6 +1913,8 @@ class _TempAlarmExportThread(QThread):
         self._week_label = week_label
         self._site_metadata_df = site_metadata_df
         self._filter_settings = filter_settings or HtWorkbookFilterSettings()
+        self._precomputed = precomputed
+        self._metadata_filter_text = metadata_filter_text
         self.warning_result: dict[str, object] = {}
 
     def run(self):
@@ -1918,6 +1927,9 @@ class _TempAlarmExportThread(QThread):
                 site_metadata_df=self._site_metadata_df,
                 return_warnings=True,
                 filter_settings=self._filter_settings,
+                precomputed=self._precomputed,
+                progress_cb=self.progress.emit,
+                metadata_filter_text=self._metadata_filter_text,
             ) or {}
             self.succeeded.emit(self._path)
         except Exception as exc:
@@ -1929,7 +1941,7 @@ class _PreviewCancelled(Exception):
 
 
 class _TempAlarmPreviewThread(QThread):
-    succeeded = pyqtSignal(object, object, object, str, str)
+    succeeded = pyqtSignal(object, str, str, str)
     failed = pyqtSignal(str)
     progress = pyqtSignal(str)
 
@@ -1958,7 +1970,7 @@ class _TempAlarmPreviewThread(QThread):
 
     def run(self):
         try:
-            meet, missing_ids, empty_reason = _build_temp_alarm_preview(
+            precomputed, empty_reason = _build_temp_alarm_preview(
                 self._source_df,
                 self._site_metadata_df,
                 self._filter_text,
@@ -1967,7 +1979,7 @@ class _TempAlarmPreviewThread(QThread):
                 progress_cb=self.progress.emit,
                 cancel_cb=self._is_cancelled,
             )
-            self.succeeded.emit(meet, missing_ids, empty_reason, self._week_label or "", self._filter_text)
+            self.succeeded.emit(precomputed, empty_reason, self._week_label or "", self._filter_text)
         except _PreviewCancelled:
             self.failed.emit("Preview refresh cancelled.")
         except Exception as exc:
@@ -1997,6 +2009,7 @@ class TempAlarmDialog(QDialog):
         self._week_label = week_label or self._infer_default_week_label()
         self._site_metadata_df = _load_site_metadata_catalog()
         self._preview_missing_metadata_ids: list[str] = []
+        self._preview_cache: HtWorkbookPrecomputed | None = None
         self._preview_week_label = None
         self._preview_filter_text = ""
         self._preview_filter_settings = self._filter_settings
@@ -2010,6 +2023,7 @@ class TempAlarmDialog(QDialog):
         self._week_input = None
         self._x_duration_spin = None
         self._y_duration_spin = None
+        self._apply_x_checkbox = None
         self._apply_7h_checkbox = None
         self._metadata_filter_input = None
         self._export_status = None
@@ -2168,6 +2182,14 @@ class TempAlarmDialog(QDialog):
         x_label.setToolTip(_TEMP_X_DURATION_TOOLTIP)
         tl.addWidget(x_label)
 
+        self._apply_x_checkbox = QCheckBox("X gap")
+        self._apply_x_checkbox.setObjectName("tempApplyXGap")
+        self._apply_x_checkbox.setChecked(self._filter_settings.clearance_gap_x_secs is not None)
+        self._apply_x_checkbox.setToolTip(_TEMP_X_DURATION_TOOLTIP)
+        self._apply_x_checkbox.setStyleSheet("color:#cdd6f4; font-size:11px; font-weight:700;")
+        self._apply_x_checkbox.stateChanged.connect(self._on_x_gap_enabled_changed)
+        tl.addWidget(self._apply_x_checkbox)
+
         self._x_duration_spin = QSpinBox()
         self._x_duration_spin.setObjectName("tempXDurationSpin")
         self._x_duration_spin.setRange(120, 1440)
@@ -2195,6 +2217,7 @@ class TempAlarmDialog(QDialog):
             """
         )
         self._x_duration_spin.setToolTip(_TEMP_X_DURATION_TOOLTIP)
+        self._x_duration_spin.setEnabled(self._apply_x_checkbox.isChecked())
         self._x_duration_spin.editingFinished.connect(self._on_x_duration_changed)
         tl.addWidget(self._x_duration_spin)
 
@@ -2330,7 +2353,12 @@ class TempAlarmDialog(QDialog):
         self._render_table()
 
     def _current_filter_settings(self) -> HtWorkbookFilterSettings:
-        x_secs = int(self._x_duration_spin.value()) * 60 if self._x_duration_spin is not None else DEFAULT_HT_CLEARANCE_GAP_X_SECS
+        x_enabled = self._apply_x_checkbox.isChecked() if self._apply_x_checkbox is not None else True
+        x_secs = (
+            int(self._x_duration_spin.value()) * 60
+            if x_enabled and self._x_duration_spin is not None
+            else None
+        )
         y_secs = int(self._y_duration_spin.value()) * 60 if self._y_duration_spin is not None else DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS
         apply_7h = self._apply_7h_checkbox.isChecked() if self._apply_7h_checkbox is not None else True
         return HtWorkbookFilterSettings(
@@ -2338,6 +2366,11 @@ class TempAlarmDialog(QDialog):
             summary_min_ht_duration_y_secs=y_secs,
             apply_meet_threshold=apply_7h,
         )
+
+    def _on_x_gap_enabled_changed(self):
+        if self._x_duration_spin is not None:
+            self._x_duration_spin.setEnabled(self._apply_x_checkbox.isChecked())
+        self._on_x_duration_changed()
 
     def _on_x_duration_changed(self):
         new_settings = self._current_filter_settings()
@@ -2355,10 +2388,13 @@ class TempAlarmDialog(QDialog):
 
     def _on_y_duration_changed(self):
         new_settings = self._current_filter_settings()
-        if new_settings == self._preview_filter_settings and not self._preview_is_stale():
+        if (
+            new_settings.summary_min_ht_duration_y_secs == self._preview_filter_settings.summary_min_ht_duration_y_secs
+            and new_settings.clearance_gap_x_secs == self._preview_filter_settings.clearance_gap_x_secs
+            and new_settings.apply_meet_threshold == self._preview_filter_settings.apply_meet_threshold
+        ):
             return
         self._filter_settings = new_settings
-        self._apply_week_now()
 
     def _should_recompute_preview_on_open(self) -> bool:
         if self._current_filter_text():
@@ -2448,9 +2484,10 @@ class TempAlarmDialog(QDialog):
             self._export_status.setText(message)
             self._export_status.setVisible(True)
 
-    def _on_preview_ready(self, meet, missing_ids, empty_reason: str, week_label: str, filter_text: str):
-        self._df = meet
-        self._preview_missing_metadata_ids = list(missing_ids or [])
+    def _on_preview_ready(self, precomputed: HtWorkbookPrecomputed, empty_reason: str, week_label: str, filter_text: str):
+        self._preview_cache = precomputed
+        self._df = precomputed.meet
+        self._preview_missing_metadata_ids = _missing_site_ids(precomputed.missing_metadata)
         self._preview_week_label = week_label
         self._preview_filter_text = filter_text
         self._preview_filter_settings = self._current_filter_settings()
@@ -2494,8 +2531,12 @@ class TempAlarmDialog(QDialog):
             self._btn_cancel_preview.setEnabled(previewing)
         if self._y_duration_spin:
             self._y_duration_spin.setEnabled(not previewing)
+        if self._apply_x_checkbox:
+            self._apply_x_checkbox.setEnabled(not previewing)
         if self._x_duration_spin:
-            self._x_duration_spin.setEnabled(not previewing)
+            self._x_duration_spin.setEnabled(
+                not previewing and (self._apply_x_checkbox.isChecked() if self._apply_x_checkbox else True)
+            )
         if self._apply_7h_checkbox:
             self._apply_7h_checkbox.setEnabled(not previewing)
         if self._export_status:
@@ -2511,11 +2552,16 @@ class TempAlarmDialog(QDialog):
 
     def _refresh_filter_controls_from_settings(self):
         settings = self._filter_settings
+        if self._apply_x_checkbox is not None:
+            self._apply_x_checkbox.blockSignals(True)
+            self._apply_x_checkbox.setChecked(settings.clearance_gap_x_secs is not None)
+            self._apply_x_checkbox.blockSignals(False)
         if self._x_duration_spin is not None:
             self._x_duration_spin.blockSignals(True)
             self._x_duration_spin.setValue(
                 max(120, int((settings.clearance_gap_x_secs or DEFAULT_HT_CLEARANCE_GAP_X_SECS) // 60))
             )
+            self._x_duration_spin.setEnabled(self._apply_x_checkbox.isChecked() if self._apply_x_checkbox else True)
             self._x_duration_spin.blockSignals(False)
         if self._y_duration_spin is not None:
             self._y_duration_spin.blockSignals(True)
@@ -2661,6 +2707,9 @@ class TempAlarmDialog(QDialog):
         if not fp:
             return
         self._set_exporting(True)
+        precomputed = None
+        if not self._preview_is_stale(week_label):
+            precomputed = self._preview_cache
         self._export_thread = _TempAlarmExportThread(
             self._df,
             fp,
@@ -2668,13 +2717,21 @@ class TempAlarmDialog(QDialog):
             week_label if week_label else None,
             self._site_metadata_df,
             filter_settings=self._current_filter_settings(),
+            precomputed=precomputed,
+            metadata_filter_text=self._current_filter_text(),
             parent=self,
         )
+        self._export_thread.progress.connect(self._on_export_progress)
         self._export_thread.succeeded.connect(self._on_export_done)
         self._export_thread.failed.connect(self._on_export_failed)
         self._export_thread.finished.connect(self._on_export_thread_finished)
         self._export_thread.finished.connect(self._export_thread.deleteLater)
         self._export_thread.start()
+
+    def _on_export_progress(self, message: str):
+        if self._export_status:
+            self._export_status.setText(message)
+            self._export_status.setVisible(True)
 
     def _set_exporting(self, exporting: bool):
         if self._btn_export:
@@ -2761,7 +2818,7 @@ def _build_temp_alarm_preview(
     filter_settings: HtWorkbookFilterSettings | None = None,
     progress_cb=None,
     cancel_cb=None,
-) -> tuple[pd.DataFrame, list[str], str]:
+) -> tuple[HtWorkbookPrecomputed, str]:
     settings = filter_settings or HtWorkbookFilterSettings()
 
     def _progress(message: str) -> None:
@@ -2775,18 +2832,24 @@ def _build_temp_alarm_preview(
     source = source_df if source_df is not None else pd.DataFrame()
     _progress(f"Preparing source… ({len(source):,} rows)")
     _check_cancel()
-    source = _filter_temp_alarm_source_for_metadata(source, site_metadata_df, filter_text)
+    source = filter_ht_source_for_metadata(source, site_metadata_df, filter_text)
     if source is None:
         source = pd.DataFrame()
-    missing_ids: list[str] = []
+    missing = pd.DataFrame(columns=["Site ID", "Alarm Source", "Reason"])
     if site_metadata_df is not None and not site_metadata_df.empty:
         _progress("Enriching metadata…")
         _check_cancel()
         source, missing = enrich_source_with_site_metadata(source, site_metadata_df)
-        missing_ids = _missing_site_ids(missing)
     _progress("Computing Meet…")
     _check_cancel()
-    _study, meet, _ = compute_ht_meet_rows(source, week_label=week_label, filter_settings=settings)
+    short_week = week_label.split("-", 1)[0] if week_label and "-" in week_label else (week_label or "Summary")
+    power_sheet = f"{short_week} AUTIN Power"
+    study, meet, meet_source = compute_ht_meet_rows(
+        source,
+        week_label=week_label,
+        filter_settings=settings,
+        power_sheet=power_sheet,
+    )
     empty_reason = ""
     if meet.empty:
         empty_reason = describe_meet_preview_empty_state(
@@ -2794,7 +2857,17 @@ def _build_temp_alarm_preview(
             week_label,
             filter_settings=settings,
         )
-    return meet, missing_ids, empty_reason
+    precomputed = HtWorkbookPrecomputed(
+        enriched_source=source,
+        filter_text=str(filter_text or "").strip(),
+        week_label=week_label or "",
+        filter_settings=settings,
+        study=study,
+        meet=meet,
+        meet_source=meet_source,
+        missing_metadata=missing,
+    )
+    return precomputed, empty_reason
 
 
 def _filter_temp_alarm_source_for_metadata(
@@ -2802,22 +2875,7 @@ def _filter_temp_alarm_source_for_metadata(
     site_metadata_df: pd.DataFrame | None,
     filter_text: str,
 ) -> pd.DataFrame | None:
-    text = str(filter_text or "").strip()
-    if not text or source_df is None or source_df.empty:
-        return source_df
-    source = source_df.copy()
-    mask = pd.Series(False, index=source.index)
-    for column in ("site_id", "site_name", "site_code", "area", "contractor", "alarm_source"):
-        if column in source.columns:
-            mask |= source[column].fillna("").astype(str).str.contains(text, case=False, na=False, regex=False)
-    if site_metadata_df is not None and not site_metadata_df.empty and "site_id" in source.columns:
-        meta_mask = pd.Series(False, index=site_metadata_df.index)
-        for column in site_metadata_df.columns:
-            meta_mask |= site_metadata_df[column].fillna("").astype(str).str.contains(text, case=False, na=False, regex=False)
-        site_ids = {_normalize_site_text(v) for v in site_metadata_df.loc[meta_mask, "site_id"].dropna()} if "site_id" in site_metadata_df.columns else set()
-        source_ids = source["site_id"].map(_normalize_site_text)
-        mask |= source_ids.isin(site_ids)
-    return source[mask].copy().reset_index(drop=True)
+    return filter_ht_source_for_metadata(source_df, site_metadata_df, filter_text)
 
 
 def _normalize_site_text(value) -> str:

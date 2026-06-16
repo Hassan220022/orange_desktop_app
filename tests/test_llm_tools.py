@@ -1875,7 +1875,7 @@ def test_dispatch_tool_computed_report_ht_meet_returns_rows_and_redacts_paths(mo
             },
         ])
 
-    def _fake_compute_meet_rows(source_df, week_label=None):
+    def _fake_compute_meet_rows(source_df, week_label=None, filter_settings=None, **kwargs):
         return (
             pd.DataFrame([]),
             pd.DataFrame([
@@ -1886,6 +1886,7 @@ def test_dispatch_tool_computed_report_ht_meet_returns_rows_and_redacts_paths(mo
                     "alarm_source": "tmpfile",
                 }
             ]),
+            pd.DataFrame(),
         )
 
     monkeypatch.setattr(service, "_with_alarm_source", _fake_with_alarm_source)
@@ -1941,15 +1942,15 @@ def test_dispatch_tool_computed_report_ht_consolidated_uses_filtered_history_sou
         lambda source_df, week_label: source_df.iloc[0:0].copy(),
     )
 
-    def _fake_compute_ht_meet_frames(source_df, week_label=None, ht_sheet="HT", power_sheet="Power"):
+    def _fake_compute_ht_meet_rows(source_df, week_label=None, filter_settings=None, **kwargs):
         seen_history_lengths.append(len(source_df))
         return pd.DataFrame(), pd.DataFrame(), source_df
 
-    monkeypatch.setattr(service_mod, "_compute_ht_meet_frames", _fake_compute_ht_meet_frames)
+    monkeypatch.setattr(service_mod, "compute_ht_meet_rows", _fake_compute_ht_meet_rows)
     monkeypatch.setattr(
         service_mod,
         "build_temp_alarm_summary",
-        lambda matches, week_label=None, rolling_week_label=None: pd.DataFrame(
+        lambda matches, week_label=None, rolling_week_label=None, min_ht_duration_secs=None: pd.DataFrame(
             [{"source_rows": len(matches), "rolling_week": rolling_week_label}]
         ),
     )
@@ -1962,6 +1963,92 @@ def test_dispatch_tool_computed_report_ht_consolidated_uses_filtered_history_sou
 
     assert seen_history_lengths == [0]
     assert result["rows"] == [{"source_rows": 0, "rolling_week": "W22-26"}]
+
+
+def test_dispatch_tool_computed_report_ht_paths_use_default_filter_settings(monkeypatch):
+    from alarm_app.core.temp_alarm import (
+        DEFAULT_HT_CLEARANCE_GAP_X_SECS,
+        DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
+        HtWorkbookFilterSettings,
+    )
+
+    service = LocalDataService()
+    source_df = pd.DataFrame([
+        {
+            "site_id": "AAA001",
+            "alarm_category": "Power",
+            "occurred_on": "2026-05-01 08:00:00",
+            "cleared_on": "2026-05-01 09:00:00",
+        },
+        {
+            "site_id": "AAA001",
+            "alarm_category": "Temp",
+            "occurred_on": "2026-05-01 12:00:00",
+            "cleared_on": "2026-05-01 13:00:00",
+        },
+    ])
+    meet_settings: list[HtWorkbookFilterSettings] = []
+    consolidated_settings: list[HtWorkbookFilterSettings] = []
+    summary_y_secs: list[int | None] = []
+
+    monkeypatch.setattr(service, "_with_alarm_source", lambda fn: fn())
+    monkeypatch.setattr(alarm_store, "query_alarms", lambda q: source_df.copy())
+
+    def _capture_compute_ht_meet_rows(source_df, week_label=None, filter_settings=None, **kwargs):
+        meet_settings.append(filter_settings or HtWorkbookFilterSettings())
+        meet = pd.DataFrame([{"site_id": "AAA001", "week": week_label}])
+        return pd.DataFrame(), meet, meet
+
+    def _capture_consolidated(source_df, filter_settings=None, **kwargs):
+        consolidated_settings.append(filter_settings or HtWorkbookFilterSettings())
+        return pd.DataFrame([{"site_id": "AAA001"}])
+
+    def _capture_build_summary(matches, week_label=None, rolling_week_label=None, min_ht_duration_secs=None):
+        summary_y_secs.append(min_ht_duration_secs)
+        return pd.DataFrame([{"rows": len(matches)}])
+
+    monkeypatch.setattr(service_mod, "compute_ht_meet_rows", _capture_compute_ht_meet_rows)
+    monkeypatch.setattr(service_mod, "compute_ht_consolidated_meet_source", _capture_consolidated)
+    monkeypatch.setattr(service_mod, "build_temp_alarm_summary", _capture_build_summary)
+    monkeypatch.setattr(
+        service_mod,
+        "_x_filtered_ht_source",
+        lambda df, x_secs, week_label=None: df,
+    )
+    monkeypatch.setattr(
+        service_mod,
+        "_filter_source_from_week",
+        lambda df, week_label: df,
+    )
+
+    dispatch_tool(
+        service,
+        "get_computed_report",
+        {"report_type": "ht_meet", "export_week": "W18-26"},
+    )
+    dispatch_tool(
+        service,
+        "get_computed_report",
+        {"report_type": "ht_weekly_summary", "export_week": "W18-26"},
+    )
+    dispatch_tool(
+        service,
+        "get_computed_report",
+        {"report_type": "ht_consolidated_history", "export_week": "W18-26"},
+    )
+
+    assert len(meet_settings) == 2
+    assert meet_settings[0].clearance_gap_x_secs is None
+    assert meet_settings[1].clearance_gap_x_secs == DEFAULT_HT_CLEARANCE_GAP_X_SECS
+    assert len(consolidated_settings) == 1
+    assert consolidated_settings[0].clearance_gap_x_secs == DEFAULT_HT_CLEARANCE_GAP_X_SECS
+    for settings in meet_settings + consolidated_settings:
+        assert settings.summary_min_ht_duration_y_secs == DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS
+        assert settings.apply_meet_threshold is True
+    assert summary_y_secs == [
+        DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
+        DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
+    ]
 
 
 def test_dispatch_tool_computed_report_bdt_export_section_returns_sanitized_rows(monkeypatch):

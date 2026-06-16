@@ -618,7 +618,10 @@ class TestAlarmViewerGUI:
 
             assert dialog._x_duration_spin is not None
             assert dialog._y_duration_spin is not None
+            assert dialog._apply_x_checkbox is not None
             assert dialog._apply_7h_checkbox is not None
+            assert dialog._apply_x_checkbox.isChecked()
+            assert dialog._x_duration_spin.isEnabled()
             assert dialog._x_duration_spin.value() == DEFAULT_HT_CLEARANCE_GAP_X_SECS // 60
             assert dialog._y_duration_spin.value() == DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS // 60
             assert dialog._apply_7h_checkbox.isChecked()
@@ -645,6 +648,56 @@ class TestAlarmViewerGUI:
             _wait_for_dialog_preview(dialog)
             assert dialog._x_duration_spin.minimum() == 120
             assert dialog._x_duration_spin.maximum() == 1440
+        finally:
+            dialog.close()
+
+    def test_temp_alarm_dialog_disabling_x_gap_skips_filter(self, gui_app, monkeypatch):
+        monkeypatch.setattr("alarm_app.ui.dialogs._load_site_metadata_catalog", lambda: pd.DataFrame())
+
+        dialog = TempAlarmDialog(
+            pd.DataFrame(),
+            pd.DataFrame(),
+            week_label="W17-26",
+            parent=gui_app,
+        )
+        try:
+            dialog.show()
+            QApplication.processEvents()
+            _wait_for_dialog_preview(dialog)
+            dialog._apply_x_checkbox.setChecked(False)
+            dialog._on_x_gap_enabled_changed()
+            assert dialog._current_filter_settings().clearance_gap_x_secs is None
+            assert not dialog._x_duration_spin.isEnabled()
+        finally:
+            dialog.close()
+
+    def test_temp_alarm_dialog_y_change_does_not_recompute_preview(self, gui_app, monkeypatch):
+        monkeypatch.setattr("alarm_app.ui.dialogs._load_site_metadata_catalog", lambda: pd.DataFrame())
+        preview_starts: list[int] = []
+        original_start = TempAlarmDialog._start_preview_recompute
+
+        def _track_preview_start(self):
+            preview_starts.append(1)
+            return original_start(self)
+
+        monkeypatch.setattr(TempAlarmDialog, "_start_preview_recompute", _track_preview_start)
+
+        dialog = TempAlarmDialog(
+            pd.DataFrame(),
+            pd.DataFrame(),
+            week_label="W17-26",
+            skip_initial_preview=True,
+            parent=gui_app,
+        )
+        try:
+            dialog.show()
+            QApplication.processEvents()
+            before = len(preview_starts)
+            dialog._y_duration_spin.setValue(30)
+            dialog._on_y_duration_changed()
+            QApplication.processEvents()
+            assert len(preview_starts) == before
+            assert dialog._filter_settings.summary_min_ht_duration_y_secs == 30 * 60
         finally:
             dialog.close()
 

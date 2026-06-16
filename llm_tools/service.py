@@ -32,7 +32,9 @@ try:
         HtWorkbookFilterSettings,
         _compute_ht_meet_frames,
         _filter_source_from_week,
+        _x_filtered_ht_source,
         build_temp_alarm_summary,
+        compute_ht_consolidated_meet_source,
         compute_ht_meet_rows,
     )
     from alarm_app.data import alarm_store, catalog_store, state
@@ -73,7 +75,9 @@ except ImportError:
         HtWorkbookFilterSettings,
         _compute_ht_meet_frames,
         _filter_source_from_week,
+        _x_filtered_ht_source,
         build_temp_alarm_summary,
+        compute_ht_consolidated_meet_source,
         compute_ht_meet_rows,
     )
     from data import alarm_store, catalog_store, state
@@ -2097,28 +2101,47 @@ class LocalDataService:
             )
             try:
                 source_df = self._with_alarm_source(lambda: alarm_store.query_alarms(q))
+                settings = HtWorkbookFilterSettings()
                 if report_type == "ht_meet":
-                    rows = compute_ht_meet_rows(
+                    meet_settings = replace(settings, clearance_gap_x_secs=None)
+                    _, meet, _ = compute_ht_meet_rows(
                         source_df,
                         week_label=required_week,
-                        filter_settings=HtWorkbookFilterSettings(clearance_gap_x_secs=None),
+                        filter_settings=meet_settings,
                     )
-                    meet = rows[1]
                     row_payload = _sanitize_mcp_records(meet.to_dict(orient="records"), include_raw_json=include_raw_json)
                 elif report_type == "ht_weekly_summary":
-                    _, _, meet_source = _compute_ht_meet_frames(source_df, week_label=required_week)
-                    summary = build_temp_alarm_summary(meet_source, week_label=required_week)
+                    _, _, meet_source = compute_ht_meet_rows(
+                        source_df,
+                        week_label=required_week,
+                        filter_settings=settings,
+                    )
+                    summary = build_temp_alarm_summary(
+                        meet_source,
+                        week_label=required_week,
+                        min_ht_duration_secs=settings.summary_min_ht_duration_y_secs,
+                    )
                     row_payload = _sanitize_mcp_records(summary.to_dict(orient="records"), include_raw_json=include_raw_json)
                 else:
-                    history_source = _filter_source_from_week(source_df, DEFAULT_HT_HISTORY_START_WEEK)
-                    _, _, consolidated_source = _compute_ht_meet_frames(
-                        history_source,
+                    full_x_filtered = _x_filtered_ht_source(
+                        source_df,
+                        settings.clearance_gap_x_secs,
                         week_label=None,
+                    )
+                    history_source = _filter_source_from_week(
+                        full_x_filtered,
+                        DEFAULT_HT_HISTORY_START_WEEK,
+                    )
+                    consolidated_source = compute_ht_consolidated_meet_source(
+                        history_source,
+                        filter_settings=settings,
+                        x_filtered_source=history_source,
                     )
                     consolidated = build_temp_alarm_summary(
                         consolidated_source,
                         week_label=None,
                         rolling_week_label=required_week,
+                        min_ht_duration_secs=settings.summary_min_ht_duration_y_secs,
                     )
                     row_payload = _sanitize_mcp_records(consolidated.to_dict(orient="records"), include_raw_json=include_raw_json)
             except Exception as exc:

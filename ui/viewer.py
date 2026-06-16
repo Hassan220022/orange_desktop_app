@@ -2789,8 +2789,8 @@ class AlarmViewer(QMainWindow):
                 times = pd.to_datetime(self._full_df["occurred_on"], errors="coerce").dropna()
                 if not times.empty:
                     return infer_export_week_label(fallback_times=times)
-        except Exception:
-            pass
+        except (TypeError, ValueError, KeyError) as exc:
+            _log.debug("Could not infer HT export week label: %s", exc)
         return None
 
     def _upload_site_sheet(self):

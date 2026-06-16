@@ -3,11 +3,14 @@
 import json
 import math
 import re
+import time
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
@@ -111,6 +114,20 @@ class HtWorkbookFilterSettings:
     apply_meet_threshold: bool = True
 
 
+@dataclass(frozen=True, slots=True)
+class HtWorkbookPrecomputed:
+    """Cached HT workbook compute from a fresh Meet preview."""
+
+    enriched_source: pd.DataFrame
+    filter_text: str
+    week_label: str
+    filter_settings: HtWorkbookFilterSettings
+    study: pd.DataFrame
+    meet: pd.DataFrame
+    meet_source: pd.DataFrame
+    missing_metadata: pd.DataFrame
+
+
 def _resolved_ht_summary_y_secs(y_secs: int | None) -> int | None:
     if y_secs is None:
         return DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS
@@ -153,24 +170,39 @@ def _power_rows_by_site(source_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     }
 
 
-def _prior_power_index(site_power: pd.DataFrame, temp_occurred_on: pd.Timestamp) -> int | None:
-    """Return index of the latest Power alarm that started at or before temp_occurred_on."""
-    if site_power.empty:
-        return None
-    starts = site_power["occurred_on"].reset_index(drop=True)
-    idx = int(starts.searchsorted(temp_occurred_on, side="right") - 1)
-    return idx if idx >= 0 else None
+def _x_filtered_ht_source(
+    source_df: pd.DataFrame | None,
+    x_secs: int | None,
+    week_label: str | None = None,
+) -> pd.DataFrame | None:
+    """Apply X clearance-gap filtering once for HT workbook pipelines."""
+    if source_df is None or source_df.empty:
+        return source_df
+    if not x_secs or x_secs <= 0:
+        return source_df.copy().reset_index(drop=True)
+    return filter_temps_by_power_clearance_gap(source_df, x_secs, week_label=week_label)
 
 
-def _power_clearance_gap_seconds(power_row: pd.Series, temp_occurred_on: pd.Timestamp) -> float | None:
-    """Raw clearance gap: temp occurred_on minus prior Power cleared_on (no coverage margin)."""
-    power_cleared = power_row.get("cleared_on")
-    if pd.isna(power_cleared):
-        return None
-    gap = (temp_occurred_on - power_cleared).total_seconds()
-    if gap < 0:
-        return None
-    return float(gap)
+def _clearance_gap_seconds_for_temps(
+    temp_times: pd.Series,
+    site_power: pd.DataFrame,
+) -> pd.Series:
+    """Vectorized Power-cleared→Temp gap in seconds; NaN when no eligible prior Power."""
+    if site_power.empty or temp_times.empty:
+        return pd.Series(np.nan, index=temp_times.index, dtype="float64")
+    cleared = pd.to_datetime(site_power["cleared_on"], errors="coerce", format="mixed")
+    cleared_sorted = cleared.dropna().sort_values(kind="stable")
+    if cleared_sorted.empty:
+        return pd.Series(np.nan, index=temp_times.index, dtype="float64")
+    cleared_values = cleared_sorted.to_numpy(dtype="datetime64[ns]")
+    temp_values = pd.to_datetime(temp_times, errors="coerce", format="mixed").to_numpy(dtype="datetime64[ns]")
+    prior_positions = np.searchsorted(cleared_values, temp_values, side="right") - 1
+    gaps = np.full(len(temp_values), np.nan, dtype="float64")
+    has_prior = prior_positions >= 0
+    if has_prior.any():
+        prior_cleared = cleared_values[prior_positions[has_prior]]
+        gaps[has_prior] = (temp_values[has_prior] - prior_cleared) / np.timedelta64(1, "s")
+    return pd.Series(gaps, index=temp_times.index, dtype="float64")
 
 
 def filter_temps_by_power_clearance_gap(
@@ -188,23 +220,27 @@ def filter_temps_by_power_clearance_gap(
     df["occurred_on"] = pd.to_datetime(df["occurred_on"], errors="coerce", format="mixed")
     power_by_site = _power_rows_by_site(source_df)
     drop_indexes: list[object] = []
+    site_keys = df["site_id"].fillna("").astype(str).str.strip().map(_normalize_site_identifier)
 
     temp_rows = df[df["alarm_category"] == "Temp"]
-    for idx, row in temp_rows.iterrows():
-        if week_label and _week_label_from_timestamp(row["occurred_on"]) != week_label:
+    grouped_keys = site_keys.loc[temp_rows.index]
+    for site_key, temp_group in temp_rows.groupby(grouped_keys, sort=False):
+        if not site_key:
+            drop_indexes.extend(temp_group.index.tolist())
             continue
-        site_key = _normalize_site_identifier(str(row.get("site_id", "")).strip())
         site_power = power_by_site.get(site_key)
         if site_power is None or site_power.empty:
-            drop_indexes.append(idx)
+            drop_indexes.extend(temp_group.index.tolist())
             continue
-        prior_idx = _prior_power_index(site_power, row["occurred_on"])
-        if prior_idx is None:
-            drop_indexes.append(idx)
-            continue
-        gap_secs = _power_clearance_gap_seconds(site_power.iloc[prior_idx], row["occurred_on"])
-        if gap_secs is None or gap_secs <= x_secs:
-            drop_indexes.append(idx)
+        gap_secs = _clearance_gap_seconds_for_temps(temp_group["occurred_on"], site_power)
+        if week_label:
+            in_week = temp_group["occurred_on"].apply(
+                lambda temp_time: _week_label_from_timestamp(temp_time) == week_label
+            )
+        else:
+            in_week = pd.Series(True, index=temp_group.index)
+        drop_mask = in_week & (gap_secs.isna() | (gap_secs <= x_secs))
+        drop_indexes.extend(temp_group.index[drop_mask].tolist())
 
     if drop_indexes:
         df = df.drop(index=drop_indexes)
@@ -630,6 +666,7 @@ def compute_ht_meet_rows(
     apply_meet_threshold: bool | None = None,
     ht_sheet: str = "HT",
     power_sheet: str = "Power",
+    x_filtered_source: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Build HT Study and Meet rows after optional X gap and 7h Meet filtering."""
     settings = _resolved_ht_workbook_filter_settings(
@@ -637,13 +674,12 @@ def compute_ht_meet_rows(
         clearance_gap_x_secs=clearance_gap_x_secs,
         apply_meet_threshold=apply_meet_threshold,
     )
-    x_secs = settings.clearance_gap_x_secs
-    if x_secs is None or x_secs <= 0:
-        filtered_source = source_df
+    if x_filtered_source is not None:
+        filtered_source = x_filtered_source
     else:
-        filtered_source = filter_temps_by_power_clearance_gap(
+        filtered_source = _x_filtered_ht_source(
             source_df,
-            x_secs,
+            settings.clearance_gap_x_secs,
             week_label=week_label,
         )
     study, meet, meet_source = _compute_ht_meet_frames(
@@ -654,6 +690,68 @@ def compute_ht_meet_rows(
         power_sheet=power_sheet,
     )
     return study, meet, meet_source
+
+
+def compute_ht_consolidated_meet_source(
+    source_df: pd.DataFrame | None,
+    filter_settings: HtWorkbookFilterSettings | None = None,
+    *,
+    clearance_gap_x_secs: int | None = None,
+    apply_meet_threshold: bool | None = None,
+    x_filtered_source: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Build meet_source for Consolidated summary without Study sheet or formulas."""
+    settings = _resolved_ht_workbook_filter_settings(
+        filter_settings,
+        clearance_gap_x_secs=clearance_gap_x_secs,
+        apply_meet_threshold=apply_meet_threshold,
+    )
+    if x_filtered_source is not None:
+        filtered_source = x_filtered_source
+    else:
+        filtered_source = _x_filtered_ht_source(
+            source_df,
+            settings.clearance_gap_x_secs,
+            week_label=None,
+        )
+    temp = _meet_mask_from_source(
+        filtered_source,
+        week_label=None,
+        apply_meet_threshold=settings.apply_meet_threshold,
+    )
+    if temp.empty:
+        return pd.DataFrame()
+    return temp[temp["_meet"]].copy().reset_index(drop=True)
+
+
+def filter_ht_source_for_metadata(
+    source_df: pd.DataFrame | None,
+    site_metadata_df: pd.DataFrame | None,
+    filter_text: str,
+) -> pd.DataFrame | None:
+    """Filter alarm source rows by metadata/catalog text (same logic as Meet preview)."""
+    text = str(filter_text or "").strip()
+    if not text or source_df is None or source_df.empty:
+        return source_df
+    source = source_df.copy()
+    mask = pd.Series(False, index=source.index)
+    for column in ("site_id", "site_name", "site_code", "area", "contractor", "alarm_source"):
+        if column in source.columns:
+            mask |= source[column].fillna("").astype(str).str.contains(text, case=False, na=False, regex=False)
+    if site_metadata_df is not None and not site_metadata_df.empty and "site_id" in source.columns:
+        meta_mask = pd.Series(False, index=site_metadata_df.index)
+        for column in site_metadata_df.columns:
+            meta_mask |= site_metadata_df[column].fillna("").astype(str).str.contains(
+                text, case=False, na=False, regex=False
+            )
+        site_ids = (
+            {_normalize_site_identifier(v) for v in site_metadata_df.loc[meta_mask, "site_id"].dropna()}
+            if "site_id" in site_metadata_df.columns
+            else set()
+        )
+        source_ids = source["site_id"].map(_normalize_site_identifier)
+        mask |= source_ids.isin(site_ids)
+    return source[mask].copy().reset_index(drop=True)
 
 
 def describe_meet_preview_empty_state(
@@ -765,59 +863,124 @@ def export_temp_alarm_workbook(
     historical_start_week: str | None = DEFAULT_HT_HISTORY_START_WEEK,
     return_warnings: bool = False,
     filter_settings: HtWorkbookFilterSettings | None = None,
+    precomputed: HtWorkbookPrecomputed | None = None,
+    progress_cb: Callable[[str], None] | None = None,
+    metadata_filter_text: str = "",
 ) -> dict[str, object] | None:
     """Export reference-style HT Alarm Workbook."""
     del margin_minutes  # Meet logic uses fixed 7h threshold; margin applies to coverage-gap analysis only.
     settings = filter_settings or HtWorkbookFilterSettings()
+    stage_timings: dict[str, float] = {}
+
+    def _progress(message: str) -> None:
+        if progress_cb is not None:
+            progress_cb(message)
+
+    def _timed_stage(stage: str, message: str, func):
+        _progress(message)
+        started = time.perf_counter()
+        result = func()
+        stage_timings[stage] = time.perf_counter() - started
+        return result
+
     export_week = week_label or _week_label_from_source(source_df) or _week_label_from_matches(matches)
-    missing_metadata = pd.DataFrame()
-    if source_df is not None and site_metadata_df is not None:
-        source_df, missing_metadata = enrich_source_with_site_metadata(source_df, site_metadata_df)
-    x_secs = settings.clearance_gap_x_secs
-    gap_filtered = (
-        filter_temps_by_power_clearance_gap(source_df, x_secs)
-        if source_df is not None and x_secs
-        else source_df
+    cache_valid = (
+        precomputed is not None
+        and precomputed.week_label == (export_week or "")
+        and precomputed.filter_settings == settings
+        and precomputed.filter_text == str(metadata_filter_text or "").strip()
     )
+    missing_metadata = pd.DataFrame(columns=["Site ID", "Alarm Source", "Reason"])
+    if cache_valid:
+        source_df = precomputed.enriched_source
+        missing_metadata = precomputed.missing_metadata
+    elif source_df is not None:
+        def _prepare_source():
+            nonlocal source_df, missing_metadata
+            filtered = filter_ht_source_for_metadata(source_df, site_metadata_df, metadata_filter_text)
+            if filtered is None:
+                filtered = pd.DataFrame()
+            if site_metadata_df is not None:
+                source_df, missing_metadata = enrich_source_with_site_metadata(filtered, site_metadata_df)
+            else:
+                source_df = filtered
+            return source_df
+
+        _timed_stage("enrich", "Enriching metadata…", _prepare_source)
+
+    x_filtered = None
+    if source_df is not None:
+        x_filtered = _timed_stage(
+            "x_filter",
+            "Applying clearance gap filter…",
+            lambda: _x_filtered_ht_source(source_df, settings.clearance_gap_x_secs, week_label=export_week),
+        )
     scoped_matches = _filter_matches_to_week(matches, export_week) if export_week else matches
-    scoped_source = _filter_source_to_week(gap_filtered, export_week) if export_week and gap_filtered is not None else gap_filtered
+    scoped_source = _filter_source_to_week(x_filtered, export_week) if export_week and x_filtered is not None else x_filtered
     short_week = _short_week_label(export_week or "Summary")
     ht_sheet = f"{short_week} AUTIN HT"
     power_sheet = f"{short_week} AUTIN Power"
     ht_raw = _build_temp_raw_sheet(scoped_source, "Temp") if scoped_source is not None else _empty_frame(TEMP_RAW_HT_COLUMNS)
     power_raw = _build_temp_raw_sheet(scoped_source, "Power", sheet_name=power_sheet) if scoped_source is not None else _empty_frame(TEMP_RAW_POWER_COLUMNS)
     y_secs = settings.summary_min_ht_duration_y_secs
-    if gap_filtered is not None:
-        study, meet, meet_source = compute_ht_meet_rows(
-            gap_filtered,
-            week_label=export_week,
-            filter_settings=settings,
-            ht_sheet=ht_sheet,
-            power_sheet=power_sheet,
-        )
-        history_source = _filter_source_from_week(gap_filtered, historical_start_week)
-        _, _, consolidated_source = _compute_ht_meet_frames(
-            history_source,
-            week_label=None,
-            ht_sheet=ht_sheet,
-            power_sheet=power_sheet,
-            apply_meet_threshold=settings.apply_meet_threshold,
+    if source_df is not None:
+        if cache_valid:
+            study = precomputed.study
+            meet = precomputed.meet
+            meet_source = precomputed.meet_source
+        else:
+            study, meet, meet_source = _timed_stage(
+                "week_meet",
+                "Building Meet…",
+                lambda: compute_ht_meet_rows(
+                    source_df,
+                    week_label=export_week,
+                    filter_settings=settings,
+                    ht_sheet=ht_sheet,
+                    power_sheet=power_sheet,
+                    x_filtered_source=x_filtered,
+                ),
+            )
+        def _build_consolidated_meet_source():
+            # X gap needs full Power history for pairing; slice history after filtering.
+            full_x_filtered = _x_filtered_ht_source(
+                source_df,
+                settings.clearance_gap_x_secs,
+                week_label=None,
+            )
+            history_source = _filter_source_from_week(full_x_filtered, historical_start_week)
+            return compute_ht_consolidated_meet_source(
+                history_source,
+                filter_settings=settings,
+                x_filtered_source=history_source,
+            )
+
+        consolidated_source = _timed_stage(
+            "consolidated_meet",
+            "Building consolidated…",
+            _build_consolidated_meet_source,
         )
     else:
         study = _empty_frame(TEMP_STUDY_COLUMNS)
         meet = _empty_frame(TEMP_MEET_COLUMNS)
         meet_source = scoped_matches
         consolidated_source = matches
-    summary = build_temp_alarm_summary(
-        meet_source,
-        week_label=export_week,
-        min_ht_duration_secs=y_secs,
-    )
-    consolidated = build_temp_alarm_summary(
-        consolidated_source,
-        week_label=None,
-        rolling_week_label=export_week,
-        min_ht_duration_secs=y_secs,
+    summary, consolidated = _timed_stage(
+        "summaries",
+        "Building summaries…",
+        lambda: (
+            build_temp_alarm_summary(
+                meet_source,
+                week_label=export_week,
+                min_ht_duration_secs=y_secs,
+            ),
+            build_temp_alarm_summary(
+                consolidated_source,
+                week_label=None,
+                rolling_week_label=export_week,
+                min_ht_duration_secs=y_secs,
+            ),
+        ),
     )
     path = Path(path)
     sheets = [
@@ -830,10 +993,22 @@ def export_temp_alarm_workbook(
     ]
     if not missing_metadata.empty:
         sheets.append(("Missing Metadata", missing_metadata))
-    _write_temp_alarm_workbook(path, sheets)
+
+    def _write_workbook():
+        _write_temp_alarm_workbook(path, sheets, progress_cb=progress_cb, stage_timings=stage_timings)
+
+    _progress("Writing workbook…")
+    started = time.perf_counter()
+    _write_workbook()
+    stage_timings["write_workbook"] = time.perf_counter() - started
+    _progress("Finalizing…")
     if return_warnings:
         missing_ids = missing_metadata["Site ID"].dropna().astype(str).tolist() if not missing_metadata.empty else []
-        return {"missing_metadata_site_ids": missing_ids, "missing_metadata_count": len(missing_ids)}
+        return {
+            "missing_metadata_site_ids": missing_ids,
+            "missing_metadata_count": len(missing_ids),
+            "stage_timings": stage_timings,
+        }
     return None
 
 
@@ -946,15 +1121,27 @@ def _first_meta_value(meta: dict[str, object], keys: list[str]) -> str:
     return ""
 
 
-def _write_temp_alarm_workbook(path: Path, sheets: list[tuple[str, pd.DataFrame]]) -> None:
+def _write_temp_alarm_workbook(
+    path: Path,
+    sheets: list[tuple[str, pd.DataFrame]],
+    progress_cb: Callable[[str], None] | None = None,
+    stage_timings: dict[str, float] | None = None,
+) -> None:
     wb = Workbook(write_only=True)
     styles = _temp_workbook_styles()
     dimensions = []
     for title, frame in sheets:
-        _append_temp_alarm_sheet(wb, title, frame, styles)
+        stage_key = f"write_{title}"
+        started = time.perf_counter()
+        _append_temp_alarm_sheet(wb, title, frame, styles, progress_cb=progress_cb)
+        if stage_timings is not None:
+            stage_timings[stage_key] = time.perf_counter() - started
         dimensions.append(f"A1:{get_column_letter(max(len(frame.columns), 1))}{len(frame) + 1}")
     wb.save(path)
+    zip_started = time.perf_counter()
     _patch_xlsx_worksheet_dimensions(path, dimensions)
+    if stage_timings is not None:
+        stage_timings["zip_patch"] = time.perf_counter() - zip_started
 
 
 def _patch_xlsx_worksheet_dimensions(path: Path, dimensions: list[str]) -> None:
@@ -1007,7 +1194,15 @@ def _temp_workbook_styles() -> dict[str, object]:
     }
 
 
-def _append_temp_alarm_sheet(wb: Workbook, title: str, frame: pd.DataFrame, styles: dict[str, object]) -> None:
+def _append_temp_alarm_sheet(
+    wb: Workbook,
+    title: str,
+    frame: pd.DataFrame,
+    styles: dict[str, object],
+    progress_cb: Callable[[str], None] | None = None,
+) -> None:
+    if progress_cb is not None:
+        progress_cb(f"Writing {title}… ({len(frame):,} rows)")
     ws = wb.create_sheet(title)
     headers = list(frame.columns)
     display_headers = _temp_display_headers(title, headers)
@@ -1024,17 +1219,29 @@ def _append_temp_alarm_sheet(wb: Workbook, title: str, frame: pd.DataFrame, styl
         )
         for idx, header in enumerate(display_headers, start=1)
     ])
+    col_fills = [
+        _temp_data_fill(title, idx, display_headers[idx - 1], styles)
+        for idx in range(1, len(display_headers) + 1)
+    ]
+    col_num_fmts = [
+        _temp_number_format(title, idx, display_headers[idx - 1], is_header=False)
+        for idx in range(1, len(display_headers) + 1)
+    ]
+    row_count = 0
     for row in frame.itertuples(index=False, name=None):
         ws.append([
             _temp_write_cell(
                 ws,
                 value,
                 styles,
-                fill=_temp_data_fill(title, idx, display_headers[idx - 1], styles),
-                num_fmt=_temp_number_format(title, idx, display_headers[idx - 1], is_header=False),
+                fill=col_fills[idx - 1],
+                num_fmt=col_num_fmts[idx - 1],
             )
             for idx, value in enumerate(row, start=1)
         ])
+        row_count += 1
+        if progress_cb is not None and row_count % 5000 == 0:
+            progress_cb(f"Writing {title}… ({row_count:,}/{len(frame):,} rows)")
 
 
 def _temp_write_cell(
@@ -1217,11 +1424,12 @@ def _build_temp_raw_sheet(
         ),
         "SUM": "",
     })
-    for idx in range(len(rows)):
-        row_number = idx + 2
-        rows.at[rows.index[idx], "SUM"] = (
+    rows["SUM"] = [
+        (
             f'=SUMIFS($F:$F,$B:$B,B{row_number},$D:$D,">="&INT($D{row_number}),$D:$D,"<"&INT($D{row_number})+1)'
         )
+        for row_number in range(2, len(rows) + 2)
+    ]
     return rows[TEMP_RAW_POWER_COLUMNS]
 
 
@@ -1239,24 +1447,23 @@ def _build_temp_meet_sheet(
     return meet
 
 
-def _compute_ht_meet_frames(
+def _meet_mask_from_source(
     source_df: pd.DataFrame | None,
     week_label: str | None = None,
-    ht_sheet: str = "HT",
-    power_sheet: str = "Power",
     apply_meet_threshold: bool = True,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> pd.DataFrame:
+    """Return scoped Temp rows with a ``_meet`` boolean column."""
     if source_df is None or source_df.empty or "alarm_category" not in source_df.columns:
-        return _empty_frame(TEMP_STUDY_COLUMNS), _empty_frame(TEMP_MEET_COLUMNS), pd.DataFrame()
+        return pd.DataFrame()
     sub = _filter_source_to_week(source_df, week_label) if week_label else source_df
     if sub is None or sub.empty:
-        return _empty_frame(TEMP_STUDY_COLUMNS), _empty_frame(TEMP_MEET_COLUMNS), pd.DataFrame()
+        return pd.DataFrame()
     sub = sub.copy()
     sub["occurred_on"] = pd.to_datetime(sub.get("occurred_on"), errors="coerce", format="mixed")
     sub["cleared_on"] = pd.to_datetime(sub.get("cleared_on"), errors="coerce", format="mixed")
     sub = sub.dropna(subset=["occurred_on"])
     if sub.empty:
-        return _empty_frame(TEMP_STUDY_COLUMNS), _empty_frame(TEMP_MEET_COLUMNS), pd.DataFrame()
+        return pd.DataFrame()
     if "site_id" not in sub.columns:
         sub["site_id"] = _metadata_series(sub, "site_code")
     sub["_site_key"] = sub["site_id"].fillna("").astype(str).map(_normalize_site_identifier)
@@ -1265,7 +1472,7 @@ def _compute_ht_meet_frames(
 
     temp = sub[sub["alarm_category"] == "Temp"].copy().reset_index(drop=True)
     if temp.empty:
-        return _empty_frame(TEMP_STUDY_COLUMNS), _empty_frame(TEMP_MEET_COLUMNS), pd.DataFrame()
+        return temp
     power = sub[sub["alarm_category"] == "Power"].copy()
     daily_ht = (
         temp.groupby(["_site_key", "_day_key"], dropna=False)["_duration_secs"]
@@ -1292,13 +1499,50 @@ def _compute_ht_meet_frames(
             temp.loc[has_power, "_ht_daily_secs"] - temp.loc[has_power, "_power_daily_secs"]
         ) > HT_MEET_THRESHOLD_SECONDS
     temp["_week_label"] = temp["occurred_on"].apply(_week_label_from_timestamp)
+    return temp
 
+
+def _study_formulas_for_rows(row_count: int, power_sheet: str) -> dict[str, list[str]]:
+    row_nums = np.arange(2, row_count + 2, dtype=int)
+    return {
+        "Support": [f'=B{r}&" "&E{r}' for r in row_nums],
+        "Day": [f"=DAY(F{r})" for r in row_nums],
+        "HT SUM IFS": [f"=SUMIFS(H:H,B:B,B{r},E:E,E{r})" for r in row_nums],
+        "Powr SUM IFS": [
+            (
+                f"=SUMIFS('{power_sheet}'!$F:$F,'{power_sheet}'!$B:$B,$B{r},"
+                f"'{power_sheet}'!$D:$D,\">=\"&INT($F{r}),'{power_sheet}'!$D:$D,\"<\"&INT($F{r})+1)"
+            )
+            for r in row_nums
+        ],
+        "Diff": [f"=M{r}-N{r}" for r in row_nums],
+    }
+
+
+def _compute_ht_meet_frames(
+    source_df: pd.DataFrame | None,
+    week_label: str | None = None,
+    ht_sheet: str = "HT",
+    power_sheet: str = "Power",
+    apply_meet_threshold: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if source_df is None or source_df.empty or "alarm_category" not in source_df.columns:
+        return _empty_frame(TEMP_STUDY_COLUMNS), _empty_frame(TEMP_MEET_COLUMNS), pd.DataFrame()
+    temp = _meet_mask_from_source(
+        source_df,
+        week_label=week_label,
+        apply_meet_threshold=apply_meet_threshold,
+    )
+    if temp.empty:
+        return _empty_frame(TEMP_STUDY_COLUMNS), _empty_frame(TEMP_MEET_COLUMNS), pd.DataFrame()
+
+    formulas = _study_formulas_for_rows(len(temp), power_sheet)
     study = pd.DataFrame({
         "Alarm Source": _metadata_series(temp, "alarm_source"),
         "Site Name": _metadata_series(temp, "site_name", fallback_col="site_id"),
         "Site ID": _site_id_series(temp),
-        "Support": "",
-        "Day": "",
+        "Support": formulas["Support"],
+        "Day": formulas["Day"],
         "Last Occurred On": temp["occurred_on"].apply(_fmt_dt),
         "Cleared On": temp["cleared_on"].apply(_fmt_dt),
         "Duration(hh:mm:ss)": _duration_series(temp),
@@ -1306,21 +1550,11 @@ def _compute_ht_meet_frames(
         "Clearance Status": _metadata_series(temp, "clearance_status"),
         "Cleared By": _metadata_from_aliases_or_default(temp, ["cleared_by", "Cleared By"], "EMSReport"),
         "Alarm Reporting Type": _metadata_from_aliases_or_default(temp, ["alarm_reporting_type", "Alarm Reporting Type"], "Real Time"),
-        "HT SUM IFS": "",
-        "Powr SUM IFS": "",
-        "Diff": "",
+        "HT SUM IFS": formulas["HT SUM IFS"],
+        "Powr SUM IFS": formulas["Powr SUM IFS"],
+        "Diff": formulas["Diff"],
         "Meet": ["Yes" if value else "" for value in temp["_meet"]],
     })
-    for idx in range(len(study)):
-        row_number = idx + 2
-        study.at[idx, "Support"] = f'=B{row_number}&" "&E{row_number}'
-        study.at[idx, "Day"] = f"=DAY(F{row_number})"
-        study.at[idx, "HT SUM IFS"] = f"=SUMIFS(H:H,B:B,B{row_number},E:E,E{row_number})"
-        study.at[idx, "Powr SUM IFS"] = (
-            f"=SUMIFS('{power_sheet}'!$F:$F,'{power_sheet}'!$B:$B,$B{row_number},"
-            f"'{power_sheet}'!$D:$D,\">=\"&INT($F{row_number}),'{power_sheet}'!$D:$D,\"<\"&INT($F{row_number})+1)"
-        )
-        study.at[idx, "Diff"] = f"=M{row_number}-N{row_number}"
 
     meet_source = temp[temp["_meet"]].copy().reset_index(drop=True)
     meet = _meet_sheet_from_temp_rows(meet_source)

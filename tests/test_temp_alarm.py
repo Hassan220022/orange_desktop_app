@@ -11,7 +11,9 @@ from alarm_app.core.temp_alarm import (
     DEFAULT_HT_HISTORY_START_WEEK,
     DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
     HtWorkbookFilterSettings,
+    HtWorkbookPrecomputed,
     build_temp_alarm_summary,
+    compute_ht_consolidated_meet_source,
     compute_ht_meet_rows,
     compute_temp_alarm_matches,
     compute_temp_alarm_matches_for_query,
@@ -794,7 +796,9 @@ def test_export_enriches_site_metadata_and_keeps_six_sheets_when_complete(tmp_pa
 
     wb = load_workbook(out, data_only=False)
     assert wb.sheetnames == ["W05 AUTIN HT", "W05 AUTIN Power", "W05 AUTIN HT Study", "Meet", "W05", "Consolidated"]
-    assert warnings == {"missing_metadata_site_ids": [], "missing_metadata_count": 0}
+    assert warnings["missing_metadata_site_ids"] == []
+    assert warnings["missing_metadata_count"] == 0
+    assert "stage_timings" in warnings
     summary = wb["W05"]
     assert summary["B2"].value == "Network Site A"
     assert summary["C2"].value == "SITEA"
@@ -1322,6 +1326,40 @@ def test_filter_temps_by_power_clearance_gap_drops_with_uncleared_power():
     assert filtered[filtered["alarm_category"] == "Temp"].empty
 
 
+def test_filter_temps_by_power_clearance_gap_uses_latest_cleared_before_temp_with_active_power():
+    """When an uncleared Power started after a cleared one, pair on latest cleared_on before Temp."""
+    df = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-01 08:00:00",
+            "cleared_on": "2026-02-01 10:00:00",
+            "duration": "02:00:00",
+        },
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-01 11:00:00",
+            "cleared_on": None,
+            "duration": "",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "KEEP",
+            "occurred_on": "2026-02-01 13:01:00",
+            "cleared_on": "2026-02-01 14:00:00",
+            "duration": "00:59:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "DROP",
+            "occurred_on": "2026-02-01 10:30:00",
+            "cleared_on": "2026-02-01 11:00:00",
+            "duration": "00:30:00",
+        },
+    ])
+    filtered = filter_temps_by_power_clearance_gap(df, x_secs=7200)
+    assert filtered[filtered["alarm_category"] == "Temp"]["alarm_source"].tolist() == ["KEEP"]
+
+
 def test_filter_temps_by_power_clearance_gap_keeps_cross_week_power():
     df = _make_df([
         {
@@ -1444,6 +1482,50 @@ def test_export_consolidated_uses_historical_filtered_temps(tmp_path):
     assert sum(int(row[5] or 0) for row in rows) == 2
 
 
+def test_export_consolidated_x_filter_uses_power_before_history_start(tmp_path):
+    """Power before W40-22 must remain visible for X-gap pairing on early history Temps."""
+    history_start = ht_export_week_range(DEFAULT_HT_HISTORY_START_WEEK)[0]
+    power_cleared = history_start - pd.Timedelta(hours=1)
+    power_occurred = power_cleared - pd.Timedelta(hours=1)
+    temp_occurred = history_start + pd.Timedelta(hours=3)
+    temp_cleared = temp_occurred + pd.Timedelta(hours=8)
+    df = _make_df([
+        {
+            "site_id": "S1",
+            "alarm_category": "Power",
+            "occurred_on": power_occurred,
+            "cleared_on": power_cleared,
+            "duration": "01:00:00",
+        },
+        {
+            "site_id": "S1",
+            "alarm_category": "Temp",
+            "alarm_source": "EARLY_HIST_TEMP",
+            "occurred_on": temp_occurred,
+            "cleared_on": temp_cleared,
+            "duration": "08:00:00",
+        },
+    ])
+    export_week = ht_export_week_from_date(temp_occurred)["week_label"]
+    out = tmp_path / "consolidated_x.xlsx"
+    export_temp_alarm_workbook(
+        pd.DataFrame(),
+        out,
+        week_label=export_week,
+        source_df=df,
+    )
+    wb = load_workbook(out, data_only=True)
+    consolidated = wb["Consolidated"]
+    target_week = ht_export_week_from_date(temp_occurred)["week_label"]
+    week_rows = [
+        row
+        for row in consolidated.iter_rows(min_row=2, values_only=True)
+        if row and row[9] == target_week
+    ]
+    assert week_rows, f"expected Consolidated row for {target_week}"
+    assert any(int(row[5] or 0) >= 1 for row in week_rows)
+
+
 def test_enrich_source_with_site_metadata_vectorized_matches_row_logic():
     source = _make_df([
         {
@@ -1557,13 +1639,14 @@ def test_build_temp_alarm_preview_enriches_full_source_before_meet_compute(monke
         return enrich_source_with_site_metadata(frame, catalog)
 
     monkeypatch.setattr("alarm_app.ui.dialogs.enrich_source_with_site_metadata", _spy_enrich)
-    meet, _missing, _reason = _build_temp_alarm_preview(
+    precomputed, _reason = _build_temp_alarm_preview(
         source,
         metadata,
         "",
         "W26-24",
         filter_settings=_NO_GAP_FILTER,
     )
+    meet = precomputed.meet
     assert seen_sizes == [2]
     assert set(meet["Site Name"]) == {"Catalog Alpha"}
 
@@ -1637,3 +1720,199 @@ def test_compute_ht_meet_rows_7h_toggle_off_includes_gap_passing_temps():
     )
     assert meet_on.empty
     assert meet_off["Alarm Source"].tolist() == ["FAILS_7H"]
+
+
+def test_compute_ht_consolidated_meet_source_matches_full_meet_source():
+    df = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2024-06-30 06:00:00",
+            "cleared_on": "2024-06-30 07:00:00",
+            "duration": "01:00:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "MEET_ROW",
+            "occurred_on": "2024-06-30 08:00:00",
+            "cleared_on": "2024-06-30 16:00:00",
+            "duration": "08:00:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "NON_MEET",
+            "occurred_on": "2024-06-30 09:00:00",
+            "cleared_on": "2024-06-30 12:00:00",
+            "duration": "03:00:00",
+        },
+    ])
+    _, _, full_meet_source = compute_ht_meet_rows(
+        df,
+        week_label=None,
+        filter_settings=_NO_GAP_FILTER,
+    )
+    consolidated = compute_ht_consolidated_meet_source(df, filter_settings=_NO_GAP_FILTER)
+    pd.testing.assert_frame_equal(
+        consolidated.reset_index(drop=True),
+        full_meet_source.reset_index(drop=True),
+        check_dtype=False,
+    )
+
+
+def test_export_with_precomputed_matches_full_export(tmp_path):
+    df = _make_df([
+        {
+            "alarm_category": "Power",
+            "occurred_on": "2026-02-01 10:00:00",
+            "cleared_on": "2026-02-01 10:30:00",
+            "duration": "00:30:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "SRAN_LWG_TEST_SITE_A_MEET",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-01 11:15:00",
+            "cleared_on": "2026-02-01 15:15:00",
+            "duration": "04:00:00",
+        },
+        {
+            "alarm_category": "Temp",
+            "alarm_source": "SRAN_LWG_TEST_SITE_A",
+            "alarm_name": "Shelter High Temperature",
+            "occurred_on": "2026-02-01 16:00:00",
+            "cleared_on": "2026-02-01 20:00:00",
+            "duration": "04:00:00",
+        },
+    ])
+    settings = _NO_GAP_FILTER
+    study, meet, meet_source = compute_ht_meet_rows(
+        df,
+        week_label="W05-26",
+        filter_settings=settings,
+        power_sheet="W05 AUTIN Power",
+    )
+    precomputed = HtWorkbookPrecomputed(
+        enriched_source=df,
+        filter_text="",
+        week_label="W05-26",
+        filter_settings=settings,
+        study=study,
+        meet=meet,
+        meet_source=meet_source,
+        missing_metadata=pd.DataFrame(columns=["Site ID", "Alarm Source", "Reason"]),
+    )
+    full_path = tmp_path / "full.xlsx"
+    cached_path = tmp_path / "cached.xlsx"
+    export_temp_alarm_workbook(pd.DataFrame(), full_path, week_label="W05-26", source_df=df, filter_settings=settings)
+    export_temp_alarm_workbook(
+        pd.DataFrame(),
+        cached_path,
+        week_label="W05-26",
+        source_df=df,
+        filter_settings=settings,
+        precomputed=precomputed,
+    )
+    full_wb = load_workbook(full_path, data_only=False)
+    cached_wb = load_workbook(cached_path, data_only=False)
+    assert full_wb.sheetnames == cached_wb.sheetnames
+    for sheet_name in full_wb.sheetnames:
+        full_ws = full_wb[sheet_name]
+        cached_ws = cached_wb[sheet_name]
+        assert full_ws.max_row == cached_ws.max_row
+        assert full_ws.max_column == cached_ws.max_column
+        if sheet_name == "W05 AUTIN HT Study" and full_ws.max_row >= 2:
+            assert full_ws["D2"].value == cached_ws["D2"].value
+            assert full_ws["M2"].value == cached_ws["M2"].value
+
+
+def test_preview_export_meet_row_parity_with_metadata_filter(tmp_path):
+    from alarm_app.ui.dialogs import _build_temp_alarm_preview
+
+    source = _make_df([
+        {
+            "site_id": "AAA111",
+            "site_name": "Alpha Site",
+            "alarm_category": "Temp",
+            "alarm_source": "ALPHA_TEMP",
+            "occurred_on": "2026-02-01 11:15:00",
+            "cleared_on": "2026-02-01 19:15:00",
+            "duration": "08:00:00",
+        },
+        {
+            "site_id": "BBB222",
+            "site_name": "Beta Site",
+            "alarm_category": "Temp",
+            "alarm_source": "BETA_TEMP",
+            "occurred_on": "2026-02-01 11:15:00",
+            "cleared_on": "2026-02-01 19:15:00",
+            "duration": "08:00:00",
+        },
+    ])
+    filter_text = "Alpha"
+    precomputed, _reason = _build_temp_alarm_preview(
+        source,
+        None,
+        filter_text,
+        "W05-26",
+        filter_settings=_NO_GAP_FILTER,
+    )
+    out = tmp_path / "filtered_export.xlsx"
+    export_temp_alarm_workbook(
+        pd.DataFrame(),
+        out,
+        week_label="W05-26",
+        source_df=source,
+        filter_settings=_NO_GAP_FILTER,
+        precomputed=precomputed,
+        metadata_filter_text=filter_text,
+    )
+    wb = load_workbook(out, data_only=True)
+    meet_sources = [
+        row[2]
+        for row in wb["Meet"].iter_rows(min_row=2, max_col=3, values_only=True)
+        if row and row[2]
+    ]
+    assert len(meet_sources) == len(precomputed.meet)
+    assert set(meet_sources) == set(precomputed.meet["Alarm Source"])
+
+
+@pytest.mark.slow
+def test_export_large_workbook_under_baseline(tmp_path):
+    import time
+
+    rows = []
+    for site_idx in range(200):
+        site_id = f"SITE_{site_idx:03d}"
+        for day in range(7):
+            occurred = pd.Timestamp("2026-05-24") + pd.Timedelta(days=day, hours=8)
+            cleared = occurred + pd.Timedelta(hours=9)
+            rows.append({
+                "site_id": site_id,
+                "alarm_category": "Power",
+                "occurred_on": occurred - pd.Timedelta(hours=2),
+                "cleared_on": occurred - pd.Timedelta(hours=1),
+                "duration": "01:00:00",
+            })
+            rows.append({
+                "site_id": site_id,
+                "alarm_category": "Temp",
+                "alarm_source": f"TEMP_{site_id}_{day}",
+                "occurred_on": occurred,
+                "cleared_on": cleared,
+                "duration": "09:00:00",
+            })
+    df = _make_df(rows)
+    out = tmp_path / "large_export.xlsx"
+    started = time.perf_counter()
+    result = export_temp_alarm_workbook(
+        pd.DataFrame(),
+        out,
+        week_label="W21-26",
+        source_df=df,
+        filter_settings=_NO_GAP_FILTER,
+        return_warnings=True,
+    )
+    elapsed = time.perf_counter() - started
+    assert out.exists()
+    assert result is not None
+    assert "stage_timings" in result
+    assert elapsed <= 120
