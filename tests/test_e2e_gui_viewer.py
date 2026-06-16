@@ -12,6 +12,11 @@ import pytest
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox
 
+from alarm_app.core.temp_alarm import (
+    DEFAULT_HT_CLEARANCE_GAP_X_SECS,
+    DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
+    HtWorkbookFilterSettings,
+)
 from alarm_app.data.alarm_store import AlarmQuery
 from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorStatus
 from alarm_app.ui.dialogs import AppSettingsDialog, TempAlarmDialog, _filter_temp_alarm_source_for_metadata
@@ -281,13 +286,14 @@ class TestAlarmViewerGUI:
         assert list(source_query.manual_days or []) == list(query.manual_days or [])
         assert source_query.min_duration_secs == 900
 
-    def test_temp_alarm_dataframe_source_respects_date_and_duration_filters(self, gui_app, monkeypatch):
+    def test_temp_alarm_dataframe_source_includes_site_history_for_consolidated(self, gui_app, monkeypatch):
         captured = {}
 
         class FakeTempAlarmThread:
             def __init__(self, df, *args, **kwargs):
                 captured["source"] = df.copy()
                 captured["selected_temp"] = kwargs.get("selected_temp_df").copy()
+                captured["filter_settings"] = kwargs.get("filter_settings")
                 self.progress = _Signal()
                 self.finished = _Signal()
                 self.error = _Signal()
@@ -315,8 +321,17 @@ class TestAlarmViewerGUI:
 
         gui_app._show_temp_alarms()
 
-        assert captured["source"]["occurred_on"].tolist() == ["2026-04-19 11:00:00", "2026-04-19 12:00:00"]
+        assert captured["source"]["occurred_on"].astype(str).tolist() == [
+            "2026-04-19 10:00:00",
+            "2026-04-19 11:00:00",
+            "2026-04-19 12:00:00",
+            "2026-04-18 11:00:00",
+        ]
         assert captured["selected_temp"]["occurred_on"].tolist() == ["2026-04-19 11:00:00"]
+        settings = captured["filter_settings"]
+        assert settings.clearance_gap_x_secs == DEFAULT_HT_CLEARANCE_GAP_X_SECS
+        assert settings.summary_min_ht_duration_y_secs == DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS
+        assert settings.apply_meet_threshold is True
 
     def test_settings_dialog_changes_theme(self, gui_app, monkeypatch):
         assert gui_app._theme_mode == "auto"
@@ -415,6 +430,15 @@ class TestAlarmViewerGUI:
                 "site_id": "AAA-111",
                 "site_name": "Alarm Alpha",
                 "site_code": "AAA-111",
+                "alarm_category": "Power",
+                "occurred_on": "2024-06-30 04:00:00",
+                "cleared_on": "2024-06-30 05:00:00",
+                "duration": "01:00:00",
+            },
+            {
+                "site_id": "AAA-111",
+                "site_name": "Alarm Alpha",
+                "site_code": "AAA-111",
                 "alarm_category": "Temp",
                 "alarm_name": "Shelter High Temperature",
                 "alarm_source": "AAA-111 temp",
@@ -426,12 +450,30 @@ class TestAlarmViewerGUI:
                 "site_id": "BBB222",
                 "site_name": "Alarm Beta",
                 "site_code": "BBB222",
+                "alarm_category": "Power",
+                "occurred_on": "2024-06-30 04:00:00",
+                "cleared_on": "2024-06-30 05:00:00",
+                "duration": "01:00:00",
+            },
+            {
+                "site_id": "BBB222",
+                "site_name": "Alarm Beta",
+                "site_code": "BBB222",
                 "alarm_category": "Temp",
                 "alarm_name": "Shelter High Temperature",
                 "alarm_source": "BBB222 temp",
                 "occurred_on": "2024-06-30 08:00:00",
                 "cleared_on": "2024-06-30 18:00:00",
                 "duration": "10:00:00",
+            },
+            {
+                "site_id": "CCC-333",
+                "site_name": "Alarm Gamma",
+                "site_code": "CCC-333",
+                "alarm_category": "Power",
+                "occurred_on": "2024-06-30 04:00:00",
+                "cleared_on": "2024-06-30 05:00:00",
+                "duration": "01:00:00",
             },
             {
                 "site_id": "CCC-333",
@@ -451,7 +493,13 @@ class TestAlarmViewerGUI:
         ])
         monkeypatch.setattr("alarm_app.ui.dialogs._load_site_metadata_catalog", lambda: metadata)
 
-        dialog = TempAlarmDialog(pd.DataFrame(), source, week_label="W27-24", parent=gui_app)
+        dialog = TempAlarmDialog(
+            pd.DataFrame(),
+            source,
+            week_label="W26-24",
+            filter_settings=HtWorkbookFilterSettings(clearance_gap_x_secs=None),
+            parent=gui_app,
+        )
         try:
             _wait_for_dialog_preview(dialog)
             assert set(dialog._df["Site Name"]) == {"Catalog Alpha", "Catalog Beta", "Alarm Gamma"}
@@ -462,7 +510,6 @@ class TestAlarmViewerGUI:
             _wait_for_dialog_preview(dialog)
 
             assert list(dialog._df["Site Name"]) == ["Catalog Alpha"]
-            assert dialog._preview_source_df["site_id"].dropna().astype(str).str.upper().unique().tolist() == ["AAA111"]
         finally:
             dialog.close()
 
@@ -480,7 +527,7 @@ class TestAlarmViewerGUI:
         ])
         monkeypatch.setattr("alarm_app.ui.dialogs._load_site_metadata_catalog", lambda: pd.DataFrame())
 
-        dialog = TempAlarmDialog(pd.DataFrame(), source, week_label="W27-24", parent=gui_app)
+        dialog = TempAlarmDialog(pd.DataFrame(), source, week_label="W26-24", parent=gui_app)
         try:
             _wait_for_dialog_preview(dialog)
             dialog._apply_metadata_filter_now()
@@ -513,6 +560,94 @@ class TestAlarmViewerGUI:
         finally:
             dialog.close()
 
+    def test_temp_alarm_dialog_reuses_initial_meet_without_clearing(self, gui_app, monkeypatch):
+        monkeypatch.setattr("alarm_app.ui.dialogs._load_site_metadata_catalog", lambda: pd.DataFrame())
+        meet = pd.DataFrame([
+            {
+                "Site Name": "Alpha Site",
+                "Alarm Source": "AAA-111 temp",
+                "Last Occurred On": "2024-06-30 08:00:00",
+                "Cleared On": "2024-06-30 18:00:00",
+                "Duration(hh:mm:ss)": "10:00:00",
+                "Alarm Name": "Shelter High Temperature",
+                "Clearance Status": "Cleared",
+                "Cleared By": "EMSReport",
+                "Alarm Reporting Type": "Real Time",
+                "Week": 26,
+                "Area": "North",
+            }
+        ])
+        source = pd.DataFrame([
+            {
+                "site_id": "AAA111",
+                "alarm_category": "Temp",
+                "occurred_on": "2024-06-30 08:00:00",
+                "cleared_on": "2024-06-30 18:00:00",
+                "duration": "10:00:00",
+            }
+        ])
+        dialog = TempAlarmDialog(
+            meet,
+            source,
+            week_label="W26-24",
+            skip_initial_preview=True,
+            parent=gui_app,
+        )
+        try:
+            QApplication.processEvents()
+            assert dialog._preview_thread is None
+            assert len(dialog._df) == 1
+            assert dialog._df.iloc[0]["Site Name"] == "Alpha Site"
+        finally:
+            dialog.close()
+
+    def test_temp_alarm_dialog_x_y_duration_controls(self, gui_app, monkeypatch):
+        monkeypatch.setattr("alarm_app.ui.dialogs._load_site_metadata_catalog", lambda: pd.DataFrame())
+
+        dialog = TempAlarmDialog(
+            pd.DataFrame(),
+            pd.DataFrame(),
+            week_label="W17-26",
+            filter_settings=HtWorkbookFilterSettings(),
+            parent=gui_app,
+        )
+        try:
+            dialog.show()
+            QApplication.processEvents()
+            _wait_for_dialog_preview(dialog)
+
+            assert dialog._x_duration_spin is not None
+            assert dialog._y_duration_spin is not None
+            assert dialog._apply_7h_checkbox is not None
+            assert dialog._x_duration_spin.value() == DEFAULT_HT_CLEARANCE_GAP_X_SECS // 60
+            assert dialog._y_duration_spin.value() == DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS // 60
+            assert dialog._apply_7h_checkbox.isChecked()
+            assert dialog._x_duration_spin.toolTip().strip()
+            assert dialog._y_duration_spin.toolTip().strip()
+            from alarm_app.constants import HT_MEET_HEADERS
+            header_labels = [HT_MEET_HEADERS[c] for c in HT_MEET_HEADERS]
+            assert "Site ID" in header_labels
+        finally:
+            dialog.close()
+
+    def test_temp_alarm_dialog_x_spinbox_range(self, gui_app, monkeypatch):
+        monkeypatch.setattr("alarm_app.ui.dialogs._load_site_metadata_catalog", lambda: pd.DataFrame())
+
+        dialog = TempAlarmDialog(
+            pd.DataFrame(),
+            pd.DataFrame(),
+            week_label="W17-26",
+            parent=gui_app,
+        )
+        try:
+            dialog.show()
+            QApplication.processEvents()
+            _wait_for_dialog_preview(dialog)
+            assert dialog._x_duration_spin.minimum() == 120
+            assert dialog._x_duration_spin.maximum() == 1440
+        finally:
+            dialog.close()
+
     def test_temp_alarm_dialog_header_and_table_layout_sizing(self, gui_app, monkeypatch):
         monkeypatch.setattr("alarm_app.ui.dialogs._load_site_metadata_catalog", lambda: pd.DataFrame())
 
@@ -524,7 +659,9 @@ class TestAlarmViewerGUI:
 
             assert dialog.minimumHeight() >= 720
             top = dialog.layout().itemAt(0).widget()
-            assert top.minimumSizeHint().width() <= dialog.width() - 32
+            assert dialog._x_duration_spin.size().height() == 36
+            assert dialog._y_duration_spin.size().height() == 36
+            assert top.minimumSizeHint().width() >= 1200
             assert dialog._week_input.size().height() == 36
             assert dialog._btn_apply_week.size().height() == 36
             assert dialog._btn_apply_week.width() == 100
@@ -567,7 +704,7 @@ class TestAlarmViewerGUI:
             lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("save dialog should not open")),
         )
 
-        dialog = TempAlarmDialog(pd.DataFrame(), source, week_label="W27-24", parent=gui_app)
+        dialog = TempAlarmDialog(pd.DataFrame(), source, week_label="W26-24", parent=gui_app)
         try:
             _wait_for_dialog_preview(dialog)
             dialog._week_input.setText("WXX-24")

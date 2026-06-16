@@ -1,0 +1,56 @@
+{
+  "version": 3,
+  "sample_count": 82,
+  "accepted_count": 74,
+  "rejected_count": 8,
+  "thresholds": {
+    "string_ampere_pos_accept_a": 4.4,
+    "string_ampere_pos_revise_a": 5.0,
+    "string_ampere_a": 3.0,
+    "string_imbalance_reject_ratio": 0.85,
+    "string_imbalance_revise_ratio": 0.7,
+    "discharge_current_accept_a": 21.4,
+    "discharge_slope_accept_a_per_min": 0.46,
+    "discharge_slope_reject_a_per_min": 0.2,
+    "discharge_spike_reject_a": 10.0,
+    "incomplete_reject_minutes": 30.0,
+    "incomplete_revise_minutes": 90.0,
+    "overall_ignore_na_rules": [
+      "R11",
+      "R5",
+      "R7"
+    ]
+  },
+  "stats": {
+    "accepted_r3_pos_max": {
+      "count": 14,
+      "min": 0.0,
+      "max": 4.399999999999999
+    },
+    "rejected_r3_pos_min": {
+      "count": 6,
+      "min": 2.6000000000000085,
+      "max": 67.2
+    },
+    "accepted_slope_max": {
+      "count": 14,
+      "min": -0.04631578947368419,
+      "max": 0.4599999999999994
+    },
+    "rejected_slope_min": {
+      "count": 3,
+      "min": 0.010000000000000018,
+      "max": 0.32682926829268283
+    },
+    "accepted_imbalance_max": {
+      "count": 14,
+      "min": 0.0,
+      "max": 0.6071428571428571
+    },
+    "rejected_imbalance_min": {
+      "count": 6,
+      "min": 0.531317494600432,
+      "max": 0.992633517495396
+    }
+  }
+}

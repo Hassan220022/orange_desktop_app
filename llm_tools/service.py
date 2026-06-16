@@ -29,6 +29,7 @@ try:
     )
     from alarm_app.core.temp_alarm import (
         DEFAULT_HT_HISTORY_START_WEEK,
+        HtWorkbookFilterSettings,
         _compute_ht_meet_frames,
         _filter_source_from_week,
         build_temp_alarm_summary,
@@ -69,6 +70,7 @@ except ImportError:
     )
     from core.temp_alarm import (
         DEFAULT_HT_HISTORY_START_WEEK,
+        HtWorkbookFilterSettings,
         _compute_ht_meet_frames,
         _filter_source_from_week,
         build_temp_alarm_summary,
@@ -2096,7 +2098,11 @@ class LocalDataService:
             try:
                 source_df = self._with_alarm_source(lambda: alarm_store.query_alarms(q))
                 if report_type == "ht_meet":
-                    rows = compute_ht_meet_rows(source_df, week_label=required_week)
+                    rows = compute_ht_meet_rows(
+                        source_df,
+                        week_label=required_week,
+                        filter_settings=HtWorkbookFilterSettings(clearance_gap_x_secs=None),
+                    )
                     meet = rows[1]
                     row_payload = _sanitize_mcp_records(meet.to_dict(orient="records"), include_raw_json=include_raw_json)
                 elif report_type == "ht_weekly_summary":

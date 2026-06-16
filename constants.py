@@ -97,7 +97,7 @@ TEMP_HEADERS = {
     "vendor": "Vendor",
     "power_time": "Power Alarm",
     "power_cleared": "Power Cleared",
-    "x_duration": "X Duration",
+    "x_duration": "Power Duration",
     "y_margin": "Y Margin",
     "temp_time": "Temp Alarm",
     "temp_cleared": "Temp Cleared",
@@ -123,6 +123,7 @@ TEMP_WIDTHS = {
 # ── HT Meet Workbook dialog constants ──────────────────────────
 HT_MEET_HEADERS = {
     "Site Name": "Site Name",
+    "Site ID": "Site ID",
     "Alarm Source": "Alarm Source",
     "Last Occurred On": "Last Occurred On",
     "Cleared On": "Cleared On",
@@ -135,6 +136,7 @@ HT_MEET_HEADERS = {
 
 HT_MEET_WIDTHS = {
     "Site Name": 200,
+    "Site ID": 90,
     "Alarm Source": 280,
     "Last Occurred On": 170,
     "Cleared On": 170,

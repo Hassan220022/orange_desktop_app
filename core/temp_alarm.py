@@ -4,7 +4,7 @@ import json
 import math
 import re
 import zipfile
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -40,6 +40,7 @@ TEMP_SUMMARY_BASE_COLUMNS = [
 TEMP_RAW_HT_COLUMNS = [
     "Alarm Source",
     "Site Name",
+    "Site ID",
     "Last Occurred On",
     "Cleared On",
     "Duration(hh:mm:ss)",
@@ -54,8 +55,7 @@ TEMP_RAW_HT_COLUMNS = [
 TEMP_RAW_POWER_COLUMNS = [
     "Alarm Source",
     "Site Name",
-    "Support",
-    "Day",
+    "Site ID",
     "Last Occurred On",
     "Cleared On",
     "Duration(hh:mm:ss)",
@@ -69,6 +69,7 @@ TEMP_RAW_POWER_COLUMNS = [
 TEMP_STUDY_COLUMNS = [
     "Alarm Source",
     "Site Name",
+    "Site ID",
     "Support",
     "Day",
     "Last Occurred On",
@@ -86,6 +87,7 @@ TEMP_STUDY_COLUMNS = [
 
 TEMP_MEET_COLUMNS = [
     "Site Name",
+    "Site ID",
     "Alarm Source",
     "Last Occurred On",
     "Cleared On",
@@ -98,6 +100,119 @@ TEMP_MEET_COLUMNS = [
 
 HT_MEET_THRESHOLD_SECONDS = 7 * 60 * 60
 DEFAULT_HT_HISTORY_START_WEEK = "W40-22"
+DEFAULT_HT_CLEARANCE_GAP_X_SECS = 2 * 60 * 60
+DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS = 60 * 60
+
+
+@dataclass(frozen=True, slots=True)
+class HtWorkbookFilterSettings:
+    clearance_gap_x_secs: int | None = DEFAULT_HT_CLEARANCE_GAP_X_SECS
+    summary_min_ht_duration_y_secs: int | None = DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS
+    apply_meet_threshold: bool = True
+
+
+def _resolved_ht_summary_y_secs(y_secs: int | None) -> int | None:
+    if y_secs is None:
+        return DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS
+    return y_secs
+
+
+def _resolved_ht_workbook_filter_settings(
+    filter_settings: HtWorkbookFilterSettings | None = None,
+    *,
+    clearance_gap_x_secs: int | None = None,
+    summary_min_ht_duration_y_secs: int | None = None,
+    apply_meet_threshold: bool | None = None,
+) -> HtWorkbookFilterSettings:
+    if filter_settings is not None:
+        return filter_settings
+    return HtWorkbookFilterSettings(
+        clearance_gap_x_secs=clearance_gap_x_secs,
+        summary_min_ht_duration_y_secs=_resolved_ht_summary_y_secs(summary_min_ht_duration_y_secs),
+        apply_meet_threshold=True if apply_meet_threshold is None else apply_meet_threshold,
+    )
+
+
+def _power_rows_by_site(source_df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Build per-site Power alarm timelines from full source history."""
+    if source_df is None or source_df.empty or "alarm_category" not in source_df.columns:
+        return {}
+    power = source_df[source_df["alarm_category"] == "Power"].copy()
+    if power.empty:
+        return {}
+    power = power.dropna(subset=["occurred_on"])
+    power["occurred_on"] = pd.to_datetime(power["occurred_on"], errors="coerce", format="mixed")
+    power["cleared_on"] = pd.to_datetime(power["cleared_on"], errors="coerce", format="mixed")
+    power["site_id"] = power["site_id"].fillna("").astype(str).str.strip()
+    power["_site_key"] = power["site_id"].map(_normalize_site_identifier)
+    power = power[power["_site_key"] != ""]
+    power = power.sort_values(["_site_key", "occurred_on"], kind="stable")
+    return {
+        str(site_key): group.reset_index(drop=True)
+        for site_key, group in power.groupby("_site_key", sort=False)
+    }
+
+
+def _prior_power_index(site_power: pd.DataFrame, temp_occurred_on: pd.Timestamp) -> int | None:
+    """Return index of the latest Power alarm that started at or before temp_occurred_on."""
+    if site_power.empty:
+        return None
+    starts = site_power["occurred_on"].reset_index(drop=True)
+    idx = int(starts.searchsorted(temp_occurred_on, side="right") - 1)
+    return idx if idx >= 0 else None
+
+
+def _power_clearance_gap_seconds(power_row: pd.Series, temp_occurred_on: pd.Timestamp) -> float | None:
+    """Raw clearance gap: temp occurred_on minus prior Power cleared_on (no coverage margin)."""
+    power_cleared = power_row.get("cleared_on")
+    if pd.isna(power_cleared):
+        return None
+    gap = (temp_occurred_on - power_cleared).total_seconds()
+    if gap < 0:
+        return None
+    return float(gap)
+
+
+def filter_temps_by_power_clearance_gap(
+    source_df: pd.DataFrame | None,
+    x_secs: int | None,
+    week_label: str | None = None,
+) -> pd.DataFrame | None:
+    """Keep Temp rows whose Power-cleared→Temp gap exceeds X; pass Power rows through."""
+    if source_df is None or source_df.empty:
+        return source_df
+    if not x_secs or x_secs <= 0 or "alarm_category" not in source_df.columns:
+        return source_df.copy().reset_index(drop=True)
+
+    df = source_df.copy()
+    df["occurred_on"] = pd.to_datetime(df["occurred_on"], errors="coerce", format="mixed")
+    power_by_site = _power_rows_by_site(source_df)
+    drop_indexes: list[object] = []
+
+    temp_rows = df[df["alarm_category"] == "Temp"]
+    for idx, row in temp_rows.iterrows():
+        if week_label and _week_label_from_timestamp(row["occurred_on"]) != week_label:
+            continue
+        site_key = _normalize_site_identifier(str(row.get("site_id", "")).strip())
+        site_power = power_by_site.get(site_key)
+        if site_power is None or site_power.empty:
+            drop_indexes.append(idx)
+            continue
+        prior_idx = _prior_power_index(site_power, row["occurred_on"])
+        if prior_idx is None:
+            drop_indexes.append(idx)
+            continue
+        gap_secs = _power_clearance_gap_seconds(site_power.iloc[prior_idx], row["occurred_on"])
+        if gap_secs is None or gap_secs <= x_secs:
+            drop_indexes.append(idx)
+
+    if drop_indexes:
+        df = df.drop(index=drop_indexes)
+    if "occurred_on" in df.columns:
+        df = df.sort_values("occurred_on", kind="stable").reset_index(drop=True)
+    else:
+        df = df.reset_index(drop=True)
+    return df
 
 
 def _normalize_margin_minutes(margin_minutes: int | None) -> int:
@@ -280,6 +395,11 @@ def compute_temp_alarm_matches_for_query(
         site_ids = sorted({str(v).strip() for v in temp_df.get("site_id", pd.Series(dtype=object)).dropna() if str(v).strip()})
         selected_site_ids = {_normalize_site_identifier(value) for value in site_ids}
         site_scope_keys = site_ids if len(site_ids) <= 500 else None
+        history_date_from = (
+            ht_export_week_range(DEFAULT_HT_HISTORY_START_WEEK)[0].date()
+            if include_full_temp_source
+            else query.date_from
+        )
         power_query = replace(
             query,
             site_text="",
@@ -287,7 +407,7 @@ def compute_temp_alarm_matches_for_query(
             vendor="All" if include_full_temp_source else query.vendor,
             network_type="All" if include_full_temp_source else query.network_type,
             min_duration_secs=None if include_full_temp_source else query.min_duration_secs,
-            date_from=None if include_full_temp_source else query.date_from,
+            date_from=history_date_from,
             date_to=_source_query_date_to(result_filter_query) if include_full_temp_source else query.date_to,
             manual_days=None if include_full_temp_source else query.manual_days,
             site_scope_keys=site_scope_keys,
@@ -303,8 +423,18 @@ def compute_temp_alarm_matches_for_query(
         if include_full_temp_source:
             temp_source_query = replace(
                 query,
+                site_text="",
                 category="Temp",
+                vendor="All",
+                network_type="All",
+                min_duration_secs=None,
+                date_from=history_date_from,
+                date_to=_source_query_date_to(result_filter_query),
+                manual_days=None,
                 site_scope_keys=site_scope_keys,
+                allowed_values={},
+                column_filters={},
+                col_filters={},
                 limit=None,
                 offset=0,
                 sort_by=None,
@@ -393,6 +523,12 @@ def _temp_match_key(row: tuple, columns: list[str]) -> tuple[str, ...]:
     return tuple(values)
 
 
+def _site_id_series(df: pd.DataFrame) -> pd.Series:
+    site_id = _metadata_series(df, "site_id")
+    site_code = _metadata_series(df, "site_code")
+    return site_id.where(site_id != "", site_code)
+
+
 def _metadata_series(df: pd.DataFrame, column: str, fallback_col: str | None = None):
     if column in df.columns:
         values = df[column]
@@ -453,7 +589,7 @@ def _battery_type_series(df: pd.DataFrame):
 
 
 def ht_export_week_from_date(value) -> dict[str, object]:
-    """Return Reference Workbook-compatible HT export week metadata for a date."""
+    """Return HT export week metadata for a date using Jan-1 fixed 7-day blocks."""
     timestamp = pd.Timestamp(value)
     week_label = _week_label_from_timestamp(timestamp)
     start, end = ht_export_week_range(week_label)
@@ -467,26 +603,17 @@ def ht_export_week_from_date(value) -> dict[str, object]:
 
 
 def ht_export_week_range(week_label: str) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """Return Sunday-inclusive to next-Sunday-exclusive range for a Wnn-yy label."""
+    """Return Jan-1-anchored seven-day range for a Wnn-yy label (end exclusive)."""
     parsed = _parse_week_label(week_label)
     if parsed is None:
         raise ValueError(f"Invalid HT export week label: {week_label!r}")
     year, week = parsed
-    first_day = date(year, 1, 1)
-    max_week = int(pd.Timestamp(date(year, 12, 31)).strftime("%U")) + 1
-    if week > max_week:
-        raise ValueError(f"Could not resolve HT export week range: {week_label!r}")
-    if week == 1:
-        start = pd.Timestamp(first_day).normalize()
-        return start, start + pd.Timedelta(days=7)
-    days_until_first_sunday = (6 - first_day.weekday()) % 7
-    first_sunday = pd.Timestamp(first_day + timedelta(days=days_until_first_sunday)).normalize()
-    start = first_sunday + pd.Timedelta(weeks=week - 2)
+    start = pd.Timestamp(date(year, 1, 1)).normalize() + pd.Timedelta(days=(week - 1) * 7)
     return start, start + pd.Timedelta(days=7)
 
 
 def ht_export_filename(week_label: str) -> str:
-    """Return Reference Workbook-compatible HT export filename."""
+    """Return HT export filename for a Wnn-yy label (e.g. 2024-HT-Alarms-W26.xlsx)."""
     parsed = _parse_week_label(week_label)
     if parsed is None:
         raise ValueError(f"Invalid HT export week label: {week_label!r}")
@@ -494,10 +621,80 @@ def ht_export_filename(week_label: str) -> str:
     return f"{year}-HT-Alarms-W{week:02d}.xlsx"
 
 
-def compute_ht_meet_rows(source_df: pd.DataFrame | None, week_label: str | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Build HT Study and Meet rows using the Reference Workbook daily Meet rule."""
-    study, meet, _ = _compute_ht_meet_frames(source_df, week_label=week_label)
-    return study, meet
+def compute_ht_meet_rows(
+    source_df: pd.DataFrame | None,
+    week_label: str | None = None,
+    filter_settings: HtWorkbookFilterSettings | None = None,
+    *,
+    clearance_gap_x_secs: int | None = None,
+    apply_meet_threshold: bool | None = None,
+    ht_sheet: str = "HT",
+    power_sheet: str = "Power",
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Build HT Study and Meet rows after optional X gap and 7h Meet filtering."""
+    settings = _resolved_ht_workbook_filter_settings(
+        filter_settings,
+        clearance_gap_x_secs=clearance_gap_x_secs,
+        apply_meet_threshold=apply_meet_threshold,
+    )
+    x_secs = settings.clearance_gap_x_secs
+    if x_secs is None or x_secs <= 0:
+        filtered_source = source_df
+    else:
+        filtered_source = filter_temps_by_power_clearance_gap(
+            source_df,
+            x_secs,
+            week_label=week_label,
+        )
+    study, meet, meet_source = _compute_ht_meet_frames(
+        filtered_source,
+        week_label=week_label,
+        apply_meet_threshold=settings.apply_meet_threshold,
+        ht_sheet=ht_sheet,
+        power_sheet=power_sheet,
+    )
+    return study, meet, meet_source
+
+
+def describe_meet_preview_empty_state(
+    source_df: pd.DataFrame | None,
+    week_label: str | None,
+    filter_settings: HtWorkbookFilterSettings | None = None,
+    *,
+    clearance_gap_x_secs: int | None = None,
+    apply_meet_threshold: bool | None = None,
+) -> str:
+    """Return a user-facing reason when Meet preview has zero rows."""
+    settings = _resolved_ht_workbook_filter_settings(
+        filter_settings,
+        clearance_gap_x_secs=clearance_gap_x_secs,
+        apply_meet_threshold=apply_meet_threshold,
+    )
+    scoped = _filter_source_to_week(source_df, week_label) if week_label else source_df
+    if scoped is None or scoped.empty:
+        return "No alarm rows fall in the selected export week."
+    x_secs = settings.clearance_gap_x_secs
+    after_x = (
+        scoped
+        if x_secs is None or x_secs <= 0
+        else filter_temps_by_power_clearance_gap(source_df, x_secs, week_label=week_label)
+    )
+    if after_x is None or after_x.empty or "alarm_category" not in after_x.columns:
+        return "No Temp alarms remain where Power-cleared→Temp gap is greater than X."
+    week_scoped = _filter_source_to_week(after_x, week_label) if week_label else after_x
+    if week_scoped is None or week_scoped[week_scoped["alarm_category"] == "Temp"].empty:
+        return "No Temp alarms remain where Power-cleared→Temp gap is greater than X."
+    _, meet, _ = _compute_ht_meet_frames(
+        after_x,
+        week_label=week_label,
+        apply_meet_threshold=settings.apply_meet_threshold,
+    )
+    if meet.empty and settings.apply_meet_threshold:
+        return (
+            "Temp alarms exist for this week, but none meet the daily "
+            ">7 hour HT minus Power threshold."
+        )
+    return ""
 
 
 def _first_metadata(df: pd.DataFrame, column: str, fallback_col: str | None = None) -> str:
@@ -513,6 +710,7 @@ def build_temp_alarm_summary(
     matches: pd.DataFrame,
     week_label: str | None = None,
     rolling_week_label: str | None = None,
+    min_ht_duration_secs: int | None = None,
 ) -> pd.DataFrame:
     """Build a W27-style weekly summary for Reference Workbook Meet rows."""
     week = rolling_week_label or week_label or _week_label_from_summary_rows(matches)
@@ -538,6 +736,8 @@ def build_temp_alarm_summary(
     for _, group in data.groupby(group_columns, sort=True):
         current_week = str(group["_week_label"].iloc[0])
         duration_secs = _summary_duration_seconds(group)
+        if min_ht_duration_secs is not None and duration_secs < min_ht_duration_secs:
+            continue
         records.append({
             "Site Name": _first_metadata(group, "site_name", fallback_col="Site Name") or _first_metadata(group, "Site Name"),
             "Site Code": _first_metadata(group, "site_code", fallback_col="site_id") or _first_metadata(group, "site_id"),
@@ -564,30 +764,61 @@ def export_temp_alarm_workbook(
     site_metadata_df: pd.DataFrame | None = None,
     historical_start_week: str | None = DEFAULT_HT_HISTORY_START_WEEK,
     return_warnings: bool = False,
+    filter_settings: HtWorkbookFilterSettings | None = None,
 ) -> dict[str, object] | None:
     """Export reference-style HT Alarm Workbook."""
+    del margin_minutes  # Meet logic uses fixed 7h threshold; margin applies to coverage-gap analysis only.
+    settings = filter_settings or HtWorkbookFilterSettings()
     export_week = week_label or _week_label_from_source(source_df) or _week_label_from_matches(matches)
     missing_metadata = pd.DataFrame()
     if source_df is not None and site_metadata_df is not None:
         source_df, missing_metadata = enrich_source_with_site_metadata(source_df, site_metadata_df)
+    x_secs = settings.clearance_gap_x_secs
+    gap_filtered = (
+        filter_temps_by_power_clearance_gap(source_df, x_secs)
+        if source_df is not None and x_secs
+        else source_df
+    )
     scoped_matches = _filter_matches_to_week(matches, export_week) if export_week else matches
-    scoped_source = _filter_source_to_week(source_df, export_week) if export_week and source_df is not None else source_df
+    scoped_source = _filter_source_to_week(gap_filtered, export_week) if export_week and gap_filtered is not None else gap_filtered
     short_week = _short_week_label(export_week or "Summary")
     ht_sheet = f"{short_week} AUTIN HT"
     power_sheet = f"{short_week} AUTIN Power"
     ht_raw = _build_temp_raw_sheet(scoped_source, "Temp") if scoped_source is not None else _empty_frame(TEMP_RAW_HT_COLUMNS)
     power_raw = _build_temp_raw_sheet(scoped_source, "Power", sheet_name=power_sheet) if scoped_source is not None else _empty_frame(TEMP_RAW_POWER_COLUMNS)
-    if scoped_source is not None:
-        study, meet, meet_source = _compute_ht_meet_frames(scoped_source, week_label=export_week, ht_sheet=ht_sheet, power_sheet=power_sheet)
-        history_source = _filter_source_from_week(source_df, historical_start_week)
-        _, _, consolidated_source = _compute_ht_meet_frames(history_source, week_label=None, ht_sheet=ht_sheet, power_sheet=power_sheet)
+    y_secs = settings.summary_min_ht_duration_y_secs
+    if gap_filtered is not None:
+        study, meet, meet_source = compute_ht_meet_rows(
+            gap_filtered,
+            week_label=export_week,
+            filter_settings=settings,
+            ht_sheet=ht_sheet,
+            power_sheet=power_sheet,
+        )
+        history_source = _filter_source_from_week(gap_filtered, historical_start_week)
+        _, _, consolidated_source = _compute_ht_meet_frames(
+            history_source,
+            week_label=None,
+            ht_sheet=ht_sheet,
+            power_sheet=power_sheet,
+            apply_meet_threshold=settings.apply_meet_threshold,
+        )
     else:
         study = _empty_frame(TEMP_STUDY_COLUMNS)
         meet = _empty_frame(TEMP_MEET_COLUMNS)
         meet_source = scoped_matches
         consolidated_source = matches
-    summary = build_temp_alarm_summary(meet_source, week_label=export_week)
-    consolidated = build_temp_alarm_summary(consolidated_source, week_label=None, rolling_week_label=export_week)
+    summary = build_temp_alarm_summary(
+        meet_source,
+        week_label=export_week,
+        min_ht_duration_secs=y_secs,
+    )
+    consolidated = build_temp_alarm_summary(
+        consolidated_source,
+        week_label=None,
+        rolling_week_label=export_week,
+        min_ht_duration_secs=y_secs,
+    )
     path = Path(path)
     sheets = [
         (ht_sheet, ht_raw),
@@ -614,34 +845,59 @@ def enrich_source_with_site_metadata(source_df: pd.DataFrame, site_metadata_df: 
     if not metadata:
         return source_df, pd.DataFrame(columns=["Site ID", "Alarm Source", "Reason"])
     enriched = source_df.copy()
-    missing_rows = []
-    for idx, row in enriched.iterrows():
-        raw_site_id = row.get("site_id") or row.get("site_code")
-        site_id = _normalize_site_identifier(raw_site_id)
-        meta = metadata.get(site_id) if site_id else None
-        if meta is None:
-            fallback = _site_id_from_alarm_source(row.get("alarm_source"), metadata.keys())
-            if fallback:
-                site_id = fallback
-                meta = metadata.get(fallback)
-        if meta is None:
-            candidate = site_id or _normalize_site_identifier(row.get("alarm_source"))
-            if candidate:
-                missing_rows.append({"Site ID": candidate, "Alarm Source": row.get("alarm_source") or "", "Reason": "No Site Metadata match"})
-            continue
-        enriched.at[idx, "site_id"] = site_id
-        enriched.at[idx, "site_code"] = site_id
-        for target, keys in {
-            "site_name": ["site_name", "sitename", "name"],
-            "area": ["orange_area", "area", "orangearea"],
-            "contractor": ["subcontractor", "contractor"],
-            "battery_type": ["battery_type", "batterytype", "battery_brand", "batterybrand"],
-            "battery_status": ["backup_status", "backupstatus", "battery_status", "batterystatus"],
-        }.items():
-            value = _first_meta_value(meta, keys)
-            if value != "":
-                enriched.at[idx, target] = value
-    missing = pd.DataFrame(missing_rows).drop_duplicates().reset_index(drop=True) if missing_rows else pd.DataFrame(columns=["Site ID", "Alarm Source", "Reason"])
+    known_ids = set(metadata.keys())
+    raw_site = enriched["site_id"] if "site_id" in enriched.columns else pd.Series("", index=enriched.index, dtype=object)
+    if "site_code" in enriched.columns:
+        raw_site = raw_site.where(
+            raw_site.notna() & raw_site.astype(str).str.strip().ne(""),
+            enriched["site_code"],
+        )
+    alarm_source = (
+        enriched["alarm_source"]
+        if "alarm_source" in enriched.columns
+        else pd.Series("", index=enriched.index, dtype=object)
+    )
+
+    def _resolve_site_id(raw_value, source_value) -> str:
+        site_id = _normalize_site_identifier(raw_value)
+        if site_id and site_id in metadata:
+            return site_id
+        fallback = _site_id_from_alarm_source(source_value, known_ids)
+        return fallback or site_id
+
+    resolved = pd.Series(
+        (_resolve_site_id(raw, src) for raw, src in zip(raw_site, alarm_source)),
+        index=enriched.index,
+        dtype=object,
+    )
+    has_meta = resolved.map(lambda value: bool(value) and value in metadata)
+    enriched.loc[has_meta, "site_id"] = resolved[has_meta]
+    enriched.loc[has_meta, "site_code"] = resolved[has_meta]
+    meta_fields = {
+        "site_name": ["site_name", "sitename", "name"],
+        "area": ["orange_area", "area", "orangearea"],
+        "contractor": ["subcontractor", "contractor"],
+        "battery_type": ["battery_type", "batterytype", "battery_brand", "batterybrand"],
+        "battery_status": ["backup_status", "backupstatus", "battery_status", "batterystatus"],
+    }
+    for target, keys in meta_fields.items():
+        values = resolved.map(
+            lambda site_id: _first_meta_value(metadata[site_id], keys) if site_id in metadata else ""
+        )
+        mask = values != ""
+        if mask.any():
+            enriched.loc[mask, target] = values[mask]
+    missing_mask = ~has_meta
+    if missing_mask.any():
+        missing_site = resolved.where(resolved != "", alarm_source.map(_normalize_site_identifier))
+        missing_rows = pd.DataFrame({
+            "Site ID": missing_site[missing_mask],
+            "Alarm Source": alarm_source[missing_mask].fillna("").astype(str),
+            "Reason": "No Site Metadata match",
+        })
+        missing = missing_rows.drop_duplicates().reset_index(drop=True)
+    else:
+        missing = pd.DataFrame(columns=["Site ID", "Alarm Source", "Reason"])
     return enriched, missing[["Site ID", "Alarm Source", "Reason"]]
 
 
@@ -803,17 +1059,17 @@ def _temp_write_cell(
 
 def _temp_display_headers(title: str, headers: list[str]) -> list[str]:
     display = list(headers)
-    if title.endswith("AUTIN HT") and len(display) >= 5:
-        display[4] = "Duration\n(hh:mm:ss)"
-    if "HT Study" in title and len(display) >= 7:
-        display[6] = "Duration\n(hh:mm:ss)"
+    if title.endswith("AUTIN HT") and len(display) >= 6:
+        display[5] = "Duration\n(hh:mm:ss)"
+    if "HT Study" in title and len(display) >= 8:
+        display[7] = "Duration\n(hh:mm:ss)"
     return display
 
 
 def _temp_header_fill(title: str, col_idx: int, header: str, styles: dict[str, object]):
     if header in {"Support", "Day"}:
         return styles["yellow_fill"]
-    if "HT Study" in title and 12 <= col_idx <= 15:
+    if "HT Study" in title and 13 <= col_idx <= 16:
         return styles["green_fill"]
     if title == "Meet" or "AUTIN" in title:
         return styles["gold_fill"]
@@ -823,7 +1079,7 @@ def _temp_header_fill(title: str, col_idx: int, header: str, styles: dict[str, o
 def _temp_data_fill(title: str, col_idx: int, header: str, styles: dict[str, object]):
     if ("HT Study" in title or "AUTIN Power" in title) and header in {"Support", "Day"}:
         return styles["yellow_fill"]
-    if "HT Study" in title and 12 <= col_idx <= 15:
+    if "HT Study" in title and 13 <= col_idx <= 16:
         return styles["green_fill"]
     return None
 
@@ -928,10 +1184,11 @@ def _build_temp_raw_sheet(
     data["occurred_on"] = pd.to_datetime(data.get("occurred_on"), errors="coerce", format="mixed")
     data["cleared_on"] = pd.to_datetime(data.get("cleared_on"), errors="coerce", format="mixed")
     if category == "Temp":
-        week_numbers = data["occurred_on"].apply(_excel_week_number)
+        week_numbers = data["occurred_on"].apply(_year_week_number_from_date)
         rows = pd.DataFrame({
             "Alarm Source": _metadata_series(data, "alarm_source"),
             "Site Name": _metadata_series(data, "site_name", fallback_col="site_id"),
+            "Site ID": _site_id_series(data),
             "Last Occurred On": data["occurred_on"].apply(_fmt_dt),
             "Cleared On": data["cleared_on"].apply(_fmt_dt),
             "Duration(hh:mm:ss)": _temp_duration_series(data),
@@ -948,8 +1205,7 @@ def _build_temp_raw_sheet(
     rows = pd.DataFrame({
         "Alarm Source": _metadata_series(data, "alarm_source"),
         "Site Name": _metadata_series(data, "site_name", fallback_col="site_id"),
-        "Support": _support_series(data),
-        "Day": _day_series(data),
+        "Site ID": _site_id_series(data),
         "Last Occurred On": data["occurred_on"].apply(_fmt_dt),
         "Cleared On": data["cleared_on"].apply(_fmt_dt),
         "Duration(hh:mm:ss)": _duration_series(data),
@@ -963,9 +1219,9 @@ def _build_temp_raw_sheet(
     })
     for idx in range(len(rows)):
         row_number = idx + 2
-        rows.at[rows.index[idx], "Support"] = f'=B{row_number}&" "&D{row_number}'
-        rows.at[rows.index[idx], "Day"] = f"=DAY(E{row_number})"
-        rows.at[rows.index[idx], "SUM"] = f"=SUMIFS(G:G,B:B,B{row_number},D:D,D{row_number})"
+        rows.at[rows.index[idx], "SUM"] = (
+            f'=SUMIFS($F:$F,$B:$B,B{row_number},$D:$D,">="&INT($D{row_number}),$D:$D,"<"&INT($D{row_number})+1)'
+        )
     return rows[TEMP_RAW_POWER_COLUMNS]
 
 
@@ -988,16 +1244,18 @@ def _compute_ht_meet_frames(
     week_label: str | None = None,
     ht_sheet: str = "HT",
     power_sheet: str = "Power",
+    apply_meet_threshold: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     if source_df is None or source_df.empty or "alarm_category" not in source_df.columns:
         return _empty_frame(TEMP_STUDY_COLUMNS), _empty_frame(TEMP_MEET_COLUMNS), pd.DataFrame()
-    sub = source_df.copy()
+    sub = _filter_source_to_week(source_df, week_label) if week_label else source_df
+    if sub is None or sub.empty:
+        return _empty_frame(TEMP_STUDY_COLUMNS), _empty_frame(TEMP_MEET_COLUMNS), pd.DataFrame()
+    sub = sub.copy()
     sub["occurred_on"] = pd.to_datetime(sub.get("occurred_on"), errors="coerce", format="mixed")
     sub["cleared_on"] = pd.to_datetime(sub.get("cleared_on"), errors="coerce", format="mixed")
     sub = sub.dropna(subset=["occurred_on"])
-    if week_label:
-        sub = _filter_source_to_week(sub, week_label)
-    if sub is None or sub.empty:
+    if sub.empty:
         return _empty_frame(TEMP_STUDY_COLUMNS), _empty_frame(TEMP_MEET_COLUMNS), pd.DataFrame()
     if "site_id" not in sub.columns:
         sub["site_id"] = _metadata_series(sub, "site_code")
@@ -1009,27 +1267,36 @@ def _compute_ht_meet_frames(
     if temp.empty:
         return _empty_frame(TEMP_STUDY_COLUMNS), _empty_frame(TEMP_MEET_COLUMNS), pd.DataFrame()
     power = sub[sub["alarm_category"] == "Power"].copy()
-    temp_totals = temp.groupby(["_site_key", "_day_key"], dropna=False)["_duration_secs"].sum().to_dict()
-    power_totals = power.groupby(["_site_key", "_day_key"], dropna=False)["_duration_secs"].sum().to_dict() if not power.empty else {}
-    temp["_ht_daily_secs"] = [float(temp_totals.get((row["_site_key"], row["_day_key"]), 0.0) or 0.0) for _, row in temp.iterrows()]
-    power_values = []
-    meet_values = []
-    for _, row in temp.iterrows():
-        key = (row["_site_key"], row["_day_key"])
-        if key not in power_totals:
-            power_values.append(math.nan)
-            meet_values.append(True)
-            continue
-        power_secs = float(power_totals.get(key, 0.0) or 0.0)
-        power_values.append(power_secs)
-        meet_values.append((float(row["_ht_daily_secs"]) - power_secs) > HT_MEET_THRESHOLD_SECONDS)
-    temp["_power_daily_secs"] = power_values
-    temp["_meet"] = meet_values
+    daily_ht = (
+        temp.groupby(["_site_key", "_day_key"], dropna=False)["_duration_secs"]
+        .sum()
+        .rename("_ht_daily_secs")
+        .reset_index()
+    )
+    temp = temp.merge(daily_ht, on=["_site_key", "_day_key"], how="left")
+    temp["_ht_daily_secs"] = temp["_ht_daily_secs"].fillna(0.0)
+    if not power.empty:
+        daily_power = (
+            power.groupby(["_site_key", "_day_key"], dropna=False)["_duration_secs"]
+            .sum()
+            .rename("_power_daily_secs")
+            .reset_index()
+        )
+        temp = temp.merge(daily_power, on=["_site_key", "_day_key"], how="left")
+    else:
+        temp["_power_daily_secs"] = math.nan
+    temp["_meet"] = True
+    if apply_meet_threshold:
+        has_power = temp["_power_daily_secs"].notna()
+        temp.loc[has_power, "_meet"] = (
+            temp.loc[has_power, "_ht_daily_secs"] - temp.loc[has_power, "_power_daily_secs"]
+        ) > HT_MEET_THRESHOLD_SECONDS
     temp["_week_label"] = temp["occurred_on"].apply(_week_label_from_timestamp)
 
     study = pd.DataFrame({
         "Alarm Source": _metadata_series(temp, "alarm_source"),
         "Site Name": _metadata_series(temp, "site_name", fallback_col="site_id"),
+        "Site ID": _site_id_series(temp),
         "Support": "",
         "Day": "",
         "Last Occurred On": temp["occurred_on"].apply(_fmt_dt),
@@ -1046,11 +1313,14 @@ def _compute_ht_meet_frames(
     })
     for idx in range(len(study)):
         row_number = idx + 2
-        study.at[idx, "Support"] = f'=B{row_number}&" "&D{row_number}'
-        study.at[idx, "Day"] = f"=DAY(E{row_number})"
-        study.at[idx, "HT SUM IFS"] = f"=SUMIFS(G:G,B:B,B{row_number},D:D,D{row_number})"
-        study.at[idx, "Powr SUM IFS"] = f"=SUMIFS('{power_sheet}'!$G:$G,'{power_sheet}'!$B:$B,$B{row_number},'{power_sheet}'!$D:$D,$D{row_number})"
-        study.at[idx, "Diff"] = f"=L{row_number}-M{row_number}"
+        study.at[idx, "Support"] = f'=B{row_number}&" "&E{row_number}'
+        study.at[idx, "Day"] = f"=DAY(F{row_number})"
+        study.at[idx, "HT SUM IFS"] = f"=SUMIFS(H:H,B:B,B{row_number},E:E,E{row_number})"
+        study.at[idx, "Powr SUM IFS"] = (
+            f"=SUMIFS('{power_sheet}'!$F:$F,'{power_sheet}'!$B:$B,$B{row_number},"
+            f"'{power_sheet}'!$D:$D,\">=\"&INT($F{row_number}),'{power_sheet}'!$D:$D,\"<\"&INT($F{row_number})+1)"
+        )
+        study.at[idx, "Diff"] = f"=M{row_number}-N{row_number}"
 
     meet_source = temp[temp["_meet"]].copy().reset_index(drop=True)
     meet = _meet_sheet_from_temp_rows(meet_source)
@@ -1074,6 +1344,7 @@ def _meet_sheet_from_temp_rows(temp: pd.DataFrame) -> pd.DataFrame:
         return _empty_frame(TEMP_MEET_COLUMNS)
     rows = pd.DataFrame({
         "Site Name": _metadata_series(temp, "site_name", fallback_col="site_id"),
+        "Site ID": _site_id_series(temp),
         "Alarm Source": _metadata_series(temp, "alarm_source"),
         "Last Occurred On": temp["occurred_on"].apply(_fmt_dt),
         "Cleared On": temp["cleared_on"].apply(_fmt_dt),
@@ -1246,6 +1517,35 @@ def _week_history_columns(week_label: str, count: int = 8) -> list[str]:
     return labels
 
 
+def infer_export_week_label(
+    date_from=None,
+    date_to=None,
+    manual_days=None,
+    fallback_times=None,
+) -> str | None:
+    """Infer a single Wnn-yy export week from search filters or fallback timestamps."""
+    anchor = None
+    if manual_days:
+        days = [pd.Timestamp(day) for day in manual_days if not pd.isna(pd.Timestamp(day))]
+        if days:
+            anchor = min(days)
+    elif date_from is not None:
+        anchor = pd.Timestamp(date_from)
+    elif date_to is not None:
+        anchor = pd.Timestamp(date_to)
+    elif fallback_times is not None:
+        times = pd.to_datetime(fallback_times, errors="coerce").dropna()
+        if not times.empty:
+            anchor = times.max()
+    if anchor is None or pd.isna(anchor):
+        return None
+    return ht_export_week_from_date(anchor)["week_label"]
+
+
+def _max_weeks_in_year(year: int) -> int:
+    return math.ceil(pd.Timestamp(year, 12, 31).dayofyear / 7)
+
+
 def _parse_week_label(week_label: str) -> tuple[int, int] | None:
     text = str(week_label or "").strip().upper()
     if not text.startswith("W") or "-" not in text:
@@ -1257,7 +1557,7 @@ def _parse_week_label(week_label: str) -> tuple[int, int] | None:
     except ValueError:
         return None
     year += 2000 if year < 100 else 0
-    if week < 1 or week > 54:
+    if week < 1 or week > _max_weeks_in_year(year):
         return None
     return year, week
 
@@ -1275,17 +1575,17 @@ def _week_label_from_timestamp(value) -> str:
     if pd.isna(value):
         return ""
     timestamp = pd.Timestamp(value)
-    week = _excel_week_number(timestamp)
+    week = _year_week_number_from_date(timestamp)
     if week == "":
         return ""
     return f"W{int(week):02d}-{str(int(timestamp.year))[-2:]}"
 
 
-def _excel_week_number(value) -> int | str:
+def _year_week_number_from_date(value) -> int | str:
     if pd.isna(value):
         return ""
     timestamp = pd.Timestamp(value)
-    return int(timestamp.strftime("%U")) + 1
+    return (timestamp.dayofyear - 1) // 7 + 1
 
 
 def _first_text(df: pd.DataFrame, column: str) -> str:

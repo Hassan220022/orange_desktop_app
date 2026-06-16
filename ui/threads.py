@@ -17,8 +17,13 @@ try:
     from alarm_app.core.duration import duration_to_secs as _duration_to_secs
     from alarm_app.core.duration import secs_to_hhmmss as _secs_to_hhmmss
     from alarm_app.core.temp_alarm import (
+        _filter_source_to_week,
+        DEFAULT_HT_CLEARANCE_GAP_X_SECS,
+        DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
+        HtWorkbookFilterSettings,
         compute_ht_meet_rows,
         compute_temp_alarm_matches_for_query,
+        describe_meet_preview_empty_state,
     )
     from alarm_app.data import loaders as _loaders
     from alarm_app.data import state
@@ -38,8 +43,13 @@ except ImportError:
     from core.duration import duration_to_secs as _duration_to_secs
     from core.duration import secs_to_hhmmss as _secs_to_hhmmss
     from core.temp_alarm import (
+        _filter_source_to_week,
+        DEFAULT_HT_CLEARANCE_GAP_X_SECS,
+        DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
+        HtWorkbookFilterSettings,
         compute_ht_meet_rows,
         compute_temp_alarm_matches_for_query,
+        describe_meet_preview_empty_state,
     )
     from data import loaders as _loaders
     from data import state
@@ -830,7 +840,7 @@ class TempAlarmThread(QThread):
     finished = pyqtSignal(object, str, object)
     error = pyqtSignal(str)
 
-    def __init__(self, df: pd.DataFrame | None = None, alarm_query=None, margin_minutes: int = 60, result_filter_query=None, selected_temp_df: pd.DataFrame | None = None, week_label: str | None = None):
+    def __init__(self, df: pd.DataFrame | None = None, alarm_query=None, margin_minutes: int = 60, result_filter_query=None, selected_temp_df: pd.DataFrame | None = None, week_label: str | None = None, filter_settings: HtWorkbookFilterSettings | None = None):
         super().__init__()
         self._df = df
         self._alarm_query = alarm_query
@@ -838,6 +848,7 @@ class TempAlarmThread(QThread):
         self._result_filter_query = result_filter_query
         self._selected_temp_df = selected_temp_df
         self._week_label = week_label
+        self._filter_settings = filter_settings or HtWorkbookFilterSettings()
 
     def run(self):
         try:
@@ -849,13 +860,24 @@ class TempAlarmThread(QThread):
                     self._alarm_query,
                     margin_minutes=self._margin_minutes,
                     result_filter_query=self._result_filter_query,
-                    include_full_temp_source=False,
+                    include_full_temp_source=True,
                 )
-            # Build HT Meet preview rows using the Reference Workbook daily Meet rule
-            _study, meet = compute_ht_meet_rows(source_df, week_label=self._week_label)
+            preview_source = source_df
+            _study, meet, _ = compute_ht_meet_rows(
+                preview_source,
+                week_label=self._week_label,
+                filter_settings=self._filter_settings,
+            )
             err = ""
             if meet.empty:
-                err = "No HT alarms meet the daily threshold criteria in this scope."
+                err = describe_meet_preview_empty_state(
+                    source_df,
+                    self._week_label,
+                    filter_settings=self._filter_settings,
+                ) or (
+                    "No HT alarms meet the daily threshold criteria or the "
+                    "Power-cleared→Temp gap filter in this scope."
+                )
             self.progress.emit(100, "Done")
             self.finished.emit(meet, err, source_df)
         except Exception:

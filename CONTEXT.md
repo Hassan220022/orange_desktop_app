@@ -10,7 +10,22 @@ _Avoid_: Temp export, uncovered export
 The exported workbook filename follows the pattern `{year}-HT-Alarms-W{week_number}.xlsx`, for example `2024-HT-Alarms-W27.xlsx`.
 Exporting this workbook follows the Reference Workbook's daily SUMIFS-style Meet logic, not the Power-Coverage Gap timestamp-overlap logic.
 The HT/temp export UI previews Meet Sheet rows so the visible table and exported HT Alarm Workbook use the same logic.
-The HT Alarm Workbook UI should include an Export Week selector, date range display, Site Metadata filters such as site/area/subcontractor, a Meet Sheet preview table, export controls, summary counts, and missing-metadata warnings. Preview and export should follow the Reference Workbook as source of truth; if the Reference Workbook's visible Meet Sheet has nine columns, the primary preview uses those nine columns.
+The HT Alarm Workbook UI should include an Export Week selector, date range display, Site Metadata filters such as site/area/subcontractor, X/Y/7h workbook filter controls, a Meet Sheet preview table, export controls, summary counts, and missing-metadata warnings. Preview and export should follow the Reference Workbook as source of truth; the Meet preview includes Site ID after Site Name (ten columns total).
+
+**HT Workbook Clearance Gap (X)**:
+Minimum elapsed time between a same-site prior Power alarm `cleared_on` and a Temp alarm `occurred_on`. Temps with gap ≤ X are excluded from Meet preview and week-scoped alarm sheets; keep when gap > X (strict). Default X = 2 hours. Pairing uses full loaded Power history per site, including Power from weeks before the Export Week. Independent from main search Min Duration and from Power-Coverage Gap margin logic.
+
+**HT Workbook Summary Duration (Y)**:
+Minimum total HT Duration per site-week on the weekly summary (`Wnn`) and Consolidated sheets only. Site-week rows with HT Duration < Y are omitted from those summary sheets. Default Y = 1 hour. Does not affect Meet preview or raw AUTIN alarm sheets.
+
+**HT Workbook 7h Meet Toggle**:
+When enabled (default), Meet rows require the Reference Workbook daily rule: same-site HT minus Power duration > 7 hours, or no same-site Power daily duration. When disabled, every Temp that passes X appears on Meet; Study Diff may be below 7 hours while Meet shows Yes — intentional when the toggle is off.
+
+**Site ID on Alarm Export Sheets**:
+AUTIN HT, AUTIN Power, AUTIN HT Study, and Meet export sheets include **Site ID** immediately after **Site Name**, populated from normalized `site_id` with `site_code` fallback. Weekly summary and Consolidated retain existing **Site Code** columns unchanged.
+
+**AUTIN Power Sheet Layout**:
+No Support or Day columns. Daily SUM uses date-range SUMIFS on Duration against Last Occurred On calendar day (`SUMIFS` on site name + occurred-on date window). Study Powr SUM IFS references the Power sheet using Study Last Occurred On.
 
 **Power-Coverage Gap**:
 A Temp alarm occurrence that is not covered by a same-site Power alarm timestamp window plus the configured Y margin. This is a timestamp-overlap analysis concept and is distinct from the HT Alarm Workbook's Meet Sheet logic.
@@ -128,13 +143,13 @@ The HT Alarm Workbook sheet containing HT Study rows whose daily same-site HT du
 _Avoid_: Covered temps, uncovered temps
 
 **HT Workbook Week Label**:
-The week label used by HT Alarm Workbooks, such as `W27-24`. It follows the Reference Workbook's Sunday-based week numbering rule, equivalent to `%U + 1`, not ISO week numbering.
-_Avoid_: ISO week label, calendar week when that implies Monday-based ISO behavior
+The week label used by HT Alarm Workbooks, such as `W26-24`. It uses fixed 7-day blocks from 1 January: `W1` = 01/01–07/01, `W2` = 08/01–14/01, with `week_number = (dayofyear - 1) // 7 + 1` and label `W{week:02d}-{year%100:02d}`. Not ISO week numbering and not Sunday-based `%U + 1`.
+_Avoid_: ISO week label, calendar week when that implies Monday-based ISO behavior, Reference Workbook `%U` week
 
 **Export Week**:
 The explicit week/period selected for an HT Alarm Workbook export. It determines weekly sheet names, `Week No.` values, raw sheet scope, and the rolling week marker window.
 _Avoid_: Implicit latest week, current calendar week
-An Export Week uses a Sunday-start seven-day period: Sunday 00:00 inclusive through the next Sunday 00:00 exclusive.
+An Export Week uses a Jan-1-anchored seven-day period: block start at 00:00 inclusive through start + 7 days exclusive.
 HT coverage computation may use Power alarm context outside the Export Week when needed for correct boundary decisions, but raw HT/Power workbook sheets remain scoped to alarms whose occurrence timestamp falls inside the Export Week. Coverage context includes any same-site Power window whose occurrence/clearance-plus-margin interval overlaps the Export Week.
 An active or uncleared same-site Power alarm covers Temp alarms indefinitely from its occurrence until a clearance is known.
 
@@ -147,7 +162,7 @@ Developer: “What do the W27-24 through W20-24 columns mean?”
 Domain expert: “They are Rolling Week Markers showing whether that site also appeared in those recent weeks.”
 
 Developer: “Should we use ISO weeks for HT exports?”
-Domain expert: “No. Use the Reference Workbook's HT Workbook Week Label rule so dates like 2024-06-30 are grouped as W27-24.”
+Domain expert: “No. Use Jan-1 fixed 7-day blocks so dates like 2024-06-30 are grouped as W26-24.”
 
 Developer: “How do we know which week to export?”
 Domain expert: “The user selects the Export Week or period explicitly. The app may default from current filters, but it should not silently infer the week.”

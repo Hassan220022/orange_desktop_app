@@ -40,17 +40,40 @@ from PyQt5.QtWidgets import (
 
 MAX_ANALYSIS_TABLE_ROWS = 5000
 
+_TEMP_X_DURATION_TOOLTIP = (
+    "X — Power-cleared→Temp gap\n"
+    "Minimum clearance gap between prior same-site Power cleared_on and Temp occurred_on. "
+    "Temps with gap ≤ X are excluded from Meet preview and alarm sheets (strict > X keeps). "
+    "Default 2 hours."
+)
+_TEMP_Y_DURATION_TOOLTIP = (
+    "Y — minimum HT Duration on W21 + Consolidated\n"
+    "Site-week summary rows are kept only when total HT Duration is ≥ Y (default 1 hour). "
+    "Meet preview is unaffected."
+)
+_TEMP_7H_MEET_TOOLTIP = (
+    "Apply 7h daily Meet rule\n"
+    "When checked, Meet rows require same-site daily HT minus Power duration > 7 hours. "
+    "When unchecked, all gap-passing Temps appear on Meet."
+)
+
 try:
     from alarm_app.bdt.rule_docs import full_rules_html, iter_rule_docs
     from alarm_app.constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS, HT_MEET_HEADERS, HT_MEET_WIDTHS
     from alarm_app.core.backup_time import fmt_td as _fmt_td
     from alarm_app.core.temp_alarm import (
+        DEFAULT_HT_CLEARANCE_GAP_X_SECS,
+        DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
+        HtWorkbookFilterSettings,
+        _filter_source_to_week,
         compute_ht_meet_rows,
+        describe_meet_preview_empty_state,
         enrich_source_with_site_metadata,
         export_temp_alarm_workbook,
         ht_export_filename,
         ht_export_week_from_date,
         ht_export_week_range,
+        infer_export_week_label,
     )
     from alarm_app.data import state
     from alarm_app.runtime.chatgpt_connector import ChatGPTConnectorManager
@@ -60,12 +83,18 @@ except ImportError:
     from constants import APP_NAME, APP_VERSION, BT_HEADERS, BT_WIDTHS, HT_MEET_HEADERS, HT_MEET_WIDTHS
     from core.backup_time import fmt_td as _fmt_td
     from core.temp_alarm import (
+        DEFAULT_HT_CLEARANCE_GAP_X_SECS,
+        DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
+        HtWorkbookFilterSettings,
+        _filter_source_to_week,
         compute_ht_meet_rows,
+        describe_meet_preview_empty_state,
         enrich_source_with_site_metadata,
         export_temp_alarm_workbook,
         ht_export_filename,
         ht_export_week_from_date,
         ht_export_week_range,
+        infer_export_week_label,
     )
     from data import state
     from runtime.chatgpt_connector import ChatGPTConnectorManager
@@ -1867,6 +1896,7 @@ class _TempAlarmExportThread(QThread):
         source_df: pd.DataFrame,
         week_label: str | None,
         site_metadata_df: pd.DataFrame | None = None,
+        filter_settings: HtWorkbookFilterSettings | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -1875,6 +1905,7 @@ class _TempAlarmExportThread(QThread):
         self._source_df = source_df
         self._week_label = week_label
         self._site_metadata_df = site_metadata_df
+        self._filter_settings = filter_settings or HtWorkbookFilterSettings()
         self.warning_result: dict[str, object] = {}
 
     def run(self):
@@ -1886,15 +1917,21 @@ class _TempAlarmExportThread(QThread):
                 source_df=self._source_df,
                 site_metadata_df=self._site_metadata_df,
                 return_warnings=True,
+                filter_settings=self._filter_settings,
             ) or {}
             self.succeeded.emit(self._path)
         except Exception as exc:
             self.failed.emit(str(exc))
 
 
+class _PreviewCancelled(Exception):
+    """Raised when the user cancels an in-flight Meet preview refresh."""
+
+
 class _TempAlarmPreviewThread(QThread):
     succeeded = pyqtSignal(object, object, object, str, str)
     failed = pyqtSignal(str)
+    progress = pyqtSignal(str)
 
     def __init__(
         self,
@@ -1902,6 +1939,7 @@ class _TempAlarmPreviewThread(QThread):
         site_metadata_df: pd.DataFrame | None,
         filter_text: str,
         week_label: str | None,
+        filter_settings: HtWorkbookFilterSettings | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -1909,16 +1947,29 @@ class _TempAlarmPreviewThread(QThread):
         self._site_metadata_df = site_metadata_df
         self._filter_text = filter_text
         self._week_label = week_label
+        self._filter_settings = filter_settings or HtWorkbookFilterSettings()
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def _is_cancelled(self) -> bool:
+        return bool(self._cancel_requested)
 
     def run(self):
         try:
-            preview_source, meet, missing_ids = _build_temp_alarm_preview(
+            meet, missing_ids, empty_reason = _build_temp_alarm_preview(
                 self._source_df,
                 self._site_metadata_df,
                 self._filter_text,
                 self._week_label,
+                filter_settings=self._filter_settings,
+                progress_cb=self.progress.emit,
+                cancel_cb=self._is_cancelled,
             )
-            self.succeeded.emit(preview_source, meet, missing_ids, self._week_label or "", self._filter_text)
+            self.succeeded.emit(meet, missing_ids, empty_reason, self._week_label or "", self._filter_text)
+        except _PreviewCancelled:
+            self.failed.emit("Preview refresh cancelled.")
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -1926,14 +1977,14 @@ class _TempAlarmPreviewThread(QThread):
 class TempAlarmDialog(QDialog):
     """HT Alarm Workbook Meet preview dialog."""
 
-    def __init__(self, df: pd.DataFrame, source_df: pd.DataFrame, margin_minutes: int = 60, result_filter_query=None, selected_temp_df: pd.DataFrame | None = None, week_label: str | None = None, parent=None):
+    def __init__(self, df: pd.DataFrame, source_df: pd.DataFrame, margin_minutes: int = 60, result_filter_query=None, selected_temp_df: pd.DataFrame | None = None, week_label: str | None = None, filter_settings: HtWorkbookFilterSettings | None = None, skip_initial_preview: bool = False, parent=None):
         super().__init__(parent)
         self.setWindowTitle("HT Alarm Workbook — Meet Preview")
         screen = QApplication.primaryScreen()
         available = screen.availableGeometry() if screen else None
         max_width = available.width() - 80 if available else 1280
-        target_width = max(1180, min(1280, max_width))
-        self.setMinimumSize(min(target_width, 1240), 720)
+        target_width = max(1320, min(1400, max_width))
+        self.setMinimumSize(target_width, 720)
         self.resize(target_width, 760)
         if parent:
             self.setStyleSheet(parent.styleSheet())
@@ -1942,30 +1993,54 @@ class TempAlarmDialog(QDialog):
         self._selected_temp_df = selected_temp_df
         self._df = df
         self._margin_minutes = max(0, int(margin_minutes or 0))
+        self._filter_settings = filter_settings or HtWorkbookFilterSettings()
         self._week_label = week_label or self._infer_default_week_label()
         self._site_metadata_df = _load_site_metadata_catalog()
-        self._preview_source_df = pd.DataFrame()
         self._preview_missing_metadata_ids: list[str] = []
         self._preview_week_label = None
         self._preview_filter_text = ""
+        self._preview_filter_settings = self._filter_settings
+        self._preview_empty_reason = ""
+        self._skip_initial_preview = bool(skip_initial_preview)
         self._tbl = None
         self._summary_strip = None
         self._table_host = None
         self._btn_export = None
         self._btn_apply_week = None
         self._week_input = None
+        self._x_duration_spin = None
+        self._y_duration_spin = None
+        self._apply_7h_checkbox = None
         self._metadata_filter_input = None
         self._export_status = None
         self._export_progress = None
         self._export_thread = None
         self._preview_thread = None
+        self._btn_cancel_preview = None
+        self._empty_state_label = None
         self._export_after_preview_refresh = False
         self._metadata_warning = None
         self._build()
-        self._start_preview_recompute()
+        if self._skip_initial_preview and not self._should_recompute_preview_on_open():
+            self._sync_preview_state_from_current()
+            self._update_empty_state_label()
+        else:
+            self._start_preview_recompute()
 
     def _infer_default_week_label(self) -> str:
-        """Try to infer the default HT export week label from the meet data or source."""
+        """Try to infer the default HT export week label from search filters or source data."""
+        query = self._result_filter_query
+        if query is not None:
+            try:
+                label = infer_export_week_label(
+                    date_from=query.date_from,
+                    date_to=query.date_to,
+                    manual_days=query.manual_days,
+                )
+                if label:
+                    return label
+            except Exception:
+                pass
         df = self._df
         if not df.empty:
             if "Last Occurred On" in df.columns:
@@ -1976,16 +2051,19 @@ class TempAlarmDialog(QDialog):
                 times = pd.Series(dtype="datetime64[ns]")
             if not times.empty:
                 try:
-                    return ht_export_week_from_date(times.max())["week_label"]
+                    label = infer_export_week_label(fallback_times=times)
+                    if label:
+                        return label
                 except Exception:
                     pass
-        # Fall back to source_df
         src = self._source_df
         if src is not None and not src.empty and "occurred_on" in src.columns:
             times = pd.to_datetime(src["occurred_on"], errors="coerce").dropna()
             if not times.empty:
                 try:
-                    return ht_export_week_from_date(times.max())["week_label"]
+                    label = infer_export_week_label(fallback_times=times)
+                    if label:
+                        return label
                 except Exception:
                     pass
         return ""
@@ -2010,7 +2088,7 @@ class TempAlarmDialog(QDialog):
         tl.addWidget(week_label_lbl)
 
         self._week_input = QLineEdit()
-        self._week_input.setPlaceholderText("e.g. W27-24")
+        self._week_input.setPlaceholderText("e.g. W26-24")
         self._week_input.setText(self._week_label or "")
         self._week_input.setFixedSize(112, 36)
         self._week_input.setAlignment(Qt.AlignCenter)
@@ -2060,6 +2138,108 @@ class TempAlarmDialog(QDialog):
         self._btn_apply_week.setFixedSize(100, 36)
         self._btn_apply_week.clicked.connect(self._apply_week_now)
         tl.addWidget(self._btn_apply_week)
+
+        self._btn_cancel_preview = QPushButton("Cancel")
+        self._btn_cancel_preview.setFixedSize(88, 36)
+        self._btn_cancel_preview.setStyleSheet(
+            """
+            QPushButton {
+                background:#1e1e2e;
+                border:1px solid #45475a;
+                border-radius:6px;
+                color:#f38ba8;
+                font-size:11px;
+                font-weight:700;
+                padding:0 10px;
+            }
+            QPushButton:hover { border-color:#f38ba8; }
+            QPushButton:disabled {
+                color:#6c7086;
+                border-color:#313244;
+            }
+            """
+        )
+        self._btn_cancel_preview.clicked.connect(self._cancel_preview_recompute)
+        self._btn_cancel_preview.hide()
+        tl.addWidget(self._btn_cancel_preview)
+
+        x_label = QLabel("X")
+        x_label.setStyleSheet("color:#a6adc8; font-size:11px; font-weight:700;")
+        x_label.setToolTip(_TEMP_X_DURATION_TOOLTIP)
+        tl.addWidget(x_label)
+
+        self._x_duration_spin = QSpinBox()
+        self._x_duration_spin.setObjectName("tempXDurationSpin")
+        self._x_duration_spin.setRange(120, 1440)
+        self._x_duration_spin.setSuffix(" min")
+        self._x_duration_spin.setValue(max(120, int((self._filter_settings.clearance_gap_x_secs or DEFAULT_HT_CLEARANCE_GAP_X_SECS) // 60)))
+        self._x_duration_spin.setFixedSize(112, 36)
+        self._x_duration_spin.setAlignment(Qt.AlignCenter)
+        self._x_duration_spin.setStyleSheet(
+            """
+            QSpinBox#tempXDurationSpin {
+                background:#11111b;
+                border:1px solid #89b4fa;
+                border-radius:6px;
+                color:#cdd6f4;
+                font-size:13px;
+                font-weight:700;
+                padding:0 8px;
+            }
+            QSpinBox#tempXDurationSpin:focus { border-color:#b4befe; }
+            QSpinBox#tempXDurationSpin:disabled {
+                background:#313244;
+                border-color:#45475a;
+                color:#6c7086;
+            }
+            """
+        )
+        self._x_duration_spin.setToolTip(_TEMP_X_DURATION_TOOLTIP)
+        self._x_duration_spin.editingFinished.connect(self._on_x_duration_changed)
+        tl.addWidget(self._x_duration_spin)
+
+        self._apply_7h_checkbox = QCheckBox("7h Meet")
+        self._apply_7h_checkbox.setObjectName("tempApply7hMeet")
+        self._apply_7h_checkbox.setChecked(self._filter_settings.apply_meet_threshold)
+        self._apply_7h_checkbox.setToolTip(_TEMP_7H_MEET_TOOLTIP)
+        self._apply_7h_checkbox.setStyleSheet("color:#cdd6f4; font-size:11px; font-weight:700;")
+        self._apply_7h_checkbox.stateChanged.connect(self._on_7h_meet_changed)
+        tl.addWidget(self._apply_7h_checkbox)
+
+        y_label = QLabel("Y")
+        y_label.setStyleSheet("color:#a6adc8; font-size:11px; font-weight:700;")
+        y_label.setToolTip(_TEMP_Y_DURATION_TOOLTIP)
+        tl.addWidget(y_label)
+
+        self._y_duration_spin = QSpinBox()
+        self._y_duration_spin.setObjectName("tempYDurationSpin")
+        self._y_duration_spin.setRange(0, 1440)
+        self._y_duration_spin.setSuffix(" min")
+        self._y_duration_spin.setValue(max(0, int((self._filter_settings.summary_min_ht_duration_y_secs or DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS) // 60)))
+        self._y_duration_spin.setFixedSize(112, 36)
+        self._y_duration_spin.setAlignment(Qt.AlignCenter)
+        self._y_duration_spin.setStyleSheet(
+            """
+            QSpinBox#tempYDurationSpin {
+                background:#11111b;
+                border:1px solid #89b4fa;
+                border-radius:6px;
+                color:#cdd6f4;
+                font-size:13px;
+                font-weight:700;
+                padding:0 8px;
+            }
+            QSpinBox#tempYDurationSpin:focus { border-color:#b4befe; }
+            QSpinBox#tempYDurationSpin:disabled {
+                background:#313244;
+                border-color:#45475a;
+                color:#6c7086;
+            }
+            """
+        )
+        self._y_duration_spin.setToolTip(_TEMP_Y_DURATION_TOOLTIP)
+        self._y_duration_spin.editingFinished.connect(self._on_y_duration_changed)
+        tl.addWidget(self._y_duration_spin)
 
         self._metadata_filter_input = QLineEdit()
         self._metadata_filter_input.setPlaceholderText("Filter site / area / subcontractor")
@@ -2125,8 +2305,8 @@ class TempAlarmDialog(QDialog):
         lay.addWidget(top)
 
         note = QLabel(
-            "HT alarms that meet the daily threshold (>7 hours HT minus Power). "
-            "Set the week label above to scope the workbook export."
+            "Meet: Power-cleared→Temp gap > X; optional 7h rule. "
+            "W21/Consolidated: HT Duration ≥ Y (Meet preview unaffected)."
         )
         note.setStyleSheet("color:#6c7086; font-size:11px; padding:6px 0;")
         note.setWordWrap(True)
@@ -2137,17 +2317,90 @@ class TempAlarmDialog(QDialog):
         self._metadata_warning.setVisible(bool(self._metadata_warning.text()))
         lay.addWidget(self._metadata_warning)
 
+        self._empty_state_label = QLabel("")
+        self._empty_state_label.setStyleSheet("color:#fab387; font-size:11px; padding:6px 0;")
+        self._empty_state_label.setWordWrap(True)
+        self._empty_state_label.hide()
+        lay.addWidget(self._empty_state_label)
+
         self._table_host = QVBoxLayout()
         self._table_host.setSpacing(8)
         lay.addLayout(self._table_host, 1)
         self._render_summary()
         self._render_table()
 
+    def _current_filter_settings(self) -> HtWorkbookFilterSettings:
+        x_secs = int(self._x_duration_spin.value()) * 60 if self._x_duration_spin is not None else DEFAULT_HT_CLEARANCE_GAP_X_SECS
+        y_secs = int(self._y_duration_spin.value()) * 60 if self._y_duration_spin is not None else DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS
+        apply_7h = self._apply_7h_checkbox.isChecked() if self._apply_7h_checkbox is not None else True
+        return HtWorkbookFilterSettings(
+            clearance_gap_x_secs=x_secs,
+            summary_min_ht_duration_y_secs=y_secs,
+            apply_meet_threshold=apply_7h,
+        )
+
+    def _on_x_duration_changed(self):
+        new_settings = self._current_filter_settings()
+        if new_settings == self._preview_filter_settings and not self._preview_is_stale():
+            return
+        self._filter_settings = new_settings
+        self._apply_week_now()
+
+    def _on_7h_meet_changed(self):
+        new_settings = self._current_filter_settings()
+        if new_settings == self._preview_filter_settings and not self._preview_is_stale():
+            return
+        self._filter_settings = new_settings
+        self._apply_week_now()
+
+    def _on_y_duration_changed(self):
+        new_settings = self._current_filter_settings()
+        if new_settings == self._preview_filter_settings and not self._preview_is_stale():
+            return
+        self._filter_settings = new_settings
+        self._apply_week_now()
+
+    def _should_recompute_preview_on_open(self) -> bool:
+        if self._current_filter_text():
+            return True
+        return not self._skip_initial_preview
+
+    def _sync_preview_state_from_current(self):
+        self._preview_week_label = self._week_label or ""
+        self._preview_filter_text = self._current_filter_text()
+        self._preview_filter_settings = self._current_filter_settings()
+
+    def _update_empty_state_label(self):
+        if self._empty_state_label is None:
+            return
+        if self._df is not None and not self._df.empty:
+            self._preview_empty_reason = ""
+        elif not self._preview_empty_reason:
+            self._preview_empty_reason = describe_meet_preview_empty_state(
+                self._source_df,
+                self._week_label or None,
+                filter_settings=self._current_filter_settings(),
+            )
+        text = self._preview_empty_reason
+        self._empty_state_label.setText(text)
+        self._empty_state_label.setVisible(bool(text))
+
+    def _cancel_preview_recompute(self):
+        if self._preview_thread and self._preview_thread.isRunning():
+            self._preview_thread.cancel()
+
     def _apply_week_now(self, force: bool = False):
         new_label = self._week_input.text().strip()
-        if not force and new_label == self._week_label and not self._preview_is_stale(new_label):
+        new_settings = self._current_filter_settings()
+        if (
+            not force
+            and new_label == self._week_label
+            and new_settings == self._preview_filter_settings
+            and not self._preview_is_stale(new_label)
+        ):
             return
         self._week_label = new_label
+        self._filter_settings = new_settings
         self._start_preview_recompute()
 
     def _apply_metadata_filter_now(self):
@@ -2158,7 +2411,11 @@ class TempAlarmDialog(QDialog):
 
     def _preview_is_stale(self, week_label: str | None = None) -> bool:
         current_week = week_label if week_label is not None else self._week_label
-        return current_week != self._preview_week_label or self._current_filter_text() != self._preview_filter_text
+        return (
+            current_week != self._preview_week_label
+            or self._current_filter_text() != self._preview_filter_text
+            or self._current_filter_settings() != self._preview_filter_settings
+        )
 
     def _clear_results_for_week_apply(self):
         self._df = pd.DataFrame(columns=list(HT_MEET_HEADERS))
@@ -2176,27 +2433,43 @@ class TempAlarmDialog(QDialog):
             self._site_metadata_df,
             self._current_filter_text(),
             self._week_label or None,
-            self,
+            filter_settings=self._current_filter_settings(),
+            parent=self,
         )
+        self._preview_thread.progress.connect(self._on_preview_progress)
         self._preview_thread.succeeded.connect(self._on_preview_ready)
         self._preview_thread.failed.connect(self._on_preview_failed)
         self._preview_thread.finished.connect(self._on_preview_finished)
         self._preview_thread.finished.connect(self._preview_thread.deleteLater)
         self._preview_thread.start()
 
-    def _on_preview_ready(self, preview_source, meet, missing_ids, week_label: str, filter_text: str):
-        self._preview_source_df = preview_source
+    def _on_preview_progress(self, message: str):
+        if self._export_status:
+            self._export_status.setText(message)
+            self._export_status.setVisible(True)
+
+    def _on_preview_ready(self, meet, missing_ids, empty_reason: str, week_label: str, filter_text: str):
         self._df = meet
         self._preview_missing_metadata_ids = list(missing_ids or [])
         self._preview_week_label = week_label
         self._preview_filter_text = filter_text
+        self._preview_filter_settings = self._current_filter_settings()
+        self._preview_empty_reason = empty_reason or ""
+        self._refresh_filter_controls_from_settings()
         if self._metadata_warning:
             self._metadata_warning.setText(self._metadata_warning_text())
             self._metadata_warning.setVisible(bool(self._metadata_warning.text()))
         self._render_summary()
         self._render_table()
+        self._update_empty_state_label()
+
     def _on_preview_failed(self, msg: str):
         self._export_after_preview_refresh = False
+        if msg == "Preview refresh cancelled.":
+            if self._export_status:
+                self._export_status.setText(msg)
+                self._export_status.setVisible(True)
+            return
         QMessageBox.critical(self, "HT Meet Preview Failed", msg)
 
     def _on_preview_finished(self):
@@ -2216,15 +2489,44 @@ class TempAlarmDialog(QDialog):
             self._week_input.setEnabled(not previewing)
         if self._metadata_filter_input:
             self._metadata_filter_input.setEnabled(not previewing)
+        if self._btn_cancel_preview:
+            self._btn_cancel_preview.setVisible(previewing)
+            self._btn_cancel_preview.setEnabled(previewing)
+        if self._y_duration_spin:
+            self._y_duration_spin.setEnabled(not previewing)
+        if self._x_duration_spin:
+            self._x_duration_spin.setEnabled(not previewing)
+        if self._apply_7h_checkbox:
+            self._apply_7h_checkbox.setEnabled(not previewing)
         if self._export_status:
-            self._export_status.setText("Refreshing preview...")
-            self._export_status.setVisible(previewing)
+            if previewing and not self._export_status.text():
+                self._export_status.setText("Refreshing preview…")
+            self._export_status.setVisible(previewing or bool(self._export_status.text()))
         if self._export_progress:
             self._export_progress.setVisible(previewing)
         if previewing:
             QApplication.setOverrideCursor(Qt.WaitCursor)
         else:
             QApplication.restoreOverrideCursor()
+
+    def _refresh_filter_controls_from_settings(self):
+        settings = self._filter_settings
+        if self._x_duration_spin is not None:
+            self._x_duration_spin.blockSignals(True)
+            self._x_duration_spin.setValue(
+                max(120, int((settings.clearance_gap_x_secs or DEFAULT_HT_CLEARANCE_GAP_X_SECS) // 60))
+            )
+            self._x_duration_spin.blockSignals(False)
+        if self._y_duration_spin is not None:
+            self._y_duration_spin.blockSignals(True)
+            self._y_duration_spin.setValue(
+                max(0, int((settings.summary_min_ht_duration_y_secs or DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS) // 60))
+            )
+            self._y_duration_spin.blockSignals(False)
+        if self._apply_7h_checkbox is not None:
+            self._apply_7h_checkbox.blockSignals(True)
+            self._apply_7h_checkbox.setChecked(settings.apply_meet_threshold)
+            self._apply_7h_checkbox.blockSignals(False)
 
     def _render_summary(self):
         while self._summary_strip.count():
@@ -2362,10 +2664,11 @@ class TempAlarmDialog(QDialog):
         self._export_thread = _TempAlarmExportThread(
             self._df,
             fp,
-            self._preview_source_df,
+            self._source_df,
             week_label if week_label else None,
             self._site_metadata_df,
-            self,
+            filter_settings=self._current_filter_settings(),
+            parent=self,
         )
         self._export_thread.succeeded.connect(self._on_export_done)
         self._export_thread.failed.connect(self._on_export_failed)
@@ -2455,16 +2758,43 @@ def _build_temp_alarm_preview(
     site_metadata_df: pd.DataFrame | None,
     filter_text: str,
     week_label: str | None,
-) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
-    source = _filter_temp_alarm_source_for_metadata(source_df, site_metadata_df, filter_text)
+    filter_settings: HtWorkbookFilterSettings | None = None,
+    progress_cb=None,
+    cancel_cb=None,
+) -> tuple[pd.DataFrame, list[str], str]:
+    settings = filter_settings or HtWorkbookFilterSettings()
+
+    def _progress(message: str) -> None:
+        if progress_cb is not None:
+            progress_cb(message)
+
+    def _check_cancel() -> None:
+        if cancel_cb is not None and cancel_cb():
+            raise _PreviewCancelled()
+
+    source = source_df if source_df is not None else pd.DataFrame()
+    _progress(f"Preparing source… ({len(source):,} rows)")
+    _check_cancel()
+    source = _filter_temp_alarm_source_for_metadata(source, site_metadata_df, filter_text)
     if source is None:
         source = pd.DataFrame()
     missing_ids: list[str] = []
     if site_metadata_df is not None and not site_metadata_df.empty:
+        _progress("Enriching metadata…")
+        _check_cancel()
         source, missing = enrich_source_with_site_metadata(source, site_metadata_df)
         missing_ids = _missing_site_ids(missing)
-    _study, meet = compute_ht_meet_rows(source, week_label=week_label)
-    return source, meet, missing_ids
+    _progress("Computing Meet…")
+    _check_cancel()
+    _study, meet, _ = compute_ht_meet_rows(source, week_label=week_label, filter_settings=settings)
+    empty_reason = ""
+    if meet.empty:
+        empty_reason = describe_meet_preview_empty_state(
+            source,
+            week_label,
+            filter_settings=settings,
+        )
+    return meet, missing_ids, empty_reason
 
 
 def _filter_temp_alarm_source_for_metadata(
