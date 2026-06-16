@@ -146,6 +146,9 @@ _Avoid_: Covered temps, uncovered temps
 The week label used by HT Alarm Workbooks, such as `W26-24`. It uses fixed 7-day blocks from 1 January: `W1` = 01/01–07/01, `W2` = 08/01–14/01, with `week_number = (dayofyear - 1) // 7 + 1` and label `W{week:02d}-{year%100:02d}`. Not ISO week numbering and not Sunday-based `%U + 1`.
 _Avoid_: ISO week label, calendar week when that implies Monday-based ISO behavior, Reference Workbook `%U` week
 
+**Release note (week-label migration)**:
+As of ADR 0004, HT export week labels use Jan-1 fixed 7-day blocks instead of the older Sunday-based `%U + 1` scheme (ADR 0001). Exports and MCP `export_week` values that matched the legacy Reference Workbook may shift by one week near year boundaries; re-validate historical comparisons against raw alarm timestamps rather than old week columns.
+
 **Export Week**:
 The explicit week/period selected for an HT Alarm Workbook export. It determines weekly sheet names, `Week No.` values, raw sheet scope, and the rolling week marker window.
 _Avoid_: Implicit latest week, current calendar week
