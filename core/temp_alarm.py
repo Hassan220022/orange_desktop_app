@@ -7,7 +7,7 @@ import time
 import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -1057,7 +1057,9 @@ def enrich_source_with_site_metadata(source_df: pd.DataFrame, site_metadata_df: 
     }
     for target, keys in meta_fields.items():
         values = resolved.map(
-            lambda site_id: _first_meta_value(metadata[site_id], keys) if site_id in metadata else ""
+            lambda site_id, meta_keys=keys: (
+                _first_meta_value(metadata[site_id], meta_keys) if site_id in metadata else ""
+            )
         )
         mask = values != ""
         if mask.any():

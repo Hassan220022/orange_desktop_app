@@ -17,9 +17,6 @@ try:
     from alarm_app.core.duration import duration_to_secs as _duration_to_secs
     from alarm_app.core.duration import secs_to_hhmmss as _secs_to_hhmmss
     from alarm_app.core.temp_alarm import (
-        _filter_source_to_week,
-        DEFAULT_HT_CLEARANCE_GAP_X_SECS,
-        DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
         HtWorkbookFilterSettings,
         compute_ht_meet_rows,
         compute_temp_alarm_matches_for_query,
@@ -43,9 +40,6 @@ except ImportError:
     from core.duration import duration_to_secs as _duration_to_secs
     from core.duration import secs_to_hhmmss as _secs_to_hhmmss
     from core.temp_alarm import (
-        _filter_source_to_week,
-        DEFAULT_HT_CLEARANCE_GAP_X_SECS,
-        DEFAULT_HT_SUMMARY_MIN_DURATION_Y_SECS,
         HtWorkbookFilterSettings,
         compute_ht_meet_rows,
         compute_temp_alarm_matches_for_query,

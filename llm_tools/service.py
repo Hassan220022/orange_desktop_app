@@ -30,7 +30,6 @@ try:
     from alarm_app.core.temp_alarm import (
         DEFAULT_HT_HISTORY_START_WEEK,
         HtWorkbookFilterSettings,
-        _compute_ht_meet_frames,
         _filter_source_from_week,
         _x_filtered_ht_source,
         build_temp_alarm_summary,
@@ -73,7 +72,6 @@ except ImportError:
     from core.temp_alarm import (
         DEFAULT_HT_HISTORY_START_WEEK,
         HtWorkbookFilterSettings,
-        _compute_ht_meet_frames,
         _filter_source_from_week,
         _x_filtered_ht_source,
         build_temp_alarm_summary,

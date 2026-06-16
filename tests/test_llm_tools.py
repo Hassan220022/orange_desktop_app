@@ -1929,6 +1929,7 @@ def test_dispatch_tool_computed_report_ht_returns_structured_error_for_query_fai
 def test_dispatch_tool_computed_report_ht_consolidated_uses_filtered_history_source(monkeypatch):
     service = LocalDataService()
     seen_history_lengths: list[int] = []
+    seen_consolidated_lengths: list[int] = []
 
     monkeypatch.setattr(service, "_with_alarm_source", lambda fn: fn())
     monkeypatch.setattr(
@@ -1938,22 +1939,27 @@ def test_dispatch_tool_computed_report_ht_consolidated_uses_filtered_history_sou
     )
     monkeypatch.setattr(
         service_mod,
+        "_x_filtered_ht_source",
+        lambda source_df, x_secs, week_label=None: source_df,
+    )
+    monkeypatch.setattr(
+        service_mod,
         "_filter_source_from_week",
         lambda source_df, week_label: source_df.iloc[0:0].copy(),
     )
 
-    def _fake_compute_ht_meet_rows(source_df, week_label=None, filter_settings=None, **kwargs):
-        seen_history_lengths.append(len(source_df))
-        return pd.DataFrame(), pd.DataFrame(), source_df
+    def _fake_consolidated(history_source, filter_settings=None, **kwargs):
+        seen_history_lengths.append(len(history_source))
+        return history_source
 
-    monkeypatch.setattr(service_mod, "compute_ht_meet_rows", _fake_compute_ht_meet_rows)
-    monkeypatch.setattr(
-        service_mod,
-        "build_temp_alarm_summary",
-        lambda matches, week_label=None, rolling_week_label=None, min_ht_duration_secs=None: pd.DataFrame(
+    def _fake_build_summary(matches, week_label=None, rolling_week_label=None, min_ht_duration_secs=None):
+        seen_consolidated_lengths.append(len(matches))
+        return pd.DataFrame(
             [{"source_rows": len(matches), "rolling_week": rolling_week_label}]
-        ),
-    )
+        )
+
+    monkeypatch.setattr(service_mod, "compute_ht_consolidated_meet_source", _fake_consolidated)
+    monkeypatch.setattr(service_mod, "build_temp_alarm_summary", _fake_build_summary)
 
     result = dispatch_tool(
         service,
@@ -1962,6 +1968,7 @@ def test_dispatch_tool_computed_report_ht_consolidated_uses_filtered_history_sou
     )
 
     assert seen_history_lengths == [0]
+    assert seen_consolidated_lengths == [0]
     assert result["rows"] == [{"source_rows": 0, "rolling_week": "W22-26"}]
 
 
