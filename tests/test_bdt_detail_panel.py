@@ -139,6 +139,37 @@ def test_display_rule_verdict_normalizes_non_primary_statuses():
     assert BdtDetailPanel._display_rule_verdict(SimpleNamespace(verdict="Accepted")) == "Accepted"
 
 
+def test_bdt_file_info_values_include_battery_type_counts_and_max_test_time():
+    bdt = SimpleNamespace(
+        site_code="0375SI",
+        site_name="U_S_SS-GRN-BCH-SDR_0375SI",
+        test_date=datetime(2026, 5, 18),
+        time_in="12:55:25",
+        time_out="14:54:37",
+        discharge_minutes=119,
+        starting_ibattery_ampere=0.0,
+        ibat_before_test=None,
+        battery_brand="Lithium- Huawei",
+        battery_ah=100.0,
+        battery_voltage=48.0,
+        num_strings=2,
+        num_batteries=4,
+        photo_count=16,
+        discharge_readings=[("60 Mins", 46.0, 20.0), ("120 Mins", 44.5, 21.0)],
+    )
+    formatter = SimpleNamespace(
+        _format_end_rectifier_voltage=lambda _bdt: "44.50",
+        _format_lead_acid_soh=lambda _bdt: "--",
+    )
+
+    vals = BdtDetailPanel._bdt_file_info_values(bdt, formatter)
+
+    assert vals["battery_type"] == "Lithium"
+    assert vals["num_batteries"] == "4"
+    assert vals["num_strings"] == "2"
+    assert vals["max_test_time"] == "120 min"
+
+
 def test_photo_verification_text_summarizes_c2pa_and_synthid_states():
     slot = SimpleNamespace(
         verification={

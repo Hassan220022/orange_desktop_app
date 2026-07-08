@@ -49,6 +49,9 @@ def persist_bdt_photos(session: Session, bdt_test_id: int,
         save_bdt_photo(session, bdt_test_id, slot_index=i,
                        slot_category=getattr(slot, "category", "other"),
                        blob_asset_id=asset.id)
+        if asset.local_path:
+            slot.image_path = asset.local_path
+        slot.image_data = None
         stored += 1
 
     if autocommit:

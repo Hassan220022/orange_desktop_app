@@ -39,17 +39,21 @@ from PyQt5.QtWidgets import (
 )
 
 try:
+    from alarm_app.bdt.evidence_metrics import max_reached_discharge_minutes
     from alarm_app.bdt.parser import BDTData, load_bdt_photos
     from alarm_app.bdt.photo_auth import verify_photo_slots
     from alarm_app.bdt.validator import ValidationResult
     from alarm_app.constants import format_bdt_rule_label
+    from alarm_app.core.battery_topology import battery_topology_from_bdt
     from alarm_app.data import state
     from alarm_app.data.alarm_store import load_alarm_slice_for_bdt
 except ImportError:
+    from bdt.evidence_metrics import max_reached_discharge_minutes
     from bdt.parser import BDTData, load_bdt_photos
     from bdt.photo_auth import verify_photo_slots
     from bdt.validator import ValidationResult
     from constants import format_bdt_rule_label
+    from core.battery_topology import battery_topology_from_bdt
     from data import state
     from data.alarm_store import load_alarm_slice_for_bdt
 
@@ -470,9 +474,12 @@ class BdtDetailPanel(QWidget):
             ("End Rectifier Voltage (V)", "end_rectifier_voltage"),
             ("Lead-acid SOH (%)", "lead_acid_soh"),
             ("Battery Brand",     "battery_brand"),
+            ("Battery Type",      "battery_type"),
             ("Battery AH",        "battery_ah"),
             ("Battery Voltage",   "battery_voltage"),
-            ("Strings",           "num_strings"),
+            ("No. of Batteries",  "num_batteries"),
+            ("No. of Strings",    "num_strings"),
+            ("Max Test Time",     "max_test_time"),
             ("Photo Count",       "photo_count"),
         ]
         for row_idx, (display, key) in enumerate(info_fields):
@@ -990,6 +997,41 @@ class BdtDetailPanel(QWidget):
                 rules_h = max(120, int(center_total * 0.68))
             self._bdt_center_splitter.setSizes([rules_h, max(1, center_total - rules_h)])
 
+    @staticmethod
+    def _bdt_file_info_values(bdt, formatter) -> dict[str, str]:
+        start_ibat = getattr(bdt, "starting_ibattery_ampere", None)
+        if start_ibat is None:
+            start_ibat = getattr(bdt, "ibat_before_test", None)
+        topology = battery_topology_from_bdt(bdt)
+        chemistry = topology.chemistry.replace("_", " ").title() if topology.chemistry != "unknown" else "--"
+        max_time = max_reached_discharge_minutes(bdt)
+        return {
+            "site_code":         getattr(bdt, "site_code", "") or "--",
+            "site_name":         getattr(bdt, "site_name", "") or "--",
+            "test_date":         (bdt.test_date.strftime("%Y-%m-%d")
+                                  if getattr(bdt, "test_date", None) else "--"),
+            "time_in":           getattr(bdt, "time_in", "") or "--",
+            "time_out":          getattr(bdt, "time_out", "") or "--",
+            "discharge_minutes": (f"{bdt.discharge_minutes:.0f} min"
+                                  if getattr(bdt, "discharge_minutes", 0) else "--"),
+            "starting_ibattery_ampere": (
+                f"{start_ibat} A" if start_ibat is not None else "--"),
+            "end_rectifier_voltage": formatter._format_end_rectifier_voltage(bdt),
+            "lead_acid_soh": formatter._format_lead_acid_soh(bdt),
+            "battery_brand":     getattr(bdt, "battery_brand", "") or "--",
+            "battery_type":      chemistry,
+            "battery_ah":        (f"{bdt.battery_ah} AH"
+                                  if getattr(bdt, "battery_ah", None) else "--"),
+            "battery_voltage":   (f"{bdt.battery_voltage}V"
+                                  if getattr(bdt, "battery_voltage", None) else "--"),
+            "num_batteries":     (str(bdt.num_batteries)
+                                  if getattr(bdt, "num_batteries", None) else "--"),
+            "num_strings":       (str(bdt.num_strings)
+                                  if getattr(bdt, "num_strings", None) else "--"),
+            "max_test_time":     (f"{max_time:.0f} min" if max_time else "--"),
+            "photo_count":       str(getattr(bdt, "photo_count", 0)),
+        }
+
     def populate(self, res: ValidationResult):
         """Fill the detail panel from the selected validation result."""
         self._last_validation_result = res
@@ -998,31 +1040,7 @@ class BdtDetailPanel(QWidget):
 
         # ── Info grid ──
         if bdt:
-            start_ibat = bdt.starting_ibattery_ampere
-            if start_ibat is None:
-                start_ibat = bdt.ibat_before_test
-            vals = {
-                "site_code":         bdt.site_code or "--",
-                "site_name":         bdt.site_name or "--",
-                "test_date":         (bdt.test_date.strftime("%Y-%m-%d")
-                                      if bdt.test_date else "--"),
-                "time_in":           bdt.time_in or "--",
-                "time_out":          bdt.time_out or "--",
-                "discharge_minutes": (f"{bdt.discharge_minutes:.0f} min"
-                                      if bdt.discharge_minutes else "--"),
-                "starting_ibattery_ampere": (
-                    f"{start_ibat} A" if start_ibat is not None else "--"),
-                "end_rectifier_voltage": self._viewer._bdt_validation_panel._format_end_rectifier_voltage(bdt),
-                "lead_acid_soh": self._viewer._bdt_validation_panel._format_lead_acid_soh(bdt),
-                "battery_brand":     bdt.battery_brand or "--",
-                "battery_ah":        (f"{bdt.battery_ah} AH"
-                                      if bdt.battery_ah else "--"),
-                "battery_voltage":   (f"{bdt.battery_voltage}V"
-                                      if bdt.battery_voltage else "--"),
-                "num_strings":       (str(bdt.num_strings)
-                                      if bdt.num_strings else "--"),
-                "photo_count":       str(bdt.photo_count),
-            }
+            vals = self._bdt_file_info_values(bdt, self._viewer._bdt_validation_panel)
         else:
             vals = dict.fromkeys(self._bdt_info_labels, "--")
 

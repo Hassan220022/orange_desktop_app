@@ -17,6 +17,7 @@ from alarm_app.bdt.history import (
     save_validation_batch,
     save_validation_run,
 )
+from alarm_app.bdt.parser import PhotoSlot
 from alarm_app.constants import BDT_RULES
 
 
@@ -287,6 +288,38 @@ class TestValidationRunPersistence:
         assert len(run_payloads) == 1
         assert photo_jobs == []
         assert failed_items == []
+
+    def test_save_validation_batch_queues_photo_copy_and_clears_source_bytes(self, history_dir):
+        slot = PhotoSlot(
+            label="Rectifier",
+            image_data=b"photo-bytes",
+            image_ext="jpg",
+            category="rectifier",
+        )
+        bdt = _FakeBDT(
+            site_code="0167DE",
+            test_date=datetime(2026, 1, 11),
+            file_path=str(history_dir / "photo-bdt.xlsx"),
+        )
+        bdt.photo_slots = [slot]
+        Path(bdt.file_path).write_bytes(b"fake")
+
+        result = self._make_validation_result()
+        alarm_df = pd.DataFrame([{"site_id": "0167DE", "occurred_on": "2026-01-11 09:00:00"}])
+
+        run_payloads, photo_jobs, failed_items = save_validation_batch(
+            items=[{"bdt_data": bdt, "validation_result": result}],
+            alarm_df=alarm_df,
+            params={"tolerance": 0.15, "health_pct": 0.80},
+        )
+
+        assert len(run_payloads) == 1
+        assert failed_items == []
+        assert len(photo_jobs) == 1
+        queued_slot = photo_jobs[0]["photo_slots"][0]
+        assert queued_slot is not slot
+        assert queued_slot.image_data == b"photo-bytes"
+        assert slot.image_data is None
 
     def test_compute_alarm_input_sha256_deterministic(self):
         df_a = pd.DataFrame(

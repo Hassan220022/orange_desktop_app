@@ -835,15 +835,11 @@ class AlarmViewer(QMainWindow):
 
     def _iter_background_threads(self):
         panel_bdt_thread = getattr(self._bdt_validation_panel, "_bdt_thread", None)
-        panel_photo_thread = None
-        if panel_bdt_thread is not None:
-            panel_photo_thread = getattr(panel_bdt_thread, "_photo_thread", None)
         for thread in (
             getattr(self, "_loader", None),
             getattr(self, "_restore_thread", None),
             getattr(self, "_bt_thread", None),
             panel_bdt_thread,
-            panel_photo_thread,
         ):
             if thread is not None:
                 yield thread

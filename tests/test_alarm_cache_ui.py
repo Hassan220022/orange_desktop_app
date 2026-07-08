@@ -846,9 +846,8 @@ def test_apply_loaded_alarm_dataframe_skips_duplicate_classification_when_prepar
     assert viewer._full_df.equals(input_df.reset_index(drop=True))
 
 
-def test_iter_background_threads_includes_bdt_photo_thread():
-    photo_thread = object()
-    bdt_thread = SimpleNamespace(_photo_thread=photo_thread)
+def test_iter_background_threads_includes_bdt_validation_thread():
+    bdt_thread = object()
     viewer = SimpleNamespace(
         _loader=None,
         _restore_thread=None,
@@ -859,7 +858,6 @@ def test_iter_background_threads_includes_bdt_photo_thread():
     threads = list(AlarmViewer._iter_background_threads(viewer))
 
     assert bdt_thread in threads
-    assert photo_thread in threads
 
 
 def test_alarm_source_mode_help_explains_read_and_save_behavior():

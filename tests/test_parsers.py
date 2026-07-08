@@ -31,6 +31,20 @@ from alarm_app.data.loaders import (
 
 
 class TestBDTValidationThreadFiltering:
+    def test_bdt_worker_count_allows_up_to_50_workers(self):
+        from alarm_app.ui.threads import _bdt_worker_count
+
+        assert _bdt_worker_count(1) == 1
+        assert _bdt_worker_count(50) == 50
+        assert _bdt_worker_count(51) == 50
+
+    def test_bdt_memory_gate_pauses_new_work_above_8gb_when_work_is_running(self):
+        from alarm_app.ui.threads import BDT_RSS_LIMIT_BYTES, _bdt_should_submit_more
+
+        assert _bdt_should_submit_more(10, BDT_RSS_LIMIT_BYTES - 1) is True
+        assert _bdt_should_submit_more(10, BDT_RSS_LIMIT_BYTES) is False
+        assert _bdt_should_submit_more(0, BDT_RSS_LIMIT_BYTES) is True
+
     def test_skips_missing_bdt_sheet_results(self):
         # Import here so test_parsers can remain mostly pure-function focused.
         from alarm_app.ui.threads import BDTValidationThread
@@ -355,6 +369,107 @@ class TestBDTValidationThreadFiltering:
         assert observed["validate_kwargs"]["network_no_usable_backup"] is False
         assert observed["validate_kwargs"]["network_backup_reasons"] == []
         assert observed["attach_kwargs"]["network_rows"] == []
+
+    def test_validation_persists_photos_per_result(self):
+        from alarm_app.bdt.parser import PhotoSlot
+        from alarm_app.ui.threads import BDTValidationThread
+
+        class _FakeBdtData:
+            def __init__(self, filename, site_code):
+                self.filename = filename
+                self.file_path = f"/fake/{filename}"
+                self.site_code = site_code
+                self.site_name = "Network Site"
+                self.test_date = datetime.datetime(2026, 1, 5)
+                self.errors = []
+                self.photos_deferred = False
+                self.discharge_readings = [("30 min", 52.0, 25.0)]
+                self.start_voltage = 54.0
+                self.start_ampere = 23.0
+                self.summary_data = {}
+                self.photo_slots = [PhotoSlot(label="Rectifier", image_data=b"bytes", image_ext="jpg")]
+
+        def fake_parse(fp, skip_photos=True):
+            return _FakeBdtData(fp.rsplit("/", 1)[-1], fp[-6:-5])
+
+        def fake_validate(bdt_data, alarm_df, tolerance, health_pct, *args, **kwargs):
+            assert bdt_data.photo_slots[0].image_data == b"bytes"
+
+            class _Rule:
+                rule_id = "R1"
+                verdict = "Accepted"
+                detail = ""
+
+            class _Res:
+                def __init__(self, b):
+                    self.filename = b.filename
+                    self.site_code = b.site_code
+                    self.test_date = "2026-01-05"
+                    self.overall = "Accepted"
+                    self.rules = [_Rule()]
+                    self.parse_errors = []
+                    self.bdt_data = b
+                    self.validation_context = {}
+
+            return _Res(bdt_data)
+
+        save_calls = []
+        persisted_jobs = []
+
+        def fake_save_validation_batch(*, items, alarm_df, params, validator_code_ref=None):
+            assert len(items) == 1
+            bdt_data = items[0]["bdt_data"]
+            source_slot = bdt_data.photo_slots[0]
+            persisted_slot = PhotoSlot(
+                label=source_slot.label,
+                image_data=b"bytes",
+                image_ext=source_slot.image_ext,
+                category=source_slot.category,
+            )
+            persisted_slot.image_path = f"/stored/{bdt_data.filename}.jpg"
+            source_slot.image_data = None
+            save_calls.append(bdt_data.filename)
+            return [
+                {
+                    "run_id": len(save_calls),
+                    "idempotency_key": str(len(save_calls)),
+                    "site_code": bdt_data.site_code,
+                    "test_date": "2026-01-05",
+                    "overall_verdict": "Accepted",
+                    "rule_count": 1,
+                }
+            ], [{
+                "bdt_test_id": len(save_calls),
+                "photo_slots": [persisted_slot],
+                "source_slots": [source_slot],
+            }], []
+
+        def fake_persist_photo_jobs(photo_jobs):
+            persisted_jobs.append(list(photo_jobs))
+            return len(photo_jobs)
+
+        th = BDTValidationThread(["/fake/a.xlsx", "/fake/b.xlsx"], None, 0.15, 0.80)
+        captured = {}
+        th.finished.connect(lambda results, by_site: captured.update(
+            {"results": results, "by_site": by_site}))
+
+        with patch("alarm_app.data.loaders._load_external_summary_lookup", return_value={}), \
+             patch("alarm_app.bdt.parser.parse_bdt_file", side_effect=fake_parse), \
+             patch("alarm_app.bdt.validator.validate_bdt", side_effect=fake_validate), \
+             patch("alarm_app.core.battery_backup_insights.load_network_summary_rows_for_site", return_value=[]), \
+             patch("alarm_app.bdt.history.save_validation_batch", side_effect=fake_save_validation_batch), \
+             patch("alarm_app.bdt.history.persist_photo_jobs", side_effect=fake_persist_photo_jobs), \
+             patch("alarm_app.data.state.append_outbox_events", lambda *_args, **_kwargs: None), \
+             patch("alarm_app.bdt.parser.load_bdt_photos", side_effect=lambda b: None):
+            th.run()
+
+        assert len(captured["results"]) == 2
+        assert len(save_calls) == 2
+        assert len(persisted_jobs) == 2
+        for res in captured["results"]:
+            slot = res.bdt_data.photo_slots[0]
+            assert slot.image_data is None
+            assert slot.image_path == f"/stored/{res.filename}.jpg"
 
 
 class TestExternalSummaryHelpers:

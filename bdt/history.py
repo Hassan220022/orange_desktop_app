@@ -5,6 +5,7 @@ Persists BDT validation results per site to detect equipment changes
 between consecutive PM visits (battery type, count, rectifier, modules).
 """
 
+import copy
 import hashlib
 import json
 import logging
@@ -714,13 +715,19 @@ def save_validation_batch(
                                 rule_count=len(rule_results),
                             ))
 
-                            # Queue photo jobs only after PM run is successfully persisted
+                            # Queue photo jobs only after PM run is successfully persisted.
+                            # Copy slots so the caller can release raw image bytes
+                            # without emptying the storage job.
                             photo_slots = list(getattr(bdt_data, "photo_slots", []) or [])
                             if photo_slots:
                                 photo_jobs.append({
                                     "bdt_test_id": int(bdt_db.id),
-                                    "photo_slots": photo_slots,
+                                    "photo_slots": [copy.copy(slot) for slot in photo_slots],
+                                    "source_slots": photo_slots,
                                 })
+                                for slot in photo_slots:
+                                    if getattr(slot, "image_data", None):
+                                        slot.image_data = None
                     break
                 except _IntegrityError:
                     # Duplicate: rollback savepoint only, continue with remaining items.

@@ -1,11 +1,13 @@
 """Background worker threads."""
 
+import gc
 import hashlib
 import json
 import logging
 import os
+import subprocess
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from uuid import uuid4
 
 import pandas as pd
@@ -59,6 +61,29 @@ except ImportError:
     from db.repos.file_repo import register_file as _register_file
 
 _log = logging.getLogger(__name__)
+
+BDT_MAX_WORKERS = 50
+BDT_RSS_LIMIT_BYTES = 8 * 1024 * 1024 * 1024
+
+
+def _bdt_worker_count(total: int) -> int:
+    return min(max(int(total), 1), BDT_MAX_WORKERS)
+
+
+def _current_rss_bytes() -> int:
+    try:
+        out = subprocess.check_output(
+            ["ps", "-o", "rss=", "-p", str(os.getpid())],
+            text=True,
+            timeout=1,
+        )
+        return int(str(out).strip().splitlines()[0]) * 1024
+    except Exception:
+        return 0
+
+
+def _bdt_should_submit_more(in_flight: int, rss_bytes: int) -> bool:
+    return in_flight <= 0 or rss_bytes < BDT_RSS_LIMIT_BYTES
 
 
 def _persist_alarm_cache_and_file_index(
@@ -402,31 +427,17 @@ class ExportThread(QThread):
 
 
 # ─────────────────────────────────────────────────────────────────
-# BDT photo persistence thread
+# BDT photo persistence helpers
 # ─────────────────────────────────────────────────────────────────
-class BDTPhotoPersistenceThread(QThread):
-    """Persist deferred BDT photo jobs without blocking validation results."""
-
-    completed = pyqtSignal(int)
-    error = pyqtSignal(str)
-
-    def __init__(self, photo_jobs: list[dict]):
-        super().__init__()
-        self._photo_jobs = list(photo_jobs or [])
-
-    def run(self):
-        try:
-            if not self._photo_jobs:
-                self.completed.emit(0)
-                return
-            try:
-                from alarm_app.bdt.history import persist_photo_jobs
-            except ImportError:
-                from bdt.history import persist_photo_jobs
-            stored = persist_photo_jobs(self._photo_jobs)
-            self.completed.emit(int(stored or 0))
-        except Exception:
-            self.error.emit(traceback.format_exc())
+def _sync_persisted_photo_paths(photo_jobs: list[dict]) -> None:
+    for job in photo_jobs or []:
+        source_slots = list(job.get("source_slots") or [])
+        persisted_slots = list(job.get("photo_slots") or [])
+        for source, persisted in zip(source_slots, persisted_slots, strict=False):
+            image_path = str(getattr(persisted, "image_path", "") or "")
+            if image_path:
+                source.image_path = image_path
+            source.image_data = None
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -459,7 +470,6 @@ class BDTValidationThread(QThread):
         self._tolerances = tolerances
         self._alarm_slice_cache: dict[tuple[str, str], pd.DataFrame] = {}
         self._cancel_requested = False
-        self._photo_thread = None
 
     def cancel(self) -> None:
         self._cancel_requested = True
@@ -487,20 +497,6 @@ class BDTValidationThread(QThread):
             and getattr(bdt_data, "start_ampere", None) is None
         )
         return bool(hard_file_error or no_extractable_data)
-
-    @staticmethod
-    def _persist_deferred_photos(photo_jobs: list[dict]) -> None:
-        if not photo_jobs:
-            return
-        try:
-            try:
-                from alarm_app.bdt.history import persist_photo_jobs
-            except ImportError:
-                from bdt.history import persist_photo_jobs
-            stored = persist_photo_jobs(photo_jobs)
-            _log.info("Deferred BDT photo jobs completed: photos=%d", stored)
-        except Exception:
-            _log.warning("Deferred BDT photo jobs failed", exc_info=True)
 
     def _load_alarm_df_for_bdt(self, bdt_data) -> pd.DataFrame | None:
         if self._alarm_df is not None:
@@ -562,15 +558,56 @@ class BDTValidationThread(QThread):
                 return
             results = []
             by_site: dict[str, list] = {}
-            persist_items: list[dict] = []
             done = 0
             summary_lookup = _loaders._load_external_summary_lookup(self._files)
             network_backup_rule_min = float(
                 getattr(self._tolerances, "min_backup_minutes_for_battery_rules", 10.0)
             )
+            try:
+                from alarm_app.bdt.history import persist_photo_jobs, save_validation_batch
+            except ImportError:
+                from bdt.history import persist_photo_jobs, save_validation_batch
 
-            # xlsx parsing is I/O-bound (zip extraction + XML parse); GIL releases on I/O so more threads help.
-            workers = min(total, (os.cpu_count() or 1) * 4, 32)
+            def _persist_result(item: dict) -> None:
+                run_payloads, photo_jobs, failed_items = save_validation_batch(
+                    items=[item],
+                    alarm_df=self._alarm_df,
+                    params={
+                        "tolerance": self._tolerance,
+                        "health_pct": self._health_pct,
+                        "min_backup_minutes_for_battery_rules": network_backup_rule_min,
+                    },
+                )
+                if run_payloads:
+                    state.append_outbox_events([
+                        {
+                            "entity_type": "pm_run",
+                            "entity_local_id": run_data["run_id"],
+                            "op": "upsert",
+                            "entity_hash": run_data["idempotency_key"],
+                            "payload": {
+                                "site_code": run_data["site_code"],
+                                "test_date": run_data["test_date"],
+                                "overall_verdict": run_data["overall_verdict"],
+                                "rule_count": run_data["rule_count"],
+                            },
+                        }
+                        for run_data in run_payloads
+                    ])
+                for fi in failed_items:
+                    _log.error(
+                        "BDT persistence failure: site=%s date=%s error_type=%s error=%s",
+                        fi.get("site_code", ""),
+                        fi.get("test_date", ""),
+                        fi.get("error_type", ""),
+                        fi.get("error_message", ""),
+                    )
+                if photo_jobs:
+                    stored = persist_photo_jobs(photo_jobs)
+                    _sync_persisted_photo_paths(photo_jobs)
+                    self.photo_persistence_finished.emit(int(stored or 0))
+
+            workers = _bdt_worker_count(total)
 
             def _parse_and_validate(file_path: str):
                 if self._is_cancelled():
@@ -613,106 +650,134 @@ class BDTValidationThread(QThread):
                     network_backup_reasons=network_context.reasons)
                 return result, bdt_data, network_rows
 
+            file_iter = iter(self._files)
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = {
-                    pool.submit(_parse_and_validate, fp): fp
-                    for fp in self._files
-                }
-                for future in as_completed(futures):
+                futures = {}
+
+                def _submit_next() -> bool:
+                    try:
+                        file_path = next(file_iter)
+                    except StopIteration:
+                        return False
+                    futures[pool.submit(_parse_and_validate, file_path)] = file_path
+                    return True
+
+                while (
+                    len(futures) < workers
+                    and _bdt_should_submit_more(len(futures), _current_rss_bytes())
+                    and _submit_next()
+                ):
+                    pass
+
+                while futures:
                     if self._is_cancelled():
                         for pending in futures:
                             pending.cancel()
                         self._emit_cancelled()
                         return
-                    done += 1
-                    fp = futures[future]
-                    fname = os.path.basename(fp)
-                    pct = int(done / total * 90)
-                    self.progress.emit(
-                        pct, f"[{done}/{total}]  {fname}")
+                    completed_futures, _pending = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in completed_futures:
+                        done += 1
+                        fp = futures.pop(future)
+                        fname = os.path.basename(fp)
+                        pct = int(done / total * 90)
+                        self.progress.emit(pct, f"[{done}/{total}]  {fname}")
 
-                    try:
-                        payload = future.result()
-                    except Exception:
-                        continue
-                    if not payload:
-                        self.progress.emit(
-                            pct, f"[{done}/{total}]  skipped invalid BDT: {fname}")
-                        continue
+                        try:
+                            payload = future.result()
+                        except Exception:
+                            continue
+                        if not payload:
+                            self.progress.emit(
+                                pct, f"[{done}/{total}]  skipped invalid BDT: {fname}")
+                            continue
 
-                    result, bdt_data, network_rows = payload
-                    try:
-                        attach_battery_backup_insight(
-                            result,
-                            bdt_data,
-                            network_rows=network_rows,
-                        )
-                    except Exception as exc:
-                        result.battery_backup_insight = {
-                            "insight_status": "Insight Unavailable",
-                            "severity": "medium",
-                            "insight_flags": ["insight_unavailable"],
-                            "reasons": [str(exc)],
-                            "differences": [],
-                            "critical_markers": [],
+                        result, bdt_data, network_rows = payload
+                        try:
+                            attach_battery_backup_insight(
+                                result,
+                                bdt_data,
+                                network_rows=network_rows,
+                            )
+                        except Exception as exc:
+                            result.battery_backup_insight = {
+                                "insight_status": "Insight Unavailable",
+                                "severity": "medium",
+                                "insight_flags": ["insight_unavailable"],
+                                "reasons": [str(exc)],
+                                "differences": [],
+                                "critical_markers": [],
+                            }
+                        results.append(result)
+                        persist_item = {
+                            "bdt_data": bdt_data,
+                            "validation_result": result,
                         }
-                    results.append(result)
-                    persist_items.append({
-                        "bdt_data": bdt_data,
-                        "validation_result": result,
-                    })
+                        try:
+                            _persist_result(persist_item)
+                        except Exception:
+                            _log.warning("BDT persistence failed", exc_info=True)
 
-                    # FR-005 Section 9: structured per-result audit log
-                    r1_rule = next(
-                        (r for r in getattr(result, "rules", []) if getattr(r, "rule_id", "") == "R1"),
-                        None,
-                    )
-                    overall = getattr(result, "overall", "") or ""
-                    _log.info(
-                        "BDT validation result: site=%s date=%s overall=%s "
-                        "file_path=%s layout_family=%s photo_detection_mode=%s "
-                        "photo_mapping_confidence=%s r1_verdict=%s failure_reason_code=%s",
-                        getattr(bdt_data, "site_code", "") or "",
-                        getattr(bdt_data, "test_date", "") or "",
-                        overall,
-                        getattr(bdt_data, "file_path", "") or fp,
-                        getattr(bdt_data, "core_layout_family", "") or "",
-                        getattr(bdt_data, "photo_detection_mode", "") or "",
-                        getattr(bdt_data, "photo_mapping_confidence", "") or "",
-                        getattr(r1_rule, "verdict", "") if r1_rule else "",
-                        overall if overall not in ("Accepted", "") else "",
-                    )
-                    insight = getattr(result, "battery_backup_insight", {}) or {}
-                    if isinstance(insight, dict):
-                        network_snapshot = insight.get("network_summary") if isinstance(insight.get("network_summary"), dict) else {}
-                        bdt_snapshot = insight.get("bdt") if isinstance(insight.get("bdt"), dict) else {}
-                        freshness = insight.get("snapshot_freshness") if isinstance(insight.get("snapshot_freshness"), dict) else {}
-                        _log.info(
-                            "BDT battery snapshot: site=%s insight_status=%s severity=%s "
-                            "network_freshness=%s network_date=%s network_battery_type=%s "
-                            "network_backup_status=%s network_backup_minutes=%s network_strings=%s "
-                            "bdt_test_date=%s bdt_battery_brand=%s bdt_strings=%s bdt_batteries=%s "
-                            "bdt_measured_backup_minutes=%s bdt_end_voltage=%s",
-                            getattr(bdt_data, "site_code", "") or "",
-                            insight.get("insight_status", ""),
-                            insight.get("severity", ""),
-                            freshness.get("status", ""),
-                            freshness.get("network_summary_date", ""),
-                            network_snapshot.get("battery_type", ""),
-                            network_snapshot.get("backup_status", ""),
-                            network_snapshot.get("backup_minutes", ""),
-                            network_snapshot.get("no_of_strings", ""),
-                            bdt_snapshot.get("latest_test_date", ""),
-                            bdt_snapshot.get("battery_brand", ""),
-                            bdt_snapshot.get("num_strings", ""),
-                            bdt_snapshot.get("num_batteries", ""),
-                            bdt_snapshot.get("measured_discharge_minutes", ""),
-                            bdt_snapshot.get("end_voltage", ""),
+                        # FR-005 Section 9: structured per-result audit log
+                        r1_rule = next(
+                            (r for r in getattr(result, "rules", []) if getattr(r, "rule_id", "") == "R1"),
+                            None,
                         )
+                        overall = getattr(result, "overall", "") or ""
+                        _log.info(
+                            "BDT validation result: site=%s date=%s overall=%s "
+                            "file_path=%s layout_family=%s photo_detection_mode=%s "
+                            "photo_mapping_confidence=%s r1_verdict=%s failure_reason_code=%s",
+                            getattr(bdt_data, "site_code", "") or "",
+                            getattr(bdt_data, "test_date", "") or "",
+                            overall,
+                            getattr(bdt_data, "file_path", "") or fp,
+                            getattr(bdt_data, "core_layout_family", "") or "",
+                            getattr(bdt_data, "photo_detection_mode", "") or "",
+                            getattr(bdt_data, "photo_mapping_confidence", "") or "",
+                            getattr(r1_rule, "verdict", "") if r1_rule else "",
+                            overall if overall not in ("Accepted", "") else "",
+                        )
+                        insight = getattr(result, "battery_backup_insight", {}) or {}
+                        if isinstance(insight, dict):
+                            network_snapshot = insight.get("network_summary") if isinstance(insight.get("network_summary"), dict) else {}
+                            bdt_snapshot = insight.get("bdt") if isinstance(insight.get("bdt"), dict) else {}
+                            freshness = insight.get("snapshot_freshness") if isinstance(insight.get("snapshot_freshness"), dict) else {}
+                            _log.info(
+                                "BDT battery snapshot: site=%s insight_status=%s severity=%s "
+                                "network_freshness=%s network_date=%s network_battery_type=%s "
+                                "network_backup_status=%s network_backup_minutes=%s network_strings=%s "
+                                "bdt_test_date=%s bdt_battery_brand=%s bdt_strings=%s bdt_batteries=%s "
+                                "bdt_measured_backup_minutes=%s bdt_end_voltage=%s",
+                                getattr(bdt_data, "site_code", "") or "",
+                                insight.get("insight_status", ""),
+                                insight.get("severity", ""),
+                                freshness.get("status", ""),
+                                freshness.get("network_summary_date", ""),
+                                network_snapshot.get("battery_type", ""),
+                                network_snapshot.get("backup_status", ""),
+                                network_snapshot.get("backup_minutes", ""),
+                                network_snapshot.get("no_of_strings", ""),
+                                bdt_snapshot.get("latest_test_date", ""),
+                                bdt_snapshot.get("battery_brand", ""),
+                                bdt_snapshot.get("num_strings", ""),
+                                bdt_snapshot.get("num_batteries", ""),
+                                bdt_snapshot.get("measured_discharge_minutes", ""),
+                                bdt_snapshot.get("end_voltage", ""),
+                            )
 
-                    if bdt_data.site_code:
-                        key = bdt_data.site_code.strip().upper()
-                        by_site.setdefault(key, []).append(bdt_data)
+                        if bdt_data.site_code:
+                            key = bdt_data.site_code.strip().upper()
+                            by_site.setdefault(key, []).append(bdt_data)
+                        del persist_item, payload, network_rows
+                        gc.collect()
+
+                    while (
+                        len(futures) < workers
+                        and _bdt_should_submit_more(len(futures), _current_rss_bytes())
+                        and _submit_next()
+                    ):
+                        pass
 
             if self._is_cancelled():
                 self._emit_cancelled()
@@ -729,59 +794,6 @@ class BDTValidationThread(QThread):
             if self._is_cancelled():
                 self._emit_cancelled()
                 return
-
-            if persist_items:
-                try:
-                    self.progress.emit(96, "Saving validation history …")
-                    try:
-                        from alarm_app.bdt.history import save_validation_batch
-                    except ImportError:
-                        from bdt.history import save_validation_batch
-                    run_payloads, photo_jobs, failed_items = save_validation_batch(
-                        items=persist_items,
-                        alarm_df=self._alarm_df,
-                        params={
-                            "tolerance": self._tolerance,
-                            "health_pct": self._health_pct,
-                            "min_backup_minutes_for_battery_rules": network_backup_rule_min,
-                        },
-                    )
-
-                    if run_payloads:
-                        outbox_events = []
-                        for run_data in run_payloads:
-                            outbox_events.append({
-                                "entity_type": "pm_run",
-                                "entity_local_id": run_data["run_id"],
-                                "op": "upsert",
-                                "entity_hash": run_data["idempotency_key"],
-                                "payload": {
-                                    "site_code": run_data["site_code"],
-                                    "test_date": run_data["test_date"],
-                                    "overall_verdict": run_data["overall_verdict"],
-                                    "rule_count": run_data["rule_count"],
-                                },
-                            })
-                        state.append_outbox_events(outbox_events)
-
-                    if failed_items:
-                        # FR-005: log each failure with site/date identifiers
-                        for fi in failed_items:
-                            _log.error(
-                                "BDT persistence failure: site=%s date=%s error_type=%s error=%s",
-                                fi.get("site_code", ""),
-                                fi.get("test_date", ""),
-                                fi.get("error_type", ""),
-                                fi.get("error_message", ""),
-                            )
-
-                    if photo_jobs:
-                        self._photo_thread = BDTPhotoPersistenceThread(photo_jobs)
-                        self._photo_thread.completed.connect(self.photo_persistence_finished.emit)
-                        self._photo_thread.error.connect(self.photo_persistence_error.emit)
-                        self._photo_thread.start()
-                except Exception:
-                    _log.warning("Deferred BDT persistence failed", exc_info=True)
 
             if self._is_cancelled():
                 self._emit_cancelled()
