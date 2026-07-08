@@ -62,7 +62,7 @@ except ImportError:
 
 _log = logging.getLogger(__name__)
 
-BDT_MAX_WORKERS = 50
+BDT_MAX_WORKERS = 4
 BDT_RSS_LIMIT_BYTES = 8 * 1024 * 1024 * 1024
 
 

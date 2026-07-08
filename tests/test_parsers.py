@@ -31,12 +31,12 @@ from alarm_app.data.loaders import (
 
 
 class TestBDTValidationThreadFiltering:
-    def test_bdt_worker_count_allows_up_to_50_workers(self):
+    def test_bdt_worker_count_caps_photo_rich_validation_workers(self):
         from alarm_app.ui.threads import _bdt_worker_count
 
         assert _bdt_worker_count(1) == 1
-        assert _bdt_worker_count(50) == 50
-        assert _bdt_worker_count(51) == 50
+        assert _bdt_worker_count(4) == 4
+        assert _bdt_worker_count(50) == 4
 
     def test_bdt_memory_gate_pauses_new_work_above_8gb_when_work_is_running(self):
         from alarm_app.ui.threads import BDT_RSS_LIMIT_BYTES, _bdt_should_submit_more
