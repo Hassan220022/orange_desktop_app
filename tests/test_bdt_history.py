@@ -289,7 +289,7 @@ class TestValidationRunPersistence:
         assert photo_jobs == []
         assert failed_items == []
 
-    def test_save_validation_batch_queues_photo_copy_and_clears_source_bytes(self, history_dir):
+    def test_save_validation_batch_queues_photo_copy_and_retains_source_bytes(self, history_dir):
         slot = PhotoSlot(
             label="Rectifier",
             image_data=b"photo-bytes",
@@ -319,7 +319,9 @@ class TestValidationRunPersistence:
         queued_slot = photo_jobs[0]["photo_slots"][0]
         assert queued_slot is not slot
         assert queued_slot.image_data == b"photo-bytes"
-        assert slot.image_data is None
+        # Source bytes are retained until _sync_persisted_photo_paths runs,
+        # so a failed photo persist can retry. See test_sync_persisted_photo_paths.
+        assert slot.image_data == b"photo-bytes"
 
     def test_compute_alarm_input_sha256_deterministic(self):
         df_a = pd.DataFrame(

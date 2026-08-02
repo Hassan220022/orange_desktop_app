@@ -1342,3 +1342,26 @@ class TestBackgroundWorkerCancellation:
 
         assert captured["finished"] == []
         assert captured["cancelled"] == ["Alarm loading cancelled"]
+
+
+def test_sync_persisted_photo_paths_clears_on_path_retains_without():
+    """_sync_persisted_photo_paths clears source bytes only once durable."""
+    from alarm_app.bdt.parser import PhotoSlot
+    from alarm_app.ui.threads import _sync_persisted_photo_paths
+
+    ok_source = PhotoSlot(label="Rectifier", image_data=b"ok-bytes", image_ext="jpg")
+    ok_persisted = PhotoSlot(label="Rectifier", image_data=b"ok-bytes", image_ext="jpg")
+    ok_persisted.image_path = "/store/photo-ok.jpg"
+    fail_source = PhotoSlot(label="Rectifier", image_data=b"fail-bytes", image_ext="jpg")
+    fail_persisted = PhotoSlot(label="Rectifier", image_data=b"fail-bytes", image_ext="jpg")
+
+    _sync_persisted_photo_paths([
+        {"source_slots": [ok_source, fail_source],
+         "photo_slots": [ok_persisted, fail_persisted]},
+    ])
+
+    # Durable photo: path synced and bytes released.
+    assert ok_source.image_path == "/store/photo-ok.jpg"
+    assert ok_source.image_data is None
+    # Failed photo (no path): bytes retained for retry.
+    assert fail_source.image_data == b"fail-bytes"

@@ -716,8 +716,8 @@ def save_validation_batch(
                             ))
 
                             # Queue photo jobs only after PM run is successfully persisted.
-                            # Copy slots so the caller can release raw image bytes
-                            # without emptying the storage job.
+                            # Source bytes are released later in _sync_persisted_photo_paths
+                            # once photos are durable on disk, so a persist failure can retry.
                             photo_slots = list(getattr(bdt_data, "photo_slots", []) or [])
                             if photo_slots:
                                 photo_jobs.append({
@@ -725,9 +725,6 @@ def save_validation_batch(
                                     "photo_slots": [copy.copy(slot) for slot in photo_slots],
                                     "source_slots": photo_slots,
                                 })
-                                for slot in photo_slots:
-                                    if getattr(slot, "image_data", None):
-                                        slot.image_data = None
                     break
                 except _IntegrityError:
                     # Duplicate: rollback savepoint only, continue with remaining items.
