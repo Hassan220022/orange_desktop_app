@@ -437,7 +437,9 @@ def _sync_persisted_photo_paths(photo_jobs: list[dict]) -> None:
             image_path = str(getattr(persisted, "image_path", "") or "")
             if image_path:
                 source.image_path = image_path
-            source.image_data = None
+                # ponytail: clear only after the photo is durable on disk;
+                # failed jobs (no path) keep their bytes for retry.
+                source.image_data = None
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -686,6 +688,7 @@ class BDTValidationThread(QThread):
                         try:
                             payload = future.result()
                         except Exception:
+                            _log.exception("BDT worker failed for %s", fname)
                             continue
                         if not payload:
                             self.progress.emit(
